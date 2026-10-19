@@ -228,6 +228,18 @@ describe("one origin cannot see or touch another's app", () => {
     expect((await app.status()).connected).toBe(true)
   })
 
+  test("an app that revoked this daemon reads as not linked once it refused the token, and is offered again", async () => {
+    const a = await TestServer.start()
+    const b = await TestServer.start()
+    servers.push(a, b)
+    const port = await startDaemon({ AGENTD_CONSENT: consent(0).file }, [a, b])
+    await a.waitHellos(1)
+    await b.waitHellos(1)
+    await a.revoke()
+    await waitFor("the refusal", () => daemon!.out.includes(`${a.origin} refused this daemon (unauthorized)`))
+    expect((await call(port, "GET", "/v1/status", { origin: a.origin })).body).toMatchObject({ granted: { server: false } })
+  })
+
   test("an app that Stop detached is offered again, and connects again", async () => {
     const a = await TestServer.start()
     const b = await TestServer.start()
