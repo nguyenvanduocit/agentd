@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@agentd/client": "github:nguyenvanduocit/agentd-client#v0.2.1"
+    "@agentd/client": "https://github.com/nguyenvanduocit/agentd/releases/download/v0.2.0/agentd-client-0.2.1.tgz"
   }
 }

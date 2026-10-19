@@ -11,7 +11,7 @@ The daemon is no longer MindChains-specific (see `2026-10-19-daemon-multi-app-de
 - `agentd` is a self-contained product: daemon, tray, protocol, releases, Go hub library, page SDK, docs, CI.
 - A second app can be written against the SDK alone (proved by `examples/minimal-app`).
 - MindChains stops building, signing and serving the daemon. It depends on `agentd` for the hub library and the page SDK.
-- The page SDK is the `agentd-client` GitHub repository that apps install from.
+- The page SDK is a file of each GitHub release (`agentd-client-<version>.tgz`) that apps install by URL.
 
 ## Non-goals
 
@@ -104,7 +104,7 @@ createLocalDaemon({ startPairing, cancelPairing, client? })   // observable cont
 ### 6. How an app consumes it
 
 - Go: `require github.com/nguyenvanduocit/agentd vX`. Until the repo is published, `replace github.com/nguyenvanduocit/agentd => ../agentd`.
-- JS: `bun add github:nguyenvanduocit/agentd-client#v<version>`; the lockfile pins the commit of the tag.
+- JS: `bun add https://github.com/nguyenvanduocit/agentd/releases/download/v<version>/agentd-client-<sdk version>.tgz`; the lockfile pins the file's sha512.
 - The app mounts the hub, builds the install command with `installCommand`, and uses the controller in its settings page.
 
 ### 7. MindChains after the move
@@ -145,7 +145,7 @@ Daemons installed as `mindchains-daemon` use the old names, the old namespace `/
 ## Acceptance
 
 1. In `agentd`: daemon, tray, hub, server, SDK and example tests pass natively; `examples/minimal-app` connects a real daemon through a real browser.
-2. `bun add github:nguyenvanduocit/agentd-client#v<version>` installs the SDK that `scripts/build-sdk.sh` builds.
+2. `bun add <the release asset URL>` installs the SDK that `scripts/build-sdk.sh` builds.
 3. The install command from the SDK installs, pairs and runs a daemon against the example app and against MindChains.
 4. MindChains builds, lints and passes its Go, frontend and e2e (`daemon`, `daemon-local`) suites with none of the moved code left in its tree (`rg` finds no reference to the deleted paths).
 5. An update offered by the releases page updates a running daemon; a wrong signature does not.
