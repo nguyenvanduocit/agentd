@@ -21,6 +21,7 @@ import { startTrayMenu, trayFile } from "./tray-menu.ts"
 import { pair } from "./pair.ts"
 import { currentHost, findProgram } from "./host.ts"
 import { refreshLauncher } from "./launcher.ts"
+import { writeApp } from "./appentry.ts"
 import { rotateLog, say, stampLines, stdoutIs, warn } from "./log.ts"
 import { SessionState } from "./state.ts"
 import { ReleaseWatcher } from "./releases.ts"
@@ -50,9 +51,19 @@ function installedLayout(): Layout | undefined {
       return undefined
     }
     refreshLauncher(dirname(script), l)
+    if (isManaged(process.env)) refreshApp(l)
     return l
   } catch {
     return undefined
+  }
+}
+
+/** A daemon a service runs makes the app that starts it again after a Stop when it is missing, and keeps its icon current. */
+function refreshApp(l: Layout): void {
+  try {
+    writeApp(l, currentHost(), VERSION, "refresh")
+  } catch (e) {
+    warn(`no app to start agentd again: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 

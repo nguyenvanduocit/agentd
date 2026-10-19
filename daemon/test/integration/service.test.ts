@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { execFileSync, spawnSync } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { plist, systemdUnit } from "../../src/core/service.ts"
@@ -48,6 +48,7 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
   const label = `com.agentd.daemon.test.${randomBytes(4).toString("hex")}`
   let plistDir = ""
   const plistFile = () => join(plistDir, `${label}.plist`)
+  let appsDir = ""
 
   beforeAll(async () => {
     await build()
@@ -61,6 +62,7 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
     server?.stop()
     cleanVersions()
     if (plistDir !== "") rmSync(plistDir, { recursive: true, force: true })
+    if (appsDir !== "") rmSync(appsDir, { recursive: true, force: true })
   })
 
   const listedFor = (l: string) => spawnSync("sh", ["-c", `launchctl list | grep ${l} || true`], { encoding: "utf8" }).stdout.trim()
@@ -68,6 +70,8 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
 
   test("the service runs the daemon, kill -9 brings it back, and nothing is left", async () => {
     plistDir = mkdtempSync(join(tmpdir(), "mc-launchd-"))
+    appsDir = mkdtempSync(join(tmpdir(), "mc-apps-"))
+    const app = join(appsDir, "agentd.app")
     const before = listed()
     const one = await buildVersion("0.0.0-launchd")
     server = await TestServer.start()
@@ -75,13 +79,18 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
     await m.install(one)
     m.pair(server.origin)
     const env = {
-      ...m.env({ AGENTD_SERVICE_LABEL: label, AGENTD_SERVICE_DIR: plistDir, AGENTD_AGENT_CLAUDE: sh("sleep 600") }),
+      ...m.env({ AGENTD_SERVICE_LABEL: label, AGENTD_SERVICE_DIR: plistDir, AGENTD_APPS_DIR: appsDir, AGENTD_AGENT_CLAUDE: sh("sleep 600") }),
     }
     const launcher = join(m.home, "bin", "agentd")
     const install = spawnSync(launcher, ["service", "install"], { env, encoding: "utf8" })
     expect(install.status).toBe(0)
     expect(install.stdout).toContain(`launchd, ${label}`)
     expect(existsSync(plistFile())).toBe(true)
+    // the app that starts agentd again after a Stop: a bundle with the script, its plist and the icon of this version
+    expect(install.stdout).toContain(`${app}: open it to start agentd again`)
+    expect(readFileSync(join(app, "Contents", "Info.plist"), "utf8")).toContain("<string>com.agentd.app</string>")
+    expect(statSync(join(app, "Contents", "MacOS", "agentd")).mode & 0o111).toBe(0o111)
+    expect(existsSync(join(app, "Contents", "Resources", "agentd.icns"))).toBe(true)
 
     // 1. launchd runs the daemon: it connects to the server, in the user's home and not in `/`
     await server.waitHellos(1)
@@ -130,12 +139,18 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
     expect(listedFor(label)).toMatch(/^-\s+0\s/)
     process.stderr.write(`after Stop: ${listedFor(label)}\n${stopped.stdout}`)
 
-    // 5. service start brings it back; service restart gives a new process
-    expect(spawnSync(launcher, ["service", "start"], { env, encoding: "utf8" }).status).toBe(0)
-    await waitFor("hello after start", async () => (await hellos()) > helloCount, 40_000)
+    // 5. opening agentd.app brings it back, from the bare environment the Finder gives an app; service restart gives a
+    //    new process
+    const opened = spawnSync(join(app, "Contents", "MacOS", "agentd"), [], { env: { PATH: "/usr/bin:/bin", HOME: m.box.root }, encoding: "utf8" })
+    expect(opened.status).toBe(0)
+    await waitFor("hello after opening the app", async () => (await hellos()) > helloCount, 40_000)
     const afterStart = daemonPid()
+    // an install from before the app existed: the daemon the service starts makes the missing app
+    rmSync(app, { recursive: true, force: true })
     expect(spawnSync(launcher, ["service", "restart"], { env, encoding: "utf8" }).status).toBe(0)
     await waitFor("a new daemon after restart", () => daemonPid() !== afterStart, 40_000)
+    await waitFor("the app made again by the daemon", () => existsSync(join(app, "Contents", "MacOS", "agentd")), 20_000)
+    expect(existsSync(join(app, "Contents", "Resources", "agentd.icns"))).toBe(true)
     await waitFor("connected", async () => (await server?.status())?.connected === true, 20_000)
 
     // 6. a revoked token: the daemon exits 0 and launchd leaves it stopped
@@ -148,6 +163,8 @@ describe.skipIf(!darwin || process.env.AGENTD_TEST_LAUNCHD !== "1")("launchd", (
     const down = spawnSync(launcher, ["service", "uninstall"], { env, encoding: "utf8" })
     expect(down.status).toBe(0)
     expect(existsSync(plistFile())).toBe(false)
+    expect(down.stdout).toContain(`removed ${app}`)
+    expect(existsSync(app)).toBe(false)
     expect(spawnSync("launchctl", ["print", `gui/${uid}/${label}`]).status).not.toBe(0)
     await sleep(500)
     expect(listed()).toBe(before)

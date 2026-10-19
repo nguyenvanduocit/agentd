@@ -42,7 +42,7 @@ agentd [run] [--app <origin>] [--dir <dir>]    connect and serve agents
 agentd apps [list]                             the apps and web pages this machine is connected to
 agentd apps remove <origin>                    disconnect one of them (a running daemon ends its sessions within 2 s)
 agentd service install [--dir <dir>]           start at login, restart when it crashes, restart now on the current version
-agentd service start | restart                 start it again after a Stop from the web UI; restart it
+agentd service start | restart                 start it again after a Stop (or open agentd from Applications); restart it
 agentd service uninstall | status
 agentd service logs [-n <lines>] [-f]
 agentd version
@@ -86,7 +86,7 @@ The daemon starts `tray/` (a Go program built with [mygo](https://github.com/ego
 
 - The program sits at `tray/<os>-<arch>/agentd-tray` (`.exe` on Windows) beside `daemon.js`; `scripts/build-tray.sh <outdir>` builds darwin arm64 and amd64, linux amd64 and arm64, and windows amd64, and `scripts/build-daemon.sh` packs them (from `$TRAY_DIR`, or built on the spot when Go is installed). The tarball is about 13 MB with them, against 80 KB without.
 - `AGENTD_TRAY=off` starts none; `AGENTD_TRAY=<path>` runs that program instead (tests).
-- Stop from the menu is the same as Stop from an app: the daemon exits 0 and a service leaves it stopped (`agentd service start` starts it again).
+- Stop from the menu is the same as Stop from an app: the daemon exits 0 and a service leaves it stopped. Opening agentd from Applications (or `agentd service start`) starts it again.
 - Under systemd the unit gets `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` from the shell that ran `service install`, so the tray finds the screen.
 - Verified on macOS only (the menu and its Stop entry against a real daemon). The Linux and Windows builds compile and are not run.
 
@@ -141,7 +141,17 @@ when a chat session opens, so no timeout of a chat can cut an install.
 - **Control from the server.** `restart` and `stop` end every agent session (SIGTERM to each process group, SIGKILL after
   2 s; their `exit` frames go out first), close the socket and exit 75 or 0; no `open` is accepted meanwhile. A token the
   server refuses (revoked) exits 0 and is not retried; network trouble is retried inside the process. After a Stop,
-  only `agentd service start` on the machine starts it again.
+  only the machine starts it again: the agentd app below, or `agentd service start`.
+- **The agentd app** (`src/appentry.ts`, pure parts in `src/core/appentry.ts`). A Stop leaves the service stopped and takes
+  the menu-bar icon with the daemon, so `service install` also makes an app the user opens to start it again:
+  `/Applications/agentd.app` when this user may write there (an admin may, without sudo), else `~/Applications/agentd.app`
+  (both in Spotlight and Launchpad); on Linux `~/.local/share/applications/agentd.desktop` (`$XDG_DATA_HOME`). It runs
+  `agentd service start` through the launcher in the environment `service install` had (an app opened from the Finder
+  gets a bare one), and names that service; opened while the daemon runs, it says so in a notification. It has no Dock
+  icon (`LSUIElement`); its icon is `app/agentd.icns` of the installed version (drawn by `tray/icon/gen.go`). A daemon a
+  service runs makes the app at start when it is missing (an install from before it existed) and keeps its icon and
+  version current, but never rewrites its script: a daemon does not see its service's name. `service uninstall` removes
+  it (only an `agentd.app` with the bundle id `com.agentd.app`, only a desktop entry marked `X-Agentd=1`).
 - **Log.** `daemon.log` is rotated at 5 MiB, 3 files kept (`.1`, `.2`). It is copied and truncated in place, because
   the service manager holds the file open: a few lines written during the copy can be lost.
 - **Update.** At start and every six hours the daemon asks the releases page (`AGENTD_RELEASE_URL`, else the `RELEASE_URL` baked in
@@ -200,7 +210,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
 `AGENTD_AGENT_<NAME>` (for example `AGENTD_AGENT_CLAUDE="/path/fake-agent --flag"`) replaces the command line
 of that agent and counts it as ready. Tests and the e2e suite use it to run a fake agent. It is not a user feature.
 Other seams, for tests only: `AGENTD_HOME` (replaces `~/.agentd`), `AGENTD_SERVICE_LABEL` and
-`AGENTD_SERVICE_DIR` (name and directory of the service definition, so a test never touches the user's service),
+`AGENTD_SERVICE_DIR` (name and directory of the service definition, so a test never touches the user's service), `AGENTD_APPS_DIR` (where the agentd app goes; an agentd with a moved `AGENTD_HOME` makes none without it),
 `AGENTD_SERVICE_MANAGER=loop|launchd|systemd` (skips detection), `AGENTD_QUICK_SECONDS` (the launcher's 30 s),
 `AGENTD_NODE_DIST` (the install script's Node.js mirror), `AGENTD_ADAPTERS=off` (no adapter install), `AGENTD_LOCAL_PORT` (the gateway's first port, `0` for any), `AGENTD_CONSENT=<program>` (runs in place of the dialog with the title and the text as arguments; exit 0 is Allow; never copied into a service definition), `AGENTD_TRAY` (`off` or a program), `AGENTD_ADAPTER_SPEC_<NAME>` (the package spec the
 adapter install gets, for example `file:/path/fake-adapter.tgz`; the install directory is named after a hash of it).

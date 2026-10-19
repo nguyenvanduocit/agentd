@@ -106,6 +106,9 @@ chmod 755 "$PKG/daemon.js"
 # The launcher install.sh puts at ~/.agentd/bin/agentd; the daemon refreshes it from here after an update.
 cp "$ROOT/daemon/launcher.sh" "$PKG/launcher.sh"
 chmod 755 "$PKG/launcher.sh"
+# The icons of the app that starts agentd again after a Stop (agentd.app, the desktop entry): drawn by tray/icon/gen.go.
+mkdir "$PKG/app"
+cp "$ROOT/daemon/app/agentd.icns" "$ROOT/daemon/app/agentd.png" "$PKG/app/"
 
 cat >"$PKG/package.json" <<JSON
 {
