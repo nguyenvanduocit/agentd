@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# agentd installer, served by {{.Origin}} for daemon {{.Version}}.
+#
+#   curl -fsSL {{.Origin}}/install.sh | bash -s -- --app <origin> --code <code>
+#
+# <origin> is the app that gave you the command (https://host[:port]) and <code> its one-time pairing code.
+#
+# It, in order: picks a Node.js (the machine's when it is >= 20 with npm, else a pinned LTS under
+# ~/.agentd/node), downloads the daemon from this server and checks its sha256, unpacks it into
+# ~/.agentd/daemon/<version> and points ~/.agentd/daemon/current at it, puts the launcher
+# ~/.agentd/bin/agentd in place, pairs this machine with the app when --code is given, and installs the daemon as a
+# service of your user (launchd on macOS, systemd --user on Linux) that starts at login and restarts when it dies.
+# Without --app and --code it starts the daemon that is already paired.
+#
+#   --no-service   install and pair only; start the daemon yourself with: ~/.agentd/bin/agentd
+#   --foreground   no service: run the daemon in this terminal (Ctrl-C stops it)
+#
+# It needs no sudo and writes only under your home directory: ~/.agentd, the daemon's config file, and the
+# service file (~/Library/LaunchAgents or ~/.config/systemd/user). Remove it all with:
+#   ~/.agentd/bin/agentd service uninstall && rm -rf ~/.agentd
+#
+# All logic is in main, called on the last line: a download that stops half way runs nothing.
+set -euo pipefail
+
+ORIGIN='{{.Origin}}'
+VERSION='{{.Version}}'
+TARBALL_URL='{{.TarballURL}}'
+SHA256='{{.SHA256}}'
+NODE_VERSION='{{.NodeVersion}}'
+NODE_MIN_MAJOR=20
+# Where Node.js comes from: the official release server. Tests point it at a local mirror.
+NODE_DIST="${AGENTD_NODE_DIST:-https://nodejs.org/dist}"
+# ~/.agentd; AGENTD_HOME moves it (the daemon and the launcher read the same variable).
+MC_HOME="${AGENTD_HOME:-${HOME:-/nonexistent}/.agentd}"
+
+TMP=""
+
+say() { printf 'agentd: %s\n' "$*" >&2; }
+die() { say "error: $*"; exit 1; }
+
+# tilde <path>: the path with $HOME written as ~, for messages.
+tilde() {
+  case "$1" in
+    "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+cleanup() {
+  if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
+  TMP=""
+}
+
+# fetch <url> <file>: https URLs are never downgraded, not even by a redirect.
+fetch() {
+  case "$1" in
+    https://*) curl -fsSL --proto '=https' --proto-redir '=https' --retry 2 -o "$2" "$1" || die "cannot download $1" ;;
+    *) curl -fsSL --retry 2 -o "$2" "$1" || die "cannot download $1" ;;
+  esac
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+check_system() {
+  case "$(uname -s)" in
+    Darwin | Linux) ;;
+    MINGW* | MSYS* | CYGWIN*) die "Windows is not supported: use WSL (open a WSL terminal and run this command there)" ;;
+    *) die "$(uname -s) is not supported: agentd runs on macOS and Linux" ;;
+  esac
+  local missing="" tool
+  for tool in curl tar; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    missing="$missing sha256sum-or-shasum"
+  fi
+  if [ -n "$missing" ]; then die "these tools are missing:$missing. Install them and run the command again"; fi
+  case "${HOME:-}" in
+    /*) [ -d "$HOME" ] || die "HOME ($HOME) is not a directory" ;;
+    *) die "HOME is not set to an absolute path" ;;
+  esac
+  case "$VERSION" in
+    '' | .* | *[!0-9A-Za-z.-]*) die "this installer carries a version that is not plain: $VERSION" ;;
+  esac
+  # These name the daemon directory's own entries, in any case: macOS file names ignore it. launcher.sh says the same.
+  case "$(printf '%s' "$VERSION" | tr '[:upper:]' '[:lower:]')" in
+    current | previous | rejected | crashes) die "this installer carries a version that is not plain: $VERSION" ;;
+  esac
+}
+
+# node_ok <node-binary> <npm-binary>: a Node >= NODE_MIN_MAJOR that comes with npm (the daemon installs its agent
+# adapters with npm).
+node_ok() {
+  local version major
+  [ -x "$1" ] && [ -x "$2" ] || return 1
+  version="$("$1" --version 2>/dev/null)" || return 1
+  major="${version#v}"
+  major="${major%%.*}"
+  case "$major" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$major" -ge "$NODE_MIN_MAJOR" ]
+}
+
+system_node_ok() {
+  local node npm
+  node="$(command -v node 2>/dev/null)" || return 1
+  npm="$(command -v npm 2>/dev/null)" || return 1
+  node_ok "$node" "$npm"
+}
+
+private_node_ok() {
+  local dir="$MC_HOME/node"
+  [ -x "$dir/bin/node" ] && [ -x "$dir/bin/npm" ] || return 1
+  [ "$("$dir/bin/node" --version 2>/dev/null)" = "v$NODE_VERSION" ]
+}
+
+is_musl() {
+  case "$(ldd --version 2>&1 || true)" in *musl*) return 0 ;; esac
+  return 1
+}
+
+install_node() {
+  local os arch name base expected actual
+  case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x64 ;;
+    arm64 | aarch64) arch=arm64 ;;
+    *) die "no Node.js $NODE_VERSION build for $(uname -m). Install Node.js $NODE_MIN_MAJOR or newer yourself (https://nodejs.org), then run the command again" ;;
+  esac
+  if [ "$os" = linux ] && is_musl; then
+    die "this Linux uses musl (Alpine): Node.js has no official build for it. Install Node.js $NODE_MIN_MAJOR or newer with npm yourself (apk add nodejs npm), then run the command again"
+  fi
+  name="node-v$NODE_VERSION-$os-$arch"
+  base="$NODE_DIST/v$NODE_VERSION"
+  say "no Node.js $NODE_MIN_MAJOR or newer with npm on this machine: installing Node.js v$NODE_VERSION (about 50 MB) into $(tilde "$MC_HOME")/node"
+  fetch "$base/SHASUMS256.txt" "$TMP/SHASUMS256.txt"
+  fetch "$base/$name.tar.gz" "$TMP/$name.tar.gz"
+  expected="$(awk -v f="$name.tar.gz" '$2 == f { print $1 }' "$TMP/SHASUMS256.txt")"
+  [ -n "$expected" ] || die "SHASUMS256.txt of Node.js v$NODE_VERSION does not list $name.tar.gz"
+  actual="$(sha256_of "$TMP/$name.tar.gz")"
+  [ "$actual" = "$expected" ] || die "the Node.js download is corrupt (sha256 $actual, expected $expected). Nothing was installed"
+  mkdir "$TMP/node"
+  tar -xzf "$TMP/$name.tar.gz" -C "$TMP/node" --strip-components=1 || die "cannot unpack the Node.js download"
+  [ "$("$TMP/node/bin/node" --version 2>/dev/null)" = "v$NODE_VERSION" ] || die "the Node.js download does not run on this machine"
+  rm -rf "$MC_HOME/node"
+  mv "$TMP/node" "$MC_HOME/node"
+}
+
+# choose_node leaves a Node.js >= 20 with npm where the launcher finds it: on the PATH of this shell (the machine's),
+# or in ~/.agentd/node (the launcher puts that directory first on PATH when it exists).
+choose_node() {
+  if system_node_ok; then
+    say "using Node.js $(node --version) from $(command -v node)"
+  elif private_node_ok; then
+    say "using Node.js v$NODE_VERSION from $(tilde "$MC_HOME")/node"
+  else
+    install_node
+  fi
+}
+
+# install_daemon unpacks the daemon into daemon/<version> (a temporary directory first, then one mv) and points
+# daemon/current at it. The version it replaces becomes `previous`, the launcher's rollback target.
+install_daemon() {
+  local dest="$MC_HOME/daemon/$VERSION" actual old=""
+  if [ -f "$dest/daemon.js" ]; then
+    say "daemon $VERSION is already installed"
+  else
+    say "downloading daemon $VERSION from $ORIGIN"
+    fetch "$TARBALL_URL" "$TMP/daemon.tgz"
+    actual="$(sha256_of "$TMP/daemon.tgz")"
+    [ "$actual" = "$SHA256" ] || die "the daemon download is corrupt or was changed on the way (sha256 $actual, expected $SHA256). Nothing was installed"
+    mkdir "$TMP/daemon"
+    tar -xzf "$TMP/daemon.tgz" -C "$TMP/daemon" --strip-components=1 || die "cannot unpack the daemon download"
+    [ -f "$TMP/daemon/daemon.js" ] || die "the daemon download has no daemon.js"
+    [ -f "$TMP/daemon/launcher.sh" ] || die "the daemon download has no launcher.sh"
+    mkdir -p "$MC_HOME/daemon"
+    rm -rf "$dest"
+    mv "$TMP/daemon" "$dest"
+  fi
+  old="$(readlink "$MC_HOME/daemon/current" 2>/dev/null || true)"
+  old="${old##*/}"
+  if [ -n "$old" ] && [ "$old" != "$VERSION" ] && [ -f "$MC_HOME/daemon/$old/daemon.js" ]; then
+    printf '%s\n' "$old" >"$MC_HOME/daemon/previous"
+  fi
+  rm -f "$MC_HOME/daemon/rejected" "$MC_HOME/daemon/crashes"
+  ln -sfn "$VERSION" "$MC_HOME/daemon/current"
+}
+
+# write_launcher puts the launcher that ships in the tarball at ~/.agentd/bin/agentd.
+write_launcher() {
+  mkdir -p "$MC_HOME/bin"
+  cp "$MC_HOME/daemon/$VERSION/launcher.sh" "$TMP/launcher"
+  chmod 755 "$TMP/launcher"
+  mv -f "$TMP/launcher" "$MC_HOME/bin/agentd"
+}
+
+usage() {
+  printf 'usage: install.sh [--app <origin> --code <pairing code>] [--no-service | --foreground]\n' >&2
+}
+
+# paired_config is where `pair` saves the token (the daemon's config file).
+paired_config() {
+  printf '%s/agentd/daemon.json' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+main() {
+  local app="" code="" service=1 foreground=0 launcher
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --app)
+        [ $# -ge 2 ] || { usage; exit 2; }
+        app="$2"
+        shift 2
+        ;;
+      --app=*)
+        app="${1#--app=}"
+        shift
+        ;;
+      --code)
+        [ $# -ge 2 ] || { usage; exit 2; }
+        code="$2"
+        shift 2
+        ;;
+      --code=*)
+        code="${1#--code=}"
+        shift
+        ;;
+      --no-service)
+        service=0
+        shift
+        ;;
+      --foreground)
+        service=0
+        foreground=1
+        shift
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        usage
+        exit 2
+        ;;
+    esac
+  done
+  local code_pattern='^[A-Za-z0-9-]{4,32}$'
+  local app_pattern='^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'
+  if [ -n "$code" ] && ! [[ "$code" =~ $code_pattern ]]; then
+    die "the pairing code looks wrong: copy the whole command again from the app's web UI"
+  fi
+  if [ -n "$app" ] && ! [[ "$app" =~ $app_pattern ]]; then
+    die "the app address looks wrong (want https://host[:port], no path): copy the whole command again from the app's web UI"
+  fi
+  if [ -n "$code" ] && [ -z "$app" ]; then
+    die "--code needs --app <origin>, the app that gave you the code: copy the whole command again from the app's web UI"
+  fi
+  if [ -n "$app" ] && [ -z "$code" ]; then
+    die "--app needs --code <pairing code>: copy the whole command again from the app's web UI"
+  fi
+
+  check_system
+  if [ -z "$code" ] && [ ! -f "$(paired_config)" ]; then
+    die "this machine is not paired yet: run the command from the app's web UI, it ends with --app <origin> --code <code>"
+  fi
+  trap cleanup EXIT
+  trap 'exit 1' INT TERM HUP
+  mkdir -p "$MC_HOME"
+  TMP="$(mktemp -d "$MC_HOME/.install.XXXXXX")"
+
+  choose_node
+  install_daemon
+  write_launcher
+  launcher="$MC_HOME/bin/agentd"
+
+  if [ -n "$code" ]; then
+    say "pairing this machine with $app"
+    "$launcher" pair --app "$app" --code "$code" </dev/null || die "pairing failed (see above). Copy a fresh command from the app's web UI and run it again"
+  fi
+
+  cleanup # exec below skips the EXIT trap
+  if [ "$foreground" = 1 ]; then
+    say "starting the daemon in this terminal: Ctrl-C stops it, $launcher starts it again"
+    exec "$launcher" </dev/null
+  fi
+  if [ "$service" = 0 ]; then
+    say "installed and paired; no service was installed. Start the daemon with: $launcher run"
+    return 0
+  fi
+  "$launcher" service install </dev/null || die "the daemon is installed and paired, but its service could not be started (see above). Run it in a terminal with: $launcher run"
+  say "done. Status: $launcher service status   Log: $launcher service logs -f"
+}
+
+main "$@"

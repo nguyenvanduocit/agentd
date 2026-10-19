@@ -1,0 +1,8 @@
+{
+  "name": "minimal-app-page",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agentd/client": "github:nguyenvanduocit/agentd-client#v0.2.1"
+  }
+}

@@ -1,0 +1,10 @@
+# The release private key and every build output stay out of git.
+.release-signing/
+.dev-signing/
+node_modules/
+dist/
+.air_tmp/
+cover.out
+*.log
+.DS_Store
+.superpowers/

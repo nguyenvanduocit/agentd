@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>minimal-app: an app on agentd</title>
+    <style>
+      body { font: 16px/1.4 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+      pre, code { background: #eee; padding: 0.15rem 0.3rem; border-radius: 3px; }
+      pre { padding: 0.6rem; white-space: pre-wrap; word-break: break-all; }
+      .error { color: #b00020; }
+      button { font: inherit; margin-right: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>minimal-app</h1>
+    <p>An app that runs its agents on your computer through <code>agentd</code>.</p>
+
+    <section id="local" data-testid="local" hidden>
+      <h2>A daemon is running on this computer</h2>
+      <p id="local-note"></p>
+      <button id="connect-local" data-testid="connect-local">Connect this computer</button>
+      <p id="local-error" class="error" data-testid="local-error"></p>
+    </section>
+
+    <section id="install" data-testid="install" hidden>
+      <h2>Install the daemon</h2>
+      <p>Run this in a terminal on the computer that will run your agents:</p>
+      <pre id="install-command" data-testid="install-command"></pre>
+      <p id="install-wait" data-testid="install-wait">Waiting for the daemon…</p>
+    </section>
+    <button id="install-start" data-testid="install-start" hidden>Show the install command</button>
+
+    <section>
+      <h2>Your daemons</h2>
+      <ul id="daemons" data-testid="daemons"></ul>
+      <button id="ping" data-testid="ping" hidden>Ask the agent to initialize</button>
+      <pre id="ping-result" data-testid="ping-result"></pre>
+    </section>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

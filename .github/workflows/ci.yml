@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generated:
+    name: Generated contract code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: ./scripts/check-generated.sh
+
+  go:
+    name: Go vet, test (hub, server, example)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./hub/ ./server/ ./contract/ ./cmd/... ./examples/...
+      - run: go test ./hub/ ./server/
+
+  daemon:
+    name: Daemon typecheck, lint, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test
+
+  sdk:
+    name: SDK typecheck, test, pack
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: ../../scripts/build-sdk.sh "$RUNNER_TEMP/dist"
+
+  tray:
+    name: Tray vet, test, cross-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tray
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tray/go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - run: ../scripts/build-tray.sh "$RUNNER_TEMP/tray"

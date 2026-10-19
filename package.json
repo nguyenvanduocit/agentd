@@ -1,0 +1,9 @@
+{
+  "name": "agentd-dev",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "devDependencies": {
+    "socketrpc-gen": "8.0.0"
+  }
+}
