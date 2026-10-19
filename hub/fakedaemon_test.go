@@ -297,7 +297,9 @@ func (d *fakeDaemon) closedSessions() []string {
 }
 
 func allAgents() []contract.AgentInfo {
-	return []contract.AgentInfo{{Name: "grok", Ready: true}, {Name: "claude", Ready: true}, {Name: "codex", Ready: false, Reason: "Node is not installed"}}
+	return []contract.AgentInfo{
+		{Name: "claude", Title: "Claude Code", Ready: true}, {Name: "codex", Title: "Codex", Ready: false, Reason: "Node is not installed"}, {Name: "grok", Title: "Grok", Ready: true},
+	}
 }
 
 // bridge is what `agentd-mcp` does: it carries MCP lines between an agent and the server over its own socket.

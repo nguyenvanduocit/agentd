@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,8 +48,41 @@ type env struct {
 	hub    *hub.Hub
 	tools  *fakeTools
 	tokens *hub.MemoryTokens
+	// outage is the store the hub reads tokens through: e.tokens, until a test makes its lookups fail.
+	outage *outage
 	clock  *clock
 	srv    *httptest.Server
+}
+
+var errDatabaseDown = errors.New("connection refused: the database is down")
+
+// outage is a token store whose lookups fail, as a database's do while it is down: by hash (the handshake's first
+// look) or by id (the look that a revoke did not race the handshake). With anyDelete it also accepts a Delete of a
+// daemon the user does not own, as a store with a missing user condition would.
+type outage struct {
+	hub.Tokens
+	byHash, byID, anyDelete atomic.Bool
+}
+
+func (o *outage) Delete(userID, id string) error {
+	if o.anyDelete.Load() {
+		return nil
+	}
+	return o.Tokens.Delete(userID, id)
+}
+
+func (o *outage) ByHash(hash string) (hub.Record, error) {
+	if o.byHash.Load() {
+		return hub.Record{}, errDatabaseDown
+	}
+	return o.Tokens.ByHash(hash)
+}
+
+func (o *outage) ByID(userID, id string) (hub.Record, error) {
+	if o.byID.Load() {
+		return hub.Record{}, errDatabaseDown
+	}
+	return o.Tokens.ByID(userID, id)
 }
 
 // fakeTools is the MCP tool server of an app: it knows which session grants exist and for whom, and serves nothing.
@@ -98,15 +132,10 @@ func newEnvWith(t *testing.T, extra hub.Options) env {
 func buildEnv(t *testing.T, extra hub.Options, withTools bool) env {
 	t.Helper()
 	e := env{tools: newFakeTools(), tokens: hub.NewMemoryTokens(), clock: &clock{t: time.Now()}}
-	extra.Tokens, extra.Now = e.tokens, e.clock.now
+	e.outage = &outage{Tokens: e.tokens}
+	extra.Tokens, extra.Now = e.outage, e.clock.now
 	if withTools {
 		extra.Tools = e.tools
-	}
-	extra.AgentOrder, extra.AgentTitle = []string{"claude", "codex", "grok"}, func(name string) string {
-		if title, ok := map[string]string{"claude": "Claude Code", "codex": "Codex", "grok": "Grok"}[name]; ok {
-			return title
-		}
-		return name
 	}
 	e.hub = hub.New(extra)
 	opts := socket.DefaultServerOptions()
@@ -577,7 +606,7 @@ func TestADaemonIsOnlineAfterHelloAndOfflineAfterItLeaves(t *testing.T) {
 	if online.ID != id || online.Name != "laptop" || online.Hostname != "laptop-renamed" || online.Version != "0.1.0" || online.OS != "darwin" || len(online.Agents) != 3 {
 		t.Fatalf("online = %+v: the name is the user's, the hostname the machine's", online)
 	}
-	// The agents the server knows come in their fixed order, with titles and the daemon's reason.
+	// The agents come as the daemon reported them: its order, its titles and its reasons.
 	if a := online.Agents; a[0].Name != "claude" || a[0].Title != "Claude Code" || a[1].Name != "codex" || a[1].Ready || a[1].Reason != "Node is not installed" || a[2].Name != "grok" {
 		t.Fatalf("agents = %+v", a)
 	}
@@ -702,6 +731,28 @@ func TestAnotherUsersDaemonCannotBeRenamedOrRevoked(t *testing.T) {
 	got := waitDaemon(t, e.hub, alice, d.id, "online")
 	if got.Name != "laptop" || !d.sock.Connected() {
 		t.Fatalf("alice's daemon = %+v connected=%v: another user's calls changed it", got, d.sock.Connected())
+	}
+}
+
+// The hub does not rely on the store alone to keep one user off another's daemon: a Delete the store wrongly accepts
+// still leaves the other user's socket and bridges alone.
+func TestARevokeTheStoreWronglyAcceptsDoesNotDropAnotherUsersDaemon(t *testing.T) {
+	e := newEnv(t)
+	d := e.online(t, alice)
+	_, bridgeSock, refused := bridgeSocket(t, e.srv.URL, d.token, e.tools.Open(alice, d.id).ID)
+	if refused != nil {
+		t.Fatalf("the bridge was refused: %v", refused)
+	}
+	e.outage.anyDelete.Store(true)
+	if _, err := e.hub.Revoke(bob, d.id); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // a disconnect, had one been sent, reaches the client by now
+	if !d.sock.Connected() || !bridgeSock.Connected() {
+		t.Fatalf("bob's revoke dropped alice's daemon (connected=%v) or its bridge (connected=%v)", d.sock.Connected(), bridgeSock.Connected())
+	}
+	if got := e.hub.Online(alice); len(got) != 1 || got[0].ID != d.id {
+		t.Fatalf("Online(alice) = %+v: bob's revoke took alice's daemon offline", got)
 	}
 }
 
@@ -1032,6 +1083,62 @@ func TestALargeLineGoesThrough(t *testing.T) {
 	}
 }
 
+func TestASessionWhoseOutputIsNotReadEndsInsteadOfGrowing(t *testing.T) {
+	const limit = 1 << 20
+	e := newEnvWith(t, hub.Options{MaxUnreadBytes: limit})
+	d := e.online(t, alice)
+	conn, err := e.hub.Open(context.Background(), alice, d.id, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conn.Close)
+	sid, _, _ := strings.Cut(d.openedSessions()[0], ":")
+	line := strings.Repeat("x", 64<<10)
+	for range limit/len(line) + 1 { // nobody reads: one line more than the session keeps unread
+		d.frame(sid, contract.FrameKindOut, line, 0)
+	}
+	select {
+	case <-conn.Done():
+	case <-time.After(waitFor):
+		t.Fatal("a session nobody reads kept growing: Done never closed")
+	}
+	if n, err := io.Copy(io.Discard, conn); err != nil || n != 0 {
+		t.Fatalf("read %d bytes, %v: the ended session's unread output must be dropped, then EOF", n, err)
+	}
+	if got := conn.Stderr(); !strings.Contains(got, "not read") {
+		t.Fatalf("stderr = %q: it must say why the session ended", got)
+	}
+	deadline := time.Now().Add(waitFor)
+	for !slices.Contains(d.closedSessions(), sid) {
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon was never told to end the agent")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Under the bound, output nobody has read yet is kept whole: the session ends only past it.
+func TestOutputUpToTheUnreadBoundIsKept(t *testing.T) {
+	const limit = 1 << 20
+	e := newEnvWith(t, hub.Options{MaxUnreadBytes: limit})
+	d := e.online(t, alice)
+	conn, err := e.hub.Open(context.Background(), alice, d.id, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conn.Close)
+	sid, _, _ := strings.Cut(d.openedSessions()[0], ":")
+	line := strings.Repeat("x", 64<<10-1) // with its newline, limit/64 KiB lines fill the bound exactly
+	for range limit / (len(line) + 1) {
+		d.frame(sid, contract.FrameKindOut, line, 0)
+	}
+	d.frame(sid, contract.FrameKindExit, "", 0)
+	all, err := io.ReadAll(conn)
+	if err != nil || len(all) != limit {
+		t.Fatalf("read %d bytes, %v, want %d", len(all), err, limit)
+	}
+}
+
 func TestAnExitFrameEndsTheStreamAndKeepsStderr(t *testing.T) {
 	e := newEnv(t)
 	d := e.online(t, alice)
@@ -1329,6 +1436,24 @@ func TestARevokedTokenIsRefusedWithAnUnmistakableUnauthorized(t *testing.T) {
 	}
 }
 
+func TestATokenLookupThatFailsIsRefusedAsUnavailableSoTheDaemonRetries(t *testing.T) {
+	e := newEnv(t)
+	d := e.online(t, alice)
+	d.disconnect()
+	auth := map[string]any{"role": "daemon", "token": d.token}
+	for name, down := range map[string]*atomic.Bool{"by hash": &e.outage.byHash, "by id": &e.outage.byID} {
+		down.Store(true)
+		_, refused := dial(t, e.srv.URL, auth)
+		down.Store(false)
+		if got := fmt.Sprint(refused); !strings.Contains(got, "unavailable") || strings.Contains(got, "unauthorized") {
+			t.Fatalf("lookup %s failing: refused = %v, want unavailable: the token is fine, the store is not", name, refused)
+		}
+	}
+	if _, refused := dial(t, e.srv.URL, auth); refused != nil {
+		t.Fatalf("the store is back: refused = %v, want the same token accepted", refused)
+	}
+}
+
 // changes records the calls of Hub.OnAgentsChanged.
 type changes struct {
 	mu   sync.Mutex
@@ -1369,7 +1494,7 @@ func TestAnAgentThatBecomesReadyShowsAtOnceInTheListTheAgentsAndOpen(t *testing.
 	e.hub.OnAgentsChanged(seen.add)
 	d := e.online(t, alice) // codex is not ready: its adapter is installing
 	seen.waitFor(t, 1)      // hello counts: the daemon may be a new process
-	installing := []contract.AgentInfo{{Name: "claude", Ready: true}, {Name: "codex", Ready: false, Reason: "installing the Codex adapter…"}}
+	installing := []contract.AgentInfo{{Name: "claude", Title: "Claude Code", Ready: true}, {Name: "codex", Title: "Codex", Ready: false, Reason: "installing the Codex adapter…"}}
 	d.agents(installing)
 	waitAgents(t, e.hub, alice, d.id, func(a map[string]bool) bool { return !a["codex"] && a["claude"] && len(a) == 2 })
 	seen.waitFor(t, 2)
@@ -1467,6 +1592,23 @@ func TestOnlyAConnectionCanReportItsOwnDaemonsAgents(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if got := agentsOf(e.list(t, alice), mine.id); !got["claude"] {
 		t.Fatalf("a bridge changed the daemon's agents: %v", got)
+	}
+}
+
+func TestTheListShowsTheDaemonsAgentsInItsOrderAndAnOlderDaemonsByName(t *testing.T) {
+	e := newEnv(t)
+	token := e.pair(t, alice)
+	d := connectDaemon(t, e.srv.URL, token)
+	id := e.idOf(t, token)
+	// A daemon older than 0.3 reports no title: its agents show by name.
+	d.hello(contract.Hello{Version: "0.2.0", Hostname: "laptop", Os: "darwin", Arch: "arm64", Agents: []contract.AgentInfo{
+		{Name: "grok", Title: "Grok", Ready: true}, {Name: "claude", Ready: true},
+	}})
+	waitDaemon(t, e.hub, alice, id, "online")
+	got := e.list(t, alice).Daemons[0].Agents
+	want := []hub.Agent{{Name: "grok", Title: "Grok", Ready: true}, {Name: "claude", Title: "claude", Ready: true}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("agents = %+v, want %+v", got, want)
 	}
 }
 

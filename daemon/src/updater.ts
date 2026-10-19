@@ -7,7 +7,7 @@ import { backoffDelay } from "./core/backoff.ts"
 import { versionDir, type Layout } from "./core/layout.ts"
 import { signatureProblem } from "./core/signature.ts"
 import { decide, parseVersionRecord, RETRY, VERSION_PATTERN, type Offer } from "./core/update.ts"
-import { fetchFollowing } from "./http.ts"
+import { fetchFollowing, readCapped } from "./http.ts"
 import { say, warn } from "./log.ts"
 
 const run = promisify(execFile)
@@ -37,8 +37,7 @@ function pointCurrent(l: Layout, version: string): void {
 async function download(origin: string, offer: Offer, dir: string, fetchFn: typeof fetch): Promise<string> {
   const res = await fetchFollowing(fetchFn, `${origin}${offer.url}`, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS))
   if (!res.ok) throw new Error(`${origin}${offer.url}: HTTP ${res.status}`)
-  const body = Buffer.from(await res.arrayBuffer())
-  if (body.length > MAX_TARBALL_BYTES) throw new Error(`the download is ${body.length} bytes: too large for a daemon`)
+  const body = await readCapped(res, MAX_TARBALL_BYTES)
   const actual = createHash("sha256").update(body).digest("hex")
   if (actual !== offer.sha256) throw new Error(`sha256 is ${actual}, the server said ${offer.sha256}`)
   const file = join(dir, "pkg.tgz")

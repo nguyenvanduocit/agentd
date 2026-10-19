@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	_ "embed"
 	"fmt"
 	"log"
 	"os"
@@ -13,9 +12,6 @@ import (
 
 	"github.com/egoist/mygo"
 )
-
-//go:embed icon.png
-var icon []byte
 
 var out sync.Mutex
 
@@ -49,7 +45,7 @@ func menuFor(s State) *mygo.Menu { return mygo.NewMenu(toItems(BuildMenu(s))) }
 func run() {
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		Icon:           icon,
-		IconIsTemplate: true,
+		IconIsTemplate: iconIsTemplate,
 		ToolTip:        "agentd",
 		Menu:           menuFor(State{Version: "starting"}),
 	})

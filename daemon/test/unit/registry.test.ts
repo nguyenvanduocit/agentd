@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { addApp, addBrowser, emptyRegistry, hasApp, hasBrowser, parseRegistry, removeOrigin, selectApp, selectApps } from "../../src/core/registry.ts"
+import { addApp, addBrowser, emptyRegistry, hasApp, hasBrowser, parseRegistry, removeOrigin, selectApp, selectApps, withdrawn } from "../../src/core/registry.ts"
 
 const a = { server: "https://a.example", token: "ta" }
 const b = { server: "https://b.example", token: "tb" }
@@ -46,6 +46,12 @@ describe("registry edits", () => {
     expect(hasApp(r, b.server)).toBe(false)
     expect(hasBrowser(r, "https://c.example")).toBe(true)
     expect(hasBrowser(r, a.server)).toBe(false)
+  })
+
+  test("withdrawn is what runs for an origin the registry no longer has: linked apps and page sockets", () => {
+    const r = addBrowser(addApp(emptyRegistry(), a), "https://c.example", "t")
+    expect(withdrawn(r, [a.server, b.server], ["https://c.example", "https://d.example"])).toEqual({ apps: [b.server], pages: ["https://d.example"] })
+    expect(withdrawn(r, [a.server], ["https://c.example"])).toEqual({ apps: [], pages: [] })
   })
 
   test("a repeated browser grant is stored once", () => {

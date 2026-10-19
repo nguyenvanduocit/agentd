@@ -147,6 +147,8 @@ func (h *Hub) takeCode(key, remoteIP string) (string, error) {
 	c := h.codes[key]
 	if c == nil || !now.Before(c.expires) {
 		h.failures[remoteIP] = append(recent, now)
+		// The address is the limit's key: behind a proxy, this line shows whether the client's header is what counts.
+		log.Printf("daemon: pair: wrong pairing code from %s (%d in the last minute)", remoteIP, len(h.failures[remoteIP]))
 		return "", errBadCode
 	}
 	c.timer.Stop()

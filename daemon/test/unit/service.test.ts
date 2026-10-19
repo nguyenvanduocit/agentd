@@ -43,6 +43,10 @@ describe("passthroughEnv", () => {
       }),
     ).toEqual({ PATH: "/opt/homebrew/bin:/usr/bin", XDG_CONFIG_HOME: "/c", AGENTD_HOME: "/mc", AGENTD_AGENT_CLAUDE: "/fake" })
   })
+
+  test("the consent seam never goes into the service: an installed daemon always asks the user", () => {
+    expect(passthroughEnv({ PATH: "/usr/bin", AGENTD_CONSENT: "/usr/bin/true" })).toEqual({ PATH: "/usr/bin" })
+  })
 })
 
 describe("passthroughEnv and the tray", () => {

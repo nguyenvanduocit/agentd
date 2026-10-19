@@ -16,11 +16,15 @@ done
 free_port() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 WORK="$(mktemp -d)"
 DIST="$WORK/dist"
-mkdir -p "$DIST" "$WORK/empty-tray"
+mkdir -p "$DIST" "$WORK/empty-tray" "$WORK/machines"
+RUN="run$$-$RANDOM"
 PIDS=()
+# A scenario's machines (HOME, daemon) live under $WORK/machines and their processes carry /agentd-e2e-$RUN- in their
+# command lines: however the run ends (a failed build, a scenario that throws, Ctrl-C), none of them is left behind.
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  pkill -KILL -f "/agentd-e2e-$RUN-" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -29,7 +33,6 @@ RPORT="$(free_port)"
 APORT="$(free_port)"
 AGENTD_URL="http://127.0.0.1:$RPORT"
 APP_URL="http://127.0.0.1:$APORT"
-RUN="run$$-$RANDOM"
 
 # The release: daemon 0.0.1 (no tray: the scenario does not look at it) and the server.
 VERSION=0.0.1 RELEASE_URL="$AGENTD_URL" TRAY_DIR="$WORK/empty-tray" ./scripts/build-daemon.sh "$DIST" >&2
@@ -50,7 +53,7 @@ status=0
 for scenario in e2e/${1:-*}.mjs; do
   case "$scenario" in e2e/lib/*) continue ;; esac
   echo "== $scenario"
-  cat e2e/lib/prelude.mjs "$scenario" | sed -e "s#__APP_URL__#$APP_URL#g" -e "s#__AGENTD_URL__#$AGENTD_URL#g" -e "s#__DIST__#$DIST#g" -e "s#__EMPTY_TRAY__#$WORK/empty-tray#g" -e "s#__ROOT__#$ROOT#g" \
+  cat e2e/lib/prelude.mjs "$scenario" | sed -e "s#__APP_URL__#$APP_URL#g" -e "s#__AGENTD_URL__#$AGENTD_URL#g" -e "s#__DIST__#$DIST#g" -e "s#__EMPTY_TRAY__#$WORK/empty-tray#g" -e "s#__ROOT__#$ROOT#g" -e "s#__WORK__#$WORK#g" \
     -e "s#__RUN__#$RUN#g" -e "s#__FAKE_AGENT__#$WORK/fake-agent#g" -e "s#__PATH__#$SED_PATH#g" | ego-browser nodejs || { status=1; echo "-- server log (tail)"; tail -n 15 "$WORK/server.log"; echo "-- app log (tail)"; tail -n 15 "$WORK/app.log"; }
   # A scenario that throws midway never reaches task.finish: close the spaces this run opened.
   sed "s#__RUN__#$RUN#g" <<'JS' | ego-browser nodejs >/dev/null 2>&1 || true

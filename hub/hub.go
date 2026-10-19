@@ -46,20 +46,26 @@ type Tools interface {
 	Serve(ctx context.Context, userID, grantID string, t mcp.Transport) error
 }
 
+// BridgeCommand is the stdio MCP server an app puts in the session/new of an agent so that the agent reaches the app's
+// Tools for grantID: the daemon puts agentd-mcp on the PATH of every agent it starts, and that command carries the MCP
+// lines to the app over a socket of its own, which Tools.Owns admits.
+func BridgeCommand(grantID string) (command string, args []string) {
+	return "agentd-mcp", []string{"--session", grantID}
+}
+
 type Options struct {
 	Tokens Tokens
 	// Tools serves the MCP tools of an agent session to the bridge the daemon starts for it. Nil: bridges are refused.
 	Tools Tools
-	// AgentOrder lists the agents the app knows, in the order its UI shows them; agents a daemon reports that are not
-	// listed follow, in the order reported.
-	AgentOrder []string
-	// AgentTitle is the name of an agent as the user reads it ("claude" is "Claude"); nil keeps the name.
-	AgentTitle func(name string) string
 	// LatestVersion is the newest daemon release the app knows of, for List.LatestVersion; nil says none.
+	// release.Watch(...).Version reads it from agentd's releases page without blocking.
 	LatestVersion func() string
 	// ClientIPHeader names the request header in which a trusted proxy puts the client's address; empty counts the
 	// connection's own address. Set it only when every request passes through that proxy, which overwrites the header.
 	ClientIPHeader string
+	// MaxUnreadBytes bounds the agent output a session holds that the app has not read; a session past it ends. Zero is
+	// 64 MiB, which still holds one message of MaxMessageBytes.
+	MaxUnreadBytes int
 	// Now is the clock (default time.Now); tests set it.
 	Now func() time.Time
 }
@@ -105,6 +111,9 @@ type Hub struct {
 func New(opts Options) *Hub {
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.MaxUnreadBytes <= 0 {
+		opts.MaxUnreadBytes = defaultMaxUnreadBytes
 	}
 	return &Hub{
 		opts: opts, peers: map[string]*peer{}, bridges: map[string]map[*bridge]struct{}{}, sessions: map[string]*session{},
@@ -261,11 +270,11 @@ func (h *Hub) checkReady(agents []contract.AgentInfo, daemonName, agentName stri
 	i := slices.IndexFunc(agents, func(a contract.AgentInfo) bool { return a.Name == agentName })
 	switch {
 	case i < 0:
-		return fmt.Errorf("%s does not offer %s", daemonName, h.title(agentName))
+		return fmt.Errorf("%s does not offer %s", daemonName, agentName)
 	case !agents[i].Ready && agents[i].Reason != "":
-		return fmt.Errorf("%s is not ready on %s: %s", h.title(agentName), daemonName, agents[i].Reason)
+		return fmt.Errorf("%s is not ready on %s: %s", title(agents[i]), daemonName, agents[i].Reason)
 	case !agents[i].Ready:
-		return fmt.Errorf("%s is not ready on %s", h.title(agentName), daemonName)
+		return fmt.Errorf("%s is not ready on %s", title(agents[i]), daemonName)
 	}
 	return nil
 }
@@ -449,14 +458,25 @@ func (h *Hub) Revoke(userID, id string) (List, error) {
 		}
 		return List{}, fmt.Errorf("disconnect the daemon: %w", err)
 	}
+	// Tokens is the app's code: a Delete that forgot the user condition must not let one user cut off another's
+	// daemon, so only the sockets of userID are closed.
 	h.mu.Lock()
 	p := h.peers[id]
-	delete(h.peers, id) // offline from this moment, before its socket has finished closing
+	if p != nil && p.userID == userID {
+		delete(h.peers, id) // offline from this moment, before its socket has finished closing
+	} else {
+		p = nil
+	}
 	var bridges []*bridge
 	for b := range h.bridges[id] {
-		bridges = append(bridges, b)
+		if b.userID == userID {
+			bridges = append(bridges, b)
+			delete(h.bridges[id], b)
+		}
 	}
-	delete(h.bridges, id)
+	if len(h.bridges[id]) == 0 {
+		delete(h.bridges, id)
+	}
 	h.mu.Unlock()
 	if p != nil {
 		p.raw.Disconnect(true)
@@ -489,29 +509,14 @@ func (h *Hub) Rename(userID, id, name string) (List, error) {
 	return h.List(userID)
 }
 
-// title is an agent's name as the user reads it.
-func (h *Hub) title(name string) string {
-	if h.opts.AgentTitle == nil {
-		return name
-	}
-	return h.opts.AgentTitle(name)
-}
+// title is an agent's name as the user reads it, as its daemon reported it; a daemon older than 0.3 reports none.
+func title(a contract.AgentInfo) string { return cmp.Or(a.Title, a.Name) }
 
-// orderedAgents lists what the daemon reported, the agents the app knows first in their fixed order.
-func (h *Hub) orderedAgents(reported []contract.AgentInfo) []Agent {
-	out := make([]Agent, 0, len(reported))
-	add := func(a contract.AgentInfo) {
-		out = append(out, Agent{Name: a.Name, Title: h.title(a.Name), Ready: a.Ready, Reason: a.Reason})
-	}
-	for _, name := range h.opts.AgentOrder {
-		if i := slices.IndexFunc(reported, func(a contract.AgentInfo) bool { return a.Name == name }); i >= 0 {
-			add(reported[i])
-		}
-	}
-	for _, a := range reported {
-		if !slices.Contains(h.opts.AgentOrder, a.Name) {
-			add(a)
-		}
+// agentsOf is what the daemon reported, in its order.
+func agentsOf(reported []contract.AgentInfo) []Agent {
+	out := make([]Agent, len(reported))
+	for i, a := range reported {
+		out[i] = Agent{Name: a.Name, Title: title(a), Ready: a.Ready, Reason: a.Reason}
 	}
 	return out
 }
@@ -546,7 +551,7 @@ func (h *Hub) List(userID string) (List, error) {
 		}
 		if p := h.peers[rec.ID]; p != nil && p.ready {
 			info.State, info.Hostname, info.Version, info.OS = stateOnline, p.info.Hostname, p.info.Version, p.info.Os
-			info.Agents, info.Managed, info.Sessions = h.orderedAgents(p.info.Agents), p.info.Managed, sessions[p]
+			info.Agents, info.Managed, info.Sessions = agentsOf(p.info.Agents), p.info.Managed, sessions[p]
 		}
 		list.Daemons = append(list.Daemons, info)
 	}

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterAll, setDefaultTimeout } from "bun:test"
 import { promisify } from "node:util"
+import type { AgentInfo, Hello } from "../../../contract/define.acp.ts"
 import { publicKeyBase64, publicKeyPem, signRelease } from "../../../scripts/sign-daemon.ts"
 
 setDefaultTimeout(90_000)
@@ -118,20 +119,8 @@ export interface Frame {
   code: number
 }
 
-export interface Hello {
-  version: string
-  hostname: string
-  os: string
-  arch: string
-  agents: { name: string; ready: boolean; reason: string }[]
-  managed: boolean
-}
-
-export interface AgentInfo {
-  name: string
-  ready: boolean
-  reason: string
-}
+/** What the server double reports is what the daemon sent: the contract's own types. */
+export type { AgentInfo, Hello }
 
 export interface Status {
   connected: boolean
@@ -193,6 +182,8 @@ export class TestServer {
   stopDaemon = () => this.call<Reply<boolean>>("/ctl/stop", {})
   /** Revokes the token: the daemon's socket is dropped and every later handshake is refused. */
   revoke = () => this.call<boolean>("/ctl/revoke", {})
+  /** Refuses the next `n` handshakes as "unavailable", as the hub does while its token store is down. */
+  unavailable = (n: number) => this.call<boolean>("/ctl/unavailable", { n })
   kickBridges = () => this.call<number>("/ctl/kick?role=mcp", {})
 
   /** Waits until a daemon is connected and has said hello `n` times. */

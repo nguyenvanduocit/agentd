@@ -20,6 +20,6 @@ export async function runApps(cmd: Extract<Command, { kind: "apps" }>): Promise<
     return 1
   }
   await saveRegistry(file, removeOrigin(registry, origin))
-  say(`disconnected ${origin}; a running daemon applies it after: agentd service restart`)
+  say(`disconnected ${origin}; a running daemon ends its sessions within a few seconds`)
   return 0
 }

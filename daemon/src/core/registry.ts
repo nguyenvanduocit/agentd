@@ -75,6 +75,14 @@ export function hasBrowser(r: Registry, origin: string): boolean {
   return r.browsers.some((g) => g.origin === origin)
 }
 
+/**
+ * What still runs for an origin that `r` no longer has, as `agentd apps remove` leaves it: of the `linked` app servers
+ * and the origins with open `pages`, those to end.
+ */
+export function withdrawn(r: Registry, linked: string[], pages: string[]): { apps: string[]; pages: string[] } {
+  return { apps: linked.filter((s) => !hasApp(r, s)), pages: pages.filter((o) => !hasBrowser(r, o)) }
+}
+
 /** Every app, or only the one with the origin `server`. */
 export function selectApps(r: Registry, server: string | undefined): App[] {
   if (server === undefined) return r.apps

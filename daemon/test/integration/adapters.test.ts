@@ -67,7 +67,7 @@ describe("a daemon with its adapter installed in the background", () => {
     const spec = fakeAdapter(claude.pkg, { installSeconds: 3 })
     rig = await Rig.start({ env: adapterEnv(spec) })
     const s = rig.server
-    expect(await agentsOf(s)).toEqual({ name: "claude", ready: false, reason: "installing the Claude adapter (first run only, this can take several minutes)" })
+    expect(await agentsOf(s)).toEqual({ name: "claude", title: "Claude Code", ready: false, reason: "installing the Claude adapter (first run only, this can take several minutes)" })
 
     const [a, b] = await Promise.all([s.open("one", "claude"), s.open("two", "claude")])
     expect(a).toEqual({ error: expect.stringContaining("the claude adapter is still installing on this machine") })
@@ -75,7 +75,7 @@ describe("a daemon with its adapter installed in the background", () => {
     expect(await s.frames()).toEqual([])
 
     await waitFor("agents: claude ready", async () => (await lastList(s))?.ready === true, 60_000)
-    expect(await lastList(s)).toEqual({ name: "claude", ready: true, reason: "" })
+    expect(await lastList(s)).toEqual({ name: "claude", title: "Claude Code", ready: true, reason: "" })
 
     const opened = await rig.open("three", "claude")
     expect(opened.pid).toBeGreaterThan(0)
@@ -139,7 +139,7 @@ describe("a daemon with its adapter installed in the background", () => {
 
   test("a seam command makes the agent ready at once and installs nothing", async () => {
     rig = await Rig.start({ claude: "sh -c 'sleep 60'" })
-    expect(await agentsOf(rig.server)).toEqual({ name: "claude", ready: true, reason: "" })
+    expect(await agentsOf(rig.server)).toEqual({ name: "claude", title: "Claude Code", ready: true, reason: "" })
     await sleep(500)
     expect(existsSync(join(rig.box.root, "mc", "adapters"))).toBe(false)
   })
@@ -210,7 +210,7 @@ describe("an install goes down with the daemon", () => {
 describe("AGENTD_ADAPTERS=off", () => {
   test("an agent without a seam says the install is disabled; nothing is installed, npm does not run", async () => {
     rig = await Rig.start({ env: { AGENTD_ADAPTERS: "off", AGENTD_AGENT_CLAUDE: "", AGENTD_ADAPTER_SPEC_CLAUDE: fakeAdapter(claude.pkg, { installSeconds: 30 }) } })
-    expect(await agentsOf(rig.server)).toEqual({ name: "claude", ready: false, reason: "adapter install is disabled" })
+    expect(await agentsOf(rig.server)).toEqual({ name: "claude", title: "Claude Code", ready: false, reason: "adapter install is disabled" })
     expect(await rig.server.open("x", "claude")).toEqual({ error: expect.stringContaining("agent claude is not ready: adapter install is disabled") })
     await sleep(500)
     expect(existsSync(join(rig.box.root, "mc", "adapters"))).toBe(false)
@@ -218,7 +218,7 @@ describe("AGENTD_ADAPTERS=off", () => {
 
   test("a seam still wins", async () => {
     rig = await Rig.start({ claude: "sh -c 'sleep 60'", env: { AGENTD_ADAPTERS: "off" } })
-    expect(await agentsOf(rig.server)).toEqual({ name: "claude", ready: true, reason: "" })
+    expect(await agentsOf(rig.server)).toEqual({ name: "claude", title: "Claude Code", ready: true, reason: "" })
   })
 })
 

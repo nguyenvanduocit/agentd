@@ -6,6 +6,12 @@ import type { FrameSink } from "./session.ts"
 
 const RECONNECT: BackoffOptions = { baseMs: 500, maxMs: 15_000, jitter: 0.5 }
 
+/**
+ * What the hub answers a token it will never accept (unknown or revoked). Any other refusal, such as `unavailable`
+ * (the server could not check the token now), is retried.
+ */
+export const REFUSED = "unauthorized"
+
 export interface LinkOptions {
   /** The server origin (http or https). */
   server: string
@@ -14,12 +20,9 @@ export interface LinkOptions {
   reconnectionAttempts?: number
 }
 
-/**
- * Opens the socket to the /agentd namespace. The server ending the socket ("io server disconnect") is not retried by
- * socket.io itself, so it is retried here with the same backoff.
- */
+/** Opens the socket to the /agentd namespace. */
 export function openSocket(o: LinkOptions): Socket {
-  const socket = io(namespaceUrl(o.server), {
+  return io(namespaceUrl(o.server), {
     transports: ["websocket"],
     auth: o.auth,
     reconnection: true,
@@ -28,15 +31,6 @@ export function openSocket(o: LinkOptions): Socket {
     randomizationFactor: RECONNECT.jitter,
     reconnectionAttempts: o.reconnectionAttempts ?? Infinity,
   })
-  let attempt = 0
-  socket.on("connect", () => {
-    attempt = 0
-  })
-  socket.on("disconnect", (reason) => {
-    if (reason !== "io server disconnect") return
-    setTimeout(() => socket.connect(), backoffDelay(attempt++, RECONNECT))
-  })
-  return socket
 }
 
 /** What the daemon's side of one connection reports. */
@@ -44,34 +38,57 @@ export interface LinkEvents {
   /** Every (re)connect, after the handshake was accepted. */
   onConnect(): void
   onDisconnect(reason: string): void
-  /** Network trouble; the link retries by itself. */
+  /** Network trouble, or a server that could not take the handshake now; the link retries by itself. */
   onTrouble(message: string): void
-  /** The server refused the handshake. Retrying cannot help: the token is wrong or revoked. */
+  /** The server refused the token. Retrying cannot help: it is wrong or revoked. */
   onRejected(message: string): void
+  /** The link stopped retrying after the socket's `reconnectionAttempts` failures. Never, when those are unlimited. */
+  onGiveUp?(): void
 }
 
 /** The daemon's connection: the rpc client plus a frame sink tied to the current connection. */
 export class Link {
   readonly rpc: RpcClient
   private epoch = 0
+  private attempt = 0
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+  private closed = false
 
   constructor(
     readonly socket: Socket,
-    events: LinkEvents,
+    private readonly events: LinkEvents,
   ) {
     this.rpc = createRpcClient(socket)
     socket.on("connect", () => {
+      this.attempt = 0
       this.epoch++
       events.onConnect()
     })
     socket.on("disconnect", (reason) => {
       this.epoch++
       events.onDisconnect(reason)
+      if (reason === "io server disconnect") this.retry()
     })
     socket.on("connect_error", (err) => {
-      if (socket.active) events.onTrouble(err.message)
-      else events.onRejected(err.message)
+      // An inactive socket is one whose handshake the server refused: socket.io does not retry those.
+      if (!socket.active && err.message === REFUSED) {
+        events.onRejected(err.message)
+        return
+      }
+      events.onTrouble(err.message)
+      if (!socket.active) this.retry()
     })
+    socket.io.on("reconnect_failed", () => events.onGiveUp?.())
+  }
+
+  /** Retries, with the backoff socket.io uses, what socket.io does not: a socket the server ended or refused. */
+  private retry(): void {
+    if (this.closed) return
+    if (this.attempt >= this.socket.io.reconnectionAttempts()) {
+      this.events.onGiveUp?.()
+      return
+    }
+    this.retryTimer = setTimeout(() => this.socket.connect(), backoffDelay(this.attempt++, RECONNECT))
   }
 
   /**
@@ -89,6 +106,8 @@ export class Link {
 
   /** Closes the socket; resolves once the connection is closed (what was queued before has gone out), or after `graceMs`. */
   close(graceMs = 1000): Promise<void> {
+    this.closed = true
+    clearTimeout(this.retryTimer)
     this.rpc.dispose()
     return new Promise((resolve) => {
       if (!this.socket.connected) {

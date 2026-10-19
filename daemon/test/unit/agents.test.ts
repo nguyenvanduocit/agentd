@@ -45,21 +45,31 @@ describe("the pinned versions follow agent/package.json", () => {
 
 describe("readiness", () => {
   test("claude and codex are ready when installed, not ready with the install's reason otherwise", () => {
-    expect(agentStatus("claude", {}, noPrograms, ready("claude"))).toEqual({ name: "claude", ready: true, reason: "" })
+    expect(agentStatus("claude", {}, noPrograms, ready("claude"))).toEqual({ name: "claude", title: "Claude Code", ready: true, reason: "" })
     expect(agentStatus("codex", {}, everything, noAdapter)).toEqual({
       name: "codex",
+      title: "Codex",
       ready: false,
       reason: "installing the Codex adapter (first run only, this can take several minutes)",
     })
     expect(agentStatus("codex", {}, everything, () => ({ kind: "failed", reason: "cannot install the Codex adapter: offline; retrying in 60 s" }))).toEqual({
       name: "codex",
+      title: "Codex",
       ready: false,
       reason: "cannot install the Codex adapter: offline; retrying in 60 s",
     })
   })
 
+  test("every agent carries the title a user reads, in the daemon's order", () => {
+    expect(allAgentStatuses({}, noPrograms, noAdapter).map((s) => [s.name, s.title])).toEqual([
+      ["claude", "Claude Code"],
+      ["codex", "Codex"],
+      ["grok", "Grok"],
+    ])
+  })
+
   test("grok needs grok", () => {
-    expect(agentStatus("grok", {}, noPrograms, noAdapter)).toEqual({ name: "grok", ready: false, reason: "grok not found in PATH" })
+    expect(agentStatus("grok", {}, noPrograms, noAdapter)).toEqual({ name: "grok", title: "Grok", ready: false, reason: "grok not found in PATH" })
     expect(agentStatus("grok", {}, (p) => (p === "grok" ? "/x/grok" : undefined), noAdapter).ready).toBe(true)
   })
 

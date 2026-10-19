@@ -28,7 +28,7 @@ describe("hello", () => {
     expect(hello).toMatchObject({ version: VERSION, os: process.platform, arch: process.arch })
     expect(hello?.hostname).toBeTruthy()
     expect(hello?.agents.map((a) => a.name)).toEqual(["claude", "codex", "grok"])
-    expect(hello?.agents[0]).toEqual({ name: "claude", ready: true, reason: "" })
+    expect(hello?.agents[0]).toEqual({ name: "claude", title: "Claude Code", ready: true, reason: "" })
     expect(st.connects).toEqual({ daemon: 1 })
     await waitFor("the status line", () => r.daemon.out.includes(`connected to ${r.server.origin}`))
   })
@@ -44,7 +44,7 @@ describe("hello", () => {
       const title = a.name === "claude" ? "Claude" : "Codex"
       expect(a.reason).toMatch(new RegExp(`^(installing the ${title} adapter|cannot install the ${title} adapter: npm not found: install Node.js \\(it comes with npm\\); retrying in \\d+ s)`))
     }
-    expect(agents?.[2]).toEqual({ name: "grok", ready: false, reason: "grok not found in PATH" })
+    expect(agents?.[2]).toEqual({ name: "grok", title: "Grok", ready: false, reason: "grok not found in PATH" })
     const opened = await r.server.open("s1", "grok")
     expect(opened).toEqual({ error: expect.stringContaining("agent grok is not ready: grok not found in PATH") })
   })

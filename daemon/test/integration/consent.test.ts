@@ -7,7 +7,7 @@ import { ask } from "../../src/consent.ts"
 const dir = mkdtempSync(join(tmpdir(), "mc-consent-"))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-const q = { origin: "https://app.example.com", server: undefined, agents: ["claude"] }
+const q = { origin: "https://app.example.com", mode: "server" as const, agents: ["claude"] }
 function script(name: string, body: string): string {
   const file = join(dir, name)
   writeFileSync(file, `#!/bin/sh\n${body}\n`)

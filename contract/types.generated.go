@@ -181,6 +181,7 @@ type HelloReply struct {
 
 type AgentInfo struct {
 	Name   string `json:"name"`
+	Title  string `json:"title"`
 	Ready  bool   `json:"ready"`
 	Reason string `json:"reason"`
 }

@@ -1,4 +1,9 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
+import { once } from "node:events"
+import { readFileSync, writeFileSync } from "node:fs"
+import { connect, type Socket } from "node:net"
+import { join } from "node:path"
 import { WebSocket } from "ws"
 import { build, groupAlive, Sandbox, TestDaemon, waitFor } from "./harness.ts"
 
@@ -27,11 +32,11 @@ afterEach(async () => {
   daemon = box = undefined
 })
 
-/** A daemon with no apps that has allowed PAGE as a browser origin; the "claude" agent echoes every line. */
-async function start(): Promise<number> {
-  box = new Sandbox()
+/** A daemon with no apps that has allowed PAGE as a browser origin; the "claude" agent is `agent`, by default one that echoes every line. */
+async function start(agent = "cat"): Promise<number> {
+  box ??= new Sandbox()
   box.writeApps([], [{ origin: PAGE, grantedAt: "2026-10-19T00:00:00.000Z" }])
-  daemon = await TestDaemon.start(box, [], { AGENTD_AGENT_CLAUDE: "cat" })
+  daemon = await TestDaemon.start(box, [], { AGENTD_AGENT_CLAUDE: agent })
   return Number(await waitFor("the gateway port", () => /local gateway on 127\.0\.0\.1:(\d+)/.exec(daemon?.out ?? "")?.[1]))
 }
 
@@ -57,12 +62,66 @@ function dial(port: number, origin: string, host?: string): Promise<Page> {
 
 const next = (p: Page, what: string, pred: (m: Record<string, unknown>) => boolean) => waitFor(what, () => p.messages.find(pred))
 
+/** A node script in the sandbox, run as the agent: `node <file> <args>`. */
+function agentScript(name: string, source: string, ...args: string[]): string {
+  box ??= new Sandbox()
+  const file = join(box.work, name)
+  writeFileSync(file, source)
+  return ["node", file, ...args].join(" ")
+}
+
+/**
+ * An agent that writes 64 KiB lines as fast as its stdout takes them. Every 50 ms it saves its pid and the bytes the
+ * pipe has taken so far to `report`: the daemon holds at most that much of its output.
+ */
+const FLOOD = `
+import { writeFileSync } from "node:fs"
+const line = "x".repeat(65535) + "\\n"
+let flushed = 0
+const step = () => process.stdout.write(line, () => { flushed += line.length; setImmediate(step) })
+setInterval(() => writeFileSync(process.argv[2], process.pid + " " + flushed), 50)
+step()
+`
+
+function flooded(report: string): { pid: number; bytes: number } {
+  const [pid, bytes] = readFileSync(report, "utf8").split(" ").map(Number)
+  return { pid: pid ?? -1, bytes: bytes ?? 0 }
+}
+
+/** A page on a raw TCP socket: after the handshake it sends `messages` and then reads nothing until told to. */
+async function stalledPage(port: number, messages: object[]): Promise<Socket> {
+  const sock = connect(port, "127.0.0.1")
+  await once(sock, "connect")
+  sock.write(
+    [
+      "GET /v1/session HTTP/1.1",
+      `Host: 127.0.0.1:${port}`,
+      `Origin: ${PAGE}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Version: 13",
+      "",
+      "",
+    ].join("\r\n"),
+  )
+  const [answer] = (await once(sock, "data")) as [Buffer]
+  expect(answer.toString()).toStartWith("HTTP/1.1 101")
+  sock.pause()
+  // A masked text frame with an all-zero mask: the payload goes as it is. Each message here is under 126 bytes.
+  for (const m of messages) {
+    const payload = Buffer.from(JSON.stringify(m))
+    sock.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length, 0, 0, 0, 0]), payload]))
+  }
+  return sock
+}
+
 describe("a granted origin", () => {
   test("gets hello, opens an agent and talks to it through frames", async () => {
     const port = await start()
     const page = await dial(port, PAGE)
     const hello = await next(page, "hello", (m) => m.t === "hello")
-    expect(hello.agents).toEqual(expect.arrayContaining([{ name: "claude", ready: true, reason: "" }]))
+    expect(hello.agents).toEqual(expect.arrayContaining([{ name: "claude", title: "Claude Code", ready: true, reason: "" }]))
     page.send({ t: "open", id: "s1", agent: "claude" })
     const opened = await next(page, "opened", (m) => m.t === "opened")
     pids.push(opened.pid as number)
@@ -114,6 +173,55 @@ describe("a granted origin", () => {
   })
 })
 
+describe("a page's limits", () => {
+  test("a message from the page above the limit closes its socket as too big", async () => {
+    const port = await start()
+    const page = await dial(port, PAGE)
+    await next(page, "hello", (m) => m.t === "hello")
+    const closed = new Promise<number>((resolve) => page.ws.once("close", (code) => resolve(code)))
+    page.send({ t: "write", id: "s1", line: "x".repeat(65 * 1024 * 1024) })
+    expect(await closed).toBe(1009)
+  })
+
+  test("an agent line past the cap ends the session with an error that says why", async () => {
+    const huge = agentScript("huge.mjs", 'process.stdout.write("x".repeat(33 * 1024 * 1024)); setInterval(() => undefined, 1000)\n')
+    const port = await start(huge)
+    const page = await dial(port, PAGE)
+    page.send({ t: "open", id: "s1", agent: "claude" })
+    pids.push((await next(page, "opened", (m) => m.t === "opened")).pid as number)
+    const err = await next(page, "the error frame", (m) => m.t === "frame" && m.kind === "err")
+    expect(String(err.data)).toContain("longer than 32 MiB")
+    await next(page, "the exit frame", (m) => m.t === "frame" && m.kind === "exit")
+    expect(page.messages.some((m) => m.t === "frame" && m.kind === "out")).toBe(false)
+  })
+
+  test("a page that stops reading stops its agent's output instead of filling the daemon, and resumes it", async () => {
+    box = new Sandbox()
+    const report = join(box.work, "flood.count")
+    const port = await start(agentScript("flood.mjs", FLOOD, report))
+    const page = await stalledPage(port, [{ t: "open", id: "s1", agent: "claude" }])
+    sockets.push({ terminate: () => page.destroy() } as unknown as WebSocket)
+    const { pid } = await waitFor("the agent's report", () => {
+      try {
+        return flooded(report)
+      } catch {
+        return undefined
+      }
+    })
+    pids.push(pid)
+    await new Promise((r) => setTimeout(r, 3000))
+    const stalled = flooded(report).bytes
+    await new Promise((r) => setTimeout(r, 1000))
+    // What the daemon holds: its socket's buffer (8 MiB) and the kernel's; without a pause it is hundreds of MB by now.
+    expect(stalled).toBeLessThan(64 * 1024 * 1024)
+    expect(flooded(report).bytes).toBeLessThan(stalled + 1024 * 1024) // stopped, not slowed
+    expect(groupAlive(pid)).toBe(true)
+    page.on("data", () => undefined)
+    page.resume()
+    await waitFor("the agent to write again", () => flooded(report).bytes > stalled + 64 * 1024 * 1024, 10_000)
+  })
+})
+
 describe("taking the grant back", () => {
   test("DELETE from the page ends its open socket and the agents on it", async () => {
     const port = await start()
@@ -124,6 +232,20 @@ describe("taking the grant back", () => {
     const closed = new Promise<void>((resolve) => page.ws.once("close", () => resolve()))
     const res = await fetch(`http://127.0.0.1:${port}/v1/connect`, { method: "DELETE", headers: { Origin: PAGE } })
     expect(res.status).toBe(200)
+    await closed
+    await waitFor("the agent group to end", () => !groupAlive(opened.pid as number), 8000)
+    await expect(dial(port, PAGE)).rejects.toBeDefined()
+  })
+
+  test("agentd apps remove, while the daemon runs, ends the page's open socket and the agents on it", async () => {
+    const port = await start()
+    const page = await dial(port, PAGE)
+    page.send({ t: "open", id: "s1", agent: "claude" })
+    const opened = await next(page, "opened", (m) => m.t === "opened")
+    pids.push(opened.pid as number)
+    const closed = new Promise<void>((resolve) => page.ws.once("close", () => resolve()))
+    const cli = spawnSync("node", [(await build()).bundle, "apps", "remove", PAGE], { env: box?.env(), encoding: "utf8" })
+    expect(cli.status).toBe(0)
     await closed
     await waitFor("the agent group to end", () => !groupAlive(opened.pid as number), 8000)
     await expect(dial(port, PAGE)).rejects.toBeDefined()

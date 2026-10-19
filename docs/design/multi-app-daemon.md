@@ -10,7 +10,7 @@ A user installs the daemon once. Every app that speaks the daemon protocol (`dae
 
 - Renaming the daemon, its home directory or its service labels.
 - A reusable server library for other repos (`internal/daemonhub` imports `internal/agent`, `internal/store` and `rpc`).
-- Scoping a grant to agents or folders: a grant covers every ready agent, in the daemon's working directory.
+- Scoping a grant to agents or folders: a grant is full access to the user's account (the session's ACP client chooses its folder, MCP servers and permission answers; agents run as the user). Confining an app would take an OS sandbox around the agents.
 - An app whose API lives on another origin than its page: the app connected is the one at the page's own origin. Supporting a separate API origin needs a way for that origin to vouch for page origins (for example a file the daemon fetches from it).
 - Tools that live in the page for browser apps: a browser session has the user's own MCP servers and skills only.
 - The daemon running natively on Windows (installer, service, dialog). The tray program is built for Windows; the daemon around it is a separate project.
@@ -36,7 +36,7 @@ Refusals: `403 denied|timeout`, `429 cooldown` (30 s per origin, and a lockout o
 
 ### 2. Native dialog (`daemon/src/consent.ts`, `daemon/src/core/consent.ts`)
 
-`osascript` (text as `argv`, never in the script) on macOS; `zenity`, else `kdialog` on Linux. Deny is the default and cancel button; 60 s is Deny. The text names the origin from the `Origin` header and the server, and says that Allow lets the app run the ready agents with the user's files and shell until the user disconnects it. No tool or no graphical session: `no-dialog`. `AGENTD_CONSENT=<program>` replaces the dialog in tests (exit 0 = Allow).
+`osascript` (text as `argv`, never in the script) on macOS; `zenity`, else `kdialog` on Linux. Deny is the default and cancel button; 60 s is Deny. The text names the origin from the `Origin` header and the mode: a server can start the ready agents at any time, even with no page open; a browser grant, whenever a page of the origin is open. It says that the agents run as the user and can read and change any of their files and run any program, until the user disconnects it. No tool or no graphical session: `no-dialog`. `AGENTD_CONSENT=<program>` replaces the dialog in tests (exit 0 = Allow); it is never copied into a service definition.
 
 ### 3. Browser sessions (`daemon/src/session-ws.ts`, `daemon/src/core/localproto.ts`)
 
@@ -44,11 +44,11 @@ One socket is one fleet, ended when the socket closes; at most 5 sessions per so
 
 ### 4. Apps registry (`daemon/src/config.ts`, `daemon/src/core/registry.ts`)
 
-`daemon.json`: `{apps:[{server,token}], browsers:[{origin,grantedAt}]}`, mode 0600, written through a temporary file and a rename. `run` starts with nothing saved. `--app` serves one saved app. `agentd apps [list]` and `apps remove <origin>`.
+`daemon.json`: `{apps:[{server,token}], browsers:[{origin,grantedAt}]}`, mode 0600, written through a temporary file and a rename. `run` starts with nothing saved. `--app` serves one saved app. `agentd apps [list]` and `apps remove <origin>`; a running daemon reads the file every 2 s and ends the link and page sockets of an origin that is no longer in it.
 
 ### 5. One link and one fleet per app (`daemon/src/apps.ts`)
 
-Each app has its own socket, fleet and MCP wrapper (`bin/<n>/agentd-mcp --config <file> --app <origin>`). Updates come from the release server (see `agentd-extraction.md`), not from an app. Idle (updates) means no agent runs for any app or page. Stop from an app detaches it; the daemon exits 0 when its last app leaves and no browser grant exists. A refused token detaches that app. Restart from any app restarts the daemon (a managed daemon only).
+Each app has its own socket, fleet and MCP wrapper (`bin/<n>/agentd-mcp --config <file> --app <origin>`). Updates come from the release server (see `agentd-extraction.md`), not from an app. Idle (updates) means no agent runs for any app or page. Stop from an app detaches it; the daemon exits 0 when its last app leaves and no browser grant exists. A refused token (`unauthorized`) detaches that app; a server that could not check the token (`unavailable`) is retried. Restart from any app restarts the daemon (a managed daemon only).
 
 ### 6. Client library (`daemon-client/`)
 
@@ -67,13 +67,13 @@ Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64,
 ## Constraints
 
 - Loopback only; no other interface ever binds.
+- A page cannot authenticate the daemon it finds: whatever answers first on 47615-47624 with `name:"agentd"` gets the page's pairing code or its browser session. Apps show every paired daemon in their daemons list so an unknown one is noticed.
 - Chrome 142 prompts on the first public-to-loopback request; Safari has blocked `http://127.0.0.1` from https pages (WebKit 173161; current behaviour unverified here).
 - `daemonrpc/define.acp.ts` and the Go server are unchanged.
 
 ## Assumptions (mine, not confirmed by the user)
 
 - Browser-only apps get chat; page-side tools wait for a decision.
-- A grant covers all ready agents in the daemon's working directory.
 - The cooldown (30 s), the dialog timeout (60 s), the port range, the 5 sessions per socket and the 2 s tray refresh are defaults chosen here.
 - The product keeps the name `agentd`.
 - Every platform's tray ships in every tarball (one download, one signature) at the cost of its size.
@@ -82,6 +82,7 @@ Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64,
 
 - The tray is a Go program built with mygo, for macOS, Linux and Windows; the daemon on Windows comes later (14:03).
 - Verification runs natively on the user's machine, never in Docker.
+- A grant is full access to the user's account, said plainly in the dialog and per mode (decided by the agentd session the user handed it to, 2026-10-19): agents have a shell and the ACP client answers their permission requests, so pinning a folder in `session/new` would confine nothing without an OS sandbox.
 
 ## Acceptance and evidence
 

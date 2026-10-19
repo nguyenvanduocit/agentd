@@ -22,8 +22,9 @@ var ErrNotFound = errors.New("daemon not found")
 // ErrNameTaken is what a TokenStore returns when the user already has another daemon with that name.
 var ErrNameTaken = errors.New("another daemon of yours already has that name")
 
-// ErrNoDaemon means the user has no daemon online: their agents run on their own machine, so none can start.
-var ErrNoDaemon = errors.New("No daemon is connected: pair one in your account settings") //nolint:staticcheck // ST1005: the text is shown to the user as written
+// ErrNoDaemon means the user has no daemon online: their agents run on their own machine, so none can start. The text
+// names no place in an app; an app that wants to point at its pairing view says so itself (errors.Is).
+var ErrNoDaemon = errors.New("No daemon is connected: pair one first") //nolint:staticcheck // ST1005: the text is shown to the user as written
 
 // ErrUnknownDaemon means the user has no paired daemon with the id a call named: it was disconnected.
 var ErrUnknownDaemon = errors.New("The daemon chosen is no longer paired: pick another") //nolint:staticcheck // ST1005: the text is shown to the user as written

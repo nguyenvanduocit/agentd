@@ -5,6 +5,8 @@ const DETECT_TIMEOUT_MS = 800
 
 export interface AgentInfo {
   name: string
+  /** What to call the agent on screen ("Claude Code"); its name when the daemon gives none. */
+  title: string
   ready: boolean
   reason: string
 }
@@ -46,14 +48,22 @@ function within<T>(ms: number, work: Promise<T>): Promise<T> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer))
 }
 
+/** An agent as the daemon sends it: a 0.2 daemon sends no title. */
+type WireAgent = Partial<AgentInfo> & { name: string }
+
+function agentInfo(a: WireAgent): AgentInfo {
+  return { name: a.name, title: a.title || a.name, ready: a.ready === true, reason: a.reason ?? "" }
+}
+
 async function probe(port: number, o: DetectOptions): Promise<Detected> {
   const ms = o.timeoutMs ?? DETECT_TIMEOUT_MS
   try {
     const res = await within(ms, (o.fetch ?? fetch)(statusUrl(port), { signal: AbortSignal.timeout(ms) }))
     if (!res.ok) return { found: false }
-    const body = (await res.json()) as { name?: unknown; version?: unknown; granted?: Granted; agents?: AgentInfo[] }
+    const body = (await res.json()) as { name?: unknown; version?: unknown; granted?: Granted; agents?: WireAgent[] }
     if (body.name !== "agentd" || typeof body.version !== "string") return { found: false }
-    return { found: true, port, version: body.version, granted: body.granted ?? { server: false, browser: false }, agents: body.agents }
+    const agents = body.agents?.map(agentInfo)
+    return { found: true, port, version: body.version, granted: body.granted ?? { server: false, browser: false }, agents }
   } catch {
     // Nothing listens there, the browser blocked the call, or the user said no to its prompt: all look the same.
     return { found: false }
@@ -125,6 +135,13 @@ export interface AgentSession {
   cwd: string
   /** One line to the agent's stdin. */
   write(line: string): void
+  /**
+   * The agent's stdout as bytes, each line ending in "\n"; it ends when the agent exits or the socket closes. The stream
+   * starts the first time it is taken and keeps no line from before: take it right after the session opens (an ACP agent speaks only when asked).
+   */
+  readonly readable: ReadableStream<Uint8Array>
+  /** Bytes to the agent's stdin: each complete line is one `write`, empty lines are dropped. */
+  readonly writable: WritableStream<Uint8Array>
   /** The agent's stdout lines, stderr text and exit. */
   onFrame(cb: (frame: Frame) => void): void
   /** The socket ended: the agent is gone with it. */
@@ -147,6 +164,51 @@ export interface SessionOptions {
   WebSocket?: typeof WebSocket
 }
 
+/** Splits text into the complete lines it ends and the start of the next one. */
+function splitLines(text: string): { lines: string[]; rest: string } {
+  const parts = text.split("\n")
+  return { lines: parts.slice(0, -1), rest: parts.at(-1) ?? "" }
+}
+
+/** Bytes cut anywhere, sent on as lines: a line, or a character, cut between two chunks waits for its other half. */
+function lineWriter(write: (line: string) => void): WritableStream<Uint8Array> {
+  const decoder = new TextDecoder()
+  let rest = ""
+  const send = (text: string): void => {
+    const split = splitLines(rest + text)
+    rest = split.rest
+    for (const line of split.lines) if (line !== "") write(line)
+  }
+  return new WritableStream({
+    write: (chunk) => send(decoder.decode(chunk, { stream: true })),
+    close: () => send(decoder.decode() + "\n"), // the last line has no newline left to wait for
+  })
+}
+
+/** The stdout lines as bytes from the first time the stream is taken; a session that never takes it keeps no line. */
+function lineReader() {
+  const encoder = new TextEncoder()
+  let stream: ReadableStream<Uint8Array> | undefined
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  let ended = false
+  return {
+    get stream(): ReadableStream<Uint8Array> {
+      stream ??= new ReadableStream({
+        start: (c) => (ended ? c.close() : void (controller = c)),
+        cancel: () => void (controller = undefined),
+      })
+      return stream
+    },
+    line: (data: string): void => controller?.enqueue(encoder.encode(data + "\n")),
+    end: (): void => {
+      if (ended) return
+      ended = true
+      controller?.close()
+      controller = undefined
+    },
+  }
+}
+
 /** Opens `agent` on the daemon over a socket of its own; the page is the ACP client of the lines. */
 export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): Promise<AgentSession> {
   const Socket = o.WebSocket ?? WebSocket
@@ -154,23 +216,34 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
   const ws = new Socket(`ws://127.0.0.1:${d.port}/v1/session`)
   const frames: ((f: Frame) => void)[] = []
   const closers: (() => void)[] = []
+  const stdout = lineReader()
   const send = (m: object): void => ws.send(JSON.stringify(m))
+  const write = (line: string): void => send({ t: "write", id, line })
   return new Promise((resolve, reject) => {
     ws.onerror = () => reject(new Error("cannot open a session: the daemon refused the connection (is this page allowed?)"))
     ws.onclose = () => {
       reject(new Error("the daemon closed the session"))
+      stdout.end()
       for (const c of closers) c()
     }
     ws.onmessage = (e: MessageEvent<string>) => {
       const m = JSON.parse(e.data) as Incoming
       if (m.t === "hello") send({ t: "open", id, agent })
       else if (m.t === "error" && m.id === id) reject(new Error(m.message))
-      else if (m.t === "frame" && m.id === id) for (const f of frames) f({ kind: m.kind ?? "out", data: m.data ?? "", code: m.code ?? 0 })
-      else if (m.t === "opened" && m.id === id) {
+      else if (m.t === "frame" && m.id === id) {
+        const frame: Frame = { kind: m.kind ?? "out", data: m.data ?? "", code: m.code ?? 0 }
+        if (frame.kind === "out") stdout.line(frame.data)
+        else if (frame.kind === "exit") stdout.end()
+        for (const f of frames) f(frame)
+      } else if (m.t === "opened" && m.id === id) {
         resolve({
           pid: m.pid ?? -1,
           cwd: m.cwd ?? "",
-          write: (line) => send({ t: "write", id, line }),
+          write,
+          get readable() {
+            return stdout.stream
+          },
+          writable: lineWriter(write),
           onFrame: (cb) => void frames.push(cb),
           onClose: (cb) => void closers.push(cb),
           close: () => {

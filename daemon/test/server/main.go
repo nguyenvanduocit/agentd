@@ -70,6 +70,8 @@ type server struct {
 	connects map[string]int
 	rejects  int
 	revoked  bool
+	// unavailable is how many handshakes are still refused as the hub refuses them while its token store is down.
+	unavailable int
 	// mcpLines counts the MCP messages that reached the server through bridges.
 	mcpLines int
 	code     string
@@ -111,8 +113,16 @@ func (s *server) authenticate(sock *socket.Socket, next func(*socket.ExtendedErr
 	role, _ := auth["role"].(string)
 	token, _ := auth["token"].(string)
 	s.mu.Lock()
-	revoked := s.revoked
+	revoked, down := s.revoked, s.unavailable > 0
+	if down {
+		s.unavailable--
+		s.rejects++
+	}
 	s.mu.Unlock()
+	if down {
+		next(socket.NewExtendedError("unavailable", map[string]any{"code": "unavailable"}))
+		return
+	}
 	if token != s.token || revoked || (role != "daemon" && role != "mcp") {
 		s.mu.Lock()
 		s.rejects++
@@ -300,6 +310,18 @@ func (s *server) control(mux *http.ServeMux) {
 		if p != nil {
 			p.raw.Disconnect(false)
 		}
+		reply(w, true)
+	})
+	// unavailable refuses the next n handshakes the way the hub does while it cannot look tokens up.
+	mux.HandleFunc("POST /ctl/unavailable", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ N int }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.unavailable = in.N
+		s.mu.Unlock()
 		reply(w, true)
 	})
 	mux.HandleFunc("GET /ctl/frames", func(w http.ResponseWriter, _ *http.Request) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { LineSplitter } from "../../src/core/lines.ts"
+import { LineSplitter, MAX_LINE_BYTES } from "../../src/core/lines.ts"
 
 const b = (s: string) => Buffer.from(s)
 
@@ -51,5 +51,37 @@ describe("LineSplitter", () => {
     expect(out[0]?.length).toBe(line.length)
     expect(out[0] === line).toBe(true)
     expect(out[1]).toBe("next")
+  })
+
+  test("a line at the cap goes through", () => {
+    const s = new LineSplitter(8)
+    expect(s.push(b("1234"))).toEqual([])
+    expect(s.push(b("5678\nnext\n"))).toEqual(["12345678", "next"])
+    expect(s.tooLong).toBe(false)
+  })
+
+  test("a line past the cap ends the stream: the lines before it come out, nothing after, nothing is held", () => {
+    const s = new LineSplitter(8)
+    expect(s.push(b("ok\n123456789\nlater\n"))).toEqual(["ok"])
+    expect(s.tooLong).toBe(true)
+    expect(s.push(b("more\n"))).toEqual([])
+    expect(s.tooLong).toBe(true)
+  })
+
+  test("an unterminated tail past the cap ends the stream before its newline arrives", () => {
+    const s = new LineSplitter(8)
+    expect(s.push(b("12345"))).toEqual([])
+    expect(s.tooLong).toBe(false)
+    expect(s.push(b("6789"))).toEqual([])
+    expect(s.tooLong).toBe(true)
+    expect(s.push(b("\n"))).toEqual([])
+  })
+
+  test("the default cap holds far more than a real ACP line", () => {
+    expect(MAX_LINE_BYTES).toBeGreaterThanOrEqual(10 * 1024 * 1024)
+    const s = new LineSplitter()
+    const over = Buffer.alloc(MAX_LINE_BYTES + 1, 0x78)
+    expect(s.push(over)).toEqual([])
+    expect(s.tooLong).toBe(true)
   })
 })

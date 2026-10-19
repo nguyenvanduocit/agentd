@@ -44,9 +44,29 @@ func text(auth map[string]any, key string) string {
 	return v
 }
 
-// errUnauthorized is all a refused handshake says, whatever was wrong with it: as the message and as data.code, so
-// that a daemon can tell a token the server does not accept (revoked, unknown) from a network error.
-const errUnauthorized = "unauthorized"
+// What a refused handshake says, as the message and as data.code. errUnauthorized is a token the server will never
+// accept (unknown, revoked, or a session that is not its user's): the daemon stops. errUnavailable is a server that
+// could not check the token now (its store failed): the daemon retries. Neither says more than that.
+const (
+	errUnauthorized = "unauthorized"
+	errUnavailable  = "unavailable"
+)
+
+// errForeign is a handshake of an unknown role, or of a bridge for a session that is not its user's.
+var errForeign = errors.New("unknown role, or a session that is not the user's")
+
+func refuse(next func(*socket.ExtendedError), code string) {
+	next(socket.NewExtendedError(code, map[string]any{"code": code}))
+}
+
+// refusal is the answer to a handshake that a valid token could not complete: the token went (revoked meanwhile) or
+// asks for what it may not, or else the server failed and the same handshake may pass later.
+func refusal(err error) string {
+	if errors.Is(err, errRevoked) || errors.Is(err, errForeign) {
+		return errUnauthorized
+	}
+	return errUnavailable
+}
 
 // authenticate checks the handshake: {role:"daemon", token} or {role:"mcp", token, session}. The token must be one
 // the server issued and not revoked; a bridge's session must be a tool session of the token's user. A socket that passes gets its
@@ -56,11 +76,13 @@ func (h *Hub) authenticate(s *socket.Socket, next func(*socket.ExtendedError)) {
 	auth := s.Handshake().Auth
 	role, token, session := text(auth, "role"), text(auth, "token"), text(auth, "session")
 	rec, err := h.opts.Tokens.ByHash(hashToken(token))
+	if errors.Is(err, ErrNotFound) {
+		refuse(next, errUnauthorized)
+		return
+	}
 	if err != nil {
-		if !errors.Is(err, ErrNotFound) {
-			log.Printf("daemon: look up a token: %v", err)
-		}
-		next(socket.NewExtendedError(errUnauthorized, map[string]any{"code": errUnauthorized}))
+		log.Printf("daemon: look up a token: %v", err)
+		refuse(next, errUnavailable)
 		return
 	}
 	switch {
@@ -69,11 +91,11 @@ func (h *Hub) authenticate(s *socket.Socket, next func(*socket.ExtendedError)) {
 	case role == roleBridge && h.opts.Tools != nil && h.opts.Tools.Owns(rec.UserID, rec.ID, session):
 		err = h.prepareBridge(s, rec, session)
 	default:
-		err = errors.New("unknown role, or a session that is not the user's")
+		err = errForeign
 	}
 	if err != nil {
 		log.Printf("daemon: refuse a %q handshake of user %s: %v", role, rec.UserID, err)
-		next(socket.NewExtendedError(errUnauthorized, map[string]any{"code": errUnauthorized}))
+		refuse(next, refusal(err))
 		return
 	}
 	next(nil)

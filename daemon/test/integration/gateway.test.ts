@@ -4,6 +4,11 @@ import { request } from "node:http"
 import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { WebSocket } from "ws"
+import type { Question } from "../../src/core/consent.ts"
+import { addBrowser, emptyRegistry } from "../../src/core/registry.ts"
+import { startGateway, type Gateway, type GatewayDeps } from "../../src/local.ts"
+import type { PeerOwners } from "../../src/peer.ts"
 import { build, Sandbox, TestDaemon, TestServer, TOKEN, waitFor } from "./harness.ts"
 
 beforeAll(async () => {
@@ -14,6 +19,7 @@ const PAGE = "http://localhost:5173"
 const dirs: string[] = []
 const servers: TestServer[] = []
 const blockers: Server[] = []
+const gateways: Gateway[] = []
 let daemon: TestDaemon | undefined
 let box: Sandbox | undefined
 
@@ -21,6 +27,7 @@ afterEach(async () => {
   await daemon?.stop()
   for (const s of servers.splice(0)) s.stop()
   for (const b of blockers.splice(0)) b.close()
+  for (const g of gateways.splice(0)) await g.close()
   box?.remove()
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
   daemon = undefined
@@ -267,5 +274,85 @@ describe("ports", () => {
     daemon = await TestDaemon.start(box, [], { AGENTD_LOCAL_PORT: String(base) })
     await waitFor("the gateway off line", () => daemon!.out.includes("local gateway off"))
     expect((await app.waitHellos(1)).connected).toBe(true)
+  })
+})
+
+/** What a gateway in this process was asked to do: dialogs, revokes, upgrades. */
+interface Seen {
+  asked: Question[]
+  revoked: string[]
+  upgraded: string[]
+}
+
+/** A gateway in this test process, PAGE granted as a browser origin, every dialog answered Allow. */
+async function gatewayHere(owners?: PeerOwners): Promise<{ port: number; seen: Seen }> {
+  const seen: Seen = { asked: [], revoked: [], upgraded: [] }
+  const deps: GatewayDeps = {
+    version: "test",
+    agents: () => [],
+    registry: () => Promise.resolve(addBrowser(emptyRegistry(), PAGE, "2026-10-19T00:00:00.000Z")),
+    ask: (q) => {
+      seen.asked.push(q)
+      return Promise.resolve("allow")
+    },
+    linked: () => false,
+    connectServer: () => Promise.resolve(),
+    grantBrowser: () => Promise.resolve(),
+    revoke: (origin) => {
+      seen.revoked.push(origin)
+      return Promise.resolve()
+    },
+    upgrade: (origin, _req, socket) => {
+      seen.upgraded.push(origin)
+      socket.destroy()
+    },
+  }
+  const g = await startGateway(deps, 0, Date.now, owners)
+  if (g === undefined) throw new Error("no gateway port")
+  gateways.push(g)
+  return { port: g.port, seen }
+}
+
+/** Dials /v1/session as PAGE and waits until the gateway hangs up or the upgrade completes. */
+function dialSession(port: number): Promise<void> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/session`, { headers: { Origin: PAGE } })
+    ws.on("error", () => resolve())
+    ws.on("close", () => resolve())
+  })
+}
+
+describe("only programs of the daemon's own OS user reach the gateway", () => {
+  const me = process.getuid?.() ?? 0
+  const routes = async (port: number) => [
+    await call(port, "GET", "/v1/status", { origin: PAGE }),
+    await connect(port, { mode: "browser" }, "http://localhost:5174"),
+    await connect(port, { mode: "server", code: "TESTCODE" }, "http://localhost:5174"),
+    await call(port, "DELETE", "/v1/connect", { origin: PAGE }),
+  ]
+
+  test("a connection from another user's process is refused on every route and upgrade, with no dialog", async () => {
+    const { port, seen } = await gatewayHere(() => Promise.resolve([me + 1]))
+    for (const r of await routes(port)) expect(r).toMatchObject({ status: 403, body: { granted: false, reason: "peer" } })
+    await dialSession(port)
+    expect(seen).toEqual({ asked: [], revoked: [], upgraded: [] })
+  })
+
+  test("an owner that cannot be found, or a lookup that fails, is refused too", async () => {
+    for (const owners of [() => Promise.resolve([]), () => Promise.reject(new Error("lsof is gone"))]) {
+      const { port, seen } = await gatewayHere(owners)
+      expect(await call(port, "GET", "/v1/status", { origin: PAGE })).toMatchObject({ status: 403, body: { reason: "peer" } })
+      await dialSession(port)
+      expect(seen.upgraded).toEqual([])
+    }
+  })
+
+  test("the real lookup lets this process in: routes answer and the session upgrade goes through", async () => {
+    const { port, seen } = await gatewayHere()
+    expect((await call(port, "GET", "/v1/status", { origin: PAGE })).status).toBe(200)
+    expect((await connect(port, { mode: "browser" }, "http://localhost:5174")).status).toBe(200)
+    await dialSession(port)
+    expect(seen.asked.map((q) => q.origin)).toEqual(["http://localhost:5174"])
+    expect(seen.upgraded).toEqual([PAGE])
   })
 })

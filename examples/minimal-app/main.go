@@ -122,11 +122,7 @@ func run() error {
 	flag.Parse()
 
 	h := hub.New(hub.Options{
-		Tokens:     hub.NewMemoryTokens(),
-		AgentOrder: []string{"claude", "codex", "grok"},
-		AgentTitle: func(name string) string {
-			return map[string]string{"claude": "Claude Code", "codex": "Codex", "grok": "Grok"}[name]
-		},
+		Tokens: hub.NewMemoryTokens(),
 	})
 	opts := socket.DefaultServerOptions()
 	opts.SetMaxHttpBufferSize(hub.MaxMessageBytes)

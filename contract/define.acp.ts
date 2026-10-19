@@ -11,9 +11,11 @@ export interface Opened {
 // server runs each event name on its own queue, so separate events would not keep their order across names.
 export type FrameKind = "out" | "err" | "exit"
 
-// An agent the daemon can start. ready is false when the machine lacks what it needs; reason says what.
+// An agent the daemon can start, and its name as a user reads it (title; a daemon older than 0.3 sends none). ready is
+// false when the machine lacks what it needs; reason says what.
 export interface AgentInfo {
   name: string
+  title: string
   ready: boolean
   reason: string
 }

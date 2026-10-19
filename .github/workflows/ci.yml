@@ -25,15 +25,15 @@ jobs:
       - run: ./scripts/check-generated.sh
 
   go:
-    name: Go vet, test (hub, server, example)
+    name: Go vet, test (hub, release, server, example)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go vet ./hub/ ./server/ ./contract/ ./cmd/... ./examples/...
-      - run: go test ./hub/ ./server/
+      - run: go vet ./hub/ ./release/ ./server/ ./contract/ ./cmd/... ./examples/...
+      - run: go test ./hub/ ./release/ ./server/
 
   daemon:
     name: Daemon typecheck, lint, test

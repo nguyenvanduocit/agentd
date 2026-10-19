@@ -1,5 +1,5 @@
 import type { Command } from "./core/cli.ts"
-import { LineSplitter } from "./core/lines.ts"
+import { LineSplitter, MAX_LINE_BYTES } from "./core/lines.ts"
 import { loadRegistry, registryFile } from "./config.ts"
 import { selectApp } from "./core/registry.ts"
 import { currentHost } from "./host.ts"
@@ -28,13 +28,13 @@ export async function runBridge(cmd: McpCommand): Promise<number> {
         warn(`agentd-mcp: the server connection ended (${reason})`)
         resolve(1)
       },
-      onTrouble: (message) => warn(`agentd-mcp: cannot reach ${config.server}: ${message}`),
+      onTrouble: (message) => warn(`agentd-mcp: cannot reach ${config.server} (${message})`),
       onRejected: (message) => {
         warn(`agentd-mcp: ${config.server} refused the bridge (${message})`)
         resolve(1)
       },
+      onGiveUp: () => resolve(1),
     })
-    link.socket.io.on("reconnect_failed", () => resolve(1))
     link.rpc.handle.mcpOut((line) => {
       process.stdout.write(`${line}\n`)
       return Promise.resolve()
@@ -43,6 +43,11 @@ export async function runBridge(cmd: McpCommand): Promise<number> {
     const splitter = new LineSplitter()
     process.stdin.on("data", (chunk: Buffer) => {
       for (const line of splitter.push(chunk)) if (line.trim() !== "") link.rpc.server.mcp(line)
+      if (!splitter.tooLong) return
+      // The server would refuse the message; a bridge that dropped it would leave the client waiting for an answer.
+      warn(`agentd-mcp: the client sent a line longer than ${MAX_LINE_BYTES / (1024 * 1024)} MiB`)
+      process.stdin.destroy()
+      resolve(1)
     })
     process.stdin.on("end", () => {
       // The client is done. Lines it sent before the socket was up wait in socket.io's buffer: let them go out

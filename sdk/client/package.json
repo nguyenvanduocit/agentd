@@ -1,6 +1,6 @@
 {
   "name": "@agentd/client",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "What a web page uses to find the agentd daemon on the user's computer, ask it to connect, and run an agent through it.",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,7 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
     "@types/bun": "^1.4.2",
     "typescript": "~6.0.2"
   }

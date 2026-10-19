@@ -23,6 +23,11 @@ const closeLinger = 10 * time.Second
 // writeTimeout bounds one line sent to the daemon.
 const writeTimeout = 90 * time.Second
 
+// defaultMaxUnreadBytes is Options.MaxUnreadBytes when unset. Frames do not wait for the app, so a reader that stopped
+// would otherwise let the daemon fill the server's memory. One message of the largest size the hub accepts still fits
+// whole; an ACP client reads as lines arrive, so one that is this far behind is stuck, not slow.
+const defaultMaxUnreadBytes = MaxMessageBytes
+
 var errSessionEnded = errors.New("the agent on your machine has ended")
 
 // session is one agent process on a user's daemon, seen from the server as stdio: Read gives the lines the daemon
@@ -60,14 +65,25 @@ func (s *session) signal() {
 	}
 }
 
-// push queues one stdout line the daemon relayed.
+// push queues one stdout line the daemon relayed. A line that would take the unread output past MaxUnreadBytes ends
+// the session instead: its output is dropped (a stream with a hole would be read as a wrong one) and the daemon is told
+// to end the agent.
 func (s *session) push(line string) {
+	limit := s.hub.opts.MaxUnreadBytes
 	s.mu.Lock()
-	if !s.finished {
+	over := !s.finished && s.out.Len()+len(line)+1 > limit
+	switch {
+	case over:
+		s.out = bytes.Buffer{}
+	case !s.finished:
 		s.out.WriteString(line)
 		s.out.WriteByte('\n')
 	}
 	s.mu.Unlock()
+	if over {
+		s.finish(fmt.Sprintf("the agent's output was not read: the server ended the session past %d bytes unread", limit))
+		go s.Close() // not on this goroutine: it serves the daemon's socket, which Close waits on for the ack
+	}
 	s.signal()
 }
 

@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process"
 import { once } from "node:events"
+import type { Readable } from "node:stream"
 import type { FrameKind } from "../../contract/define.acp.ts"
-import { LineSplitter } from "./core/lines.ts"
+import { LineSplitter, MAX_LINE_BYTES } from "./core/lines.ts"
 import { signalGroup } from "./procgroup.ts"
 
 const TERM_GRACE_MS = 2000
@@ -10,6 +11,12 @@ const PIPE_GRACE_MS = 3000
 /** Where an agent's frames go: one ordered stream per connection. A sink that has been replaced drops frames. */
 export interface FrameSink {
   send(sessionId: string, kind: FrameKind, data: string, code: number): void
+  /**
+   * A sink that can fall behind its reader has this: undefined while it has room, else a promise that settles once it
+   * has room again. The agent's output is not read meanwhile, so the agent waits on its full pipe. A sink without it
+   * takes every frame (the server bounds what it holds itself).
+   */
+  backlog?(): Promise<void> | undefined
 }
 
 /** The pid once `child` has started; rejects when the command could not be run (events.once rejects on "error"). */
@@ -60,12 +67,33 @@ export class AgentSession {
   }
 
   private pipeOutput(): void {
+    const { stdout, stderr } = this.child
     const splitter = new LineSplitter()
-    this.child.stdout?.on("data", (chunk: Buffer) => {
+    stdout?.on("data", (chunk: Buffer) => {
       for (const line of splitter.push(chunk)) this.sink.send(this.id, "out", line, 0)
+      if (splitter.tooLong) this.lineTooLong(stdout)
+      else this.waitForRoom(stdout)
     })
-    this.child.stderr?.setEncoding("utf8")
-    this.child.stderr?.on("data", (text: string) => this.sink.send(this.id, "err", text, 0))
+    stderr?.setEncoding("utf8")
+    stderr?.on("data", (text: string) => {
+      this.sink.send(this.id, "err", text, 0)
+      this.waitForRoom(stderr)
+    })
+  }
+
+  /** Stops reading `stream` while the sink is full. */
+  private waitForRoom(stream: Readable): void {
+    const room = this.sink.backlog?.()
+    if (room === undefined) return
+    stream.pause()
+    void room.then(() => stream.resume())
+  }
+
+  /** The agent wrote a line no reader would take: the session ends, and its stderr says why. */
+  private lineTooLong(stdout: Readable): void {
+    this.sink.send(this.id, "err", `agentd: the agent wrote a line longer than ${MAX_LINE_BYTES / (1024 * 1024)} MiB; the session is ended\n`, 0)
+    stdout.destroy()
+    this.end()
   }
 
   /** Writes one line to the agent's stdin; false when the agent can no longer read it. */

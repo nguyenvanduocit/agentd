@@ -2,6 +2,8 @@
 export interface Question {
   /** The page's origin, from the browser's Origin header. */
   origin: string
+  /** `server`: the app's server gets a lasting token. `browser`: the origin's pages run agents themselves. */
+  mode: "server" | "browser"
   /** The agents that are ready now. */
   agents: string[]
 }
@@ -13,14 +15,23 @@ export interface Text {
 
 export type Answer = "allow" | "deny" | "timeout" | "unavailable"
 
+/**
+ * The dialog says what Allow is: full access to the user's account. Whoever drives a session (the app's server, or
+ * the origin's page) chooses its folder, its MCP servers and its answers to permission requests, and agents run as the
+ * user; nothing on this machine narrows that. The two modes differ in when that access can be used.
+ */
 export function consentText(q: Question): Text {
   const agents = q.agents.length > 0 ? q.agents.join(", ") : "no agent is ready yet"
+  const when =
+    q.mode === "server"
+      ? `${q.origin} wants to connect its server to this computer.\n\nIf you allow it, that server can start your agents (${agents}) here at any time, even when none of its pages is open.`
+      : `${q.origin} wants to run agents on this computer from its pages.\n\nIf you allow it, its pages can start your agents (${agents}) here whenever one of its pages is open.`
   return {
-    title: `Allow ${q.origin} to use your agents?`,
+    title: `Give ${q.origin} access to this computer?`,
     body:
-      `${q.origin} wants to connect to this computer.\n\n` +
-      `If you allow it, that app can run your agents (${agents}) here, with access to your files and shell, until you disconnect it ` +
-      `(from the daemon's icon in the menu bar, or with: agentd apps remove ${q.origin}).\n\nOnly allow apps you trust.`,
+      `${when} The agents run as you: they can read and change any of your files and run any program.\n\n` +
+      `It keeps that access until you disconnect it, from the daemon's icon in the menu bar or with: agentd apps remove ${q.origin}\n\n` +
+      "Only allow apps you trust.",
   }
 }
 

@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import type { AddressInfo } from "node:net"
+import type { AddressInfo, Socket } from "node:net"
 import type { Duplex } from "node:stream"
 import type { AgentInfo } from "../../contract/define.acp.ts"
 import type { Answer, Question } from "./core/consent.ts"
 import { Cooldown, corsHeaders, hostAllowed, Lockout, originOf, parseConnect, PORT_RANGE } from "./core/local.ts"
 import { hasApp, hasBrowser, type Registry } from "./core/registry.ts"
+import { peerGate, systemOwners, type PeerOwners } from "./peer.ts"
 
 const COOLDOWN_MS = 30_000
 const LOCKOUT_REFUSALS = 3
@@ -96,7 +97,7 @@ class Routes {
 
   private async decide(origin: string, code: string | undefined): Promise<Out> {
     const agents = this.deps.agents().filter((a) => a.ready).map((a) => a.name)
-    const answer = await this.deps.ask({ origin, agents })
+    const answer = await this.deps.ask({ origin, mode: code === undefined ? "browser" : "server", agents })
     if (answer === "unavailable") return refuse(503, "no-dialog")
     if (answer !== "allow") {
       this.cooldown.block(origin)
@@ -175,11 +176,22 @@ function upgrade(deps: GatewayDeps, port: number, req: IncomingMessage, socket: 
   )
 }
 
-function serve(deps: GatewayDeps, now: () => number): Server {
+/** Every request and upgrade waits for `admit` first: a connection from another OS user's process gets nothing. */
+function serve(deps: GatewayDeps, now: () => number, admit: (socket: Socket) => Promise<boolean>): Server {
   const routes = new Routes(deps, now)
   const portOf = () => (server.address() as AddressInfo).port
-  const server = createServer((req, res) => handle(routes, portOf(), req, res))
-  server.on("upgrade", (req, socket, head) => upgrade(deps, portOf(), req, socket, head))
+  const server = createServer((req, res) => {
+    void admit(req.socket).then((ok) => {
+      if (ok) handle(routes, portOf(), req, res)
+      else send(res, refuse(403, "peer"), {})
+    })
+  })
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    void admit(req.socket).then((ok) => {
+      if (ok) upgrade(deps, portOf(), req, socket, head)
+      else socket.destroy()
+    })
+  })
   return server
 }
 
@@ -192,12 +204,13 @@ function listen(server: Server, port: number): Promise<number | "taken"> {
 
 /**
  * Starts the gateway on 127.0.0.1: the first free port of `port` … `port + 9` (any free port when `port` is 0).
- * Resolves to undefined when all are taken.
+ * Resolves to undefined when all are taken. It answers only connections whose `owners` are this process's OS user.
  */
-export async function startGateway(deps: GatewayDeps, port: number, now: () => number = Date.now): Promise<Gateway | undefined> {
+export async function startGateway(deps: GatewayDeps, port: number, now: () => number = Date.now, owners: PeerOwners = systemOwners): Promise<Gateway | undefined> {
   const last = port === 0 ? 0 : port + PORT_RANGE - 1
+  const admit = peerGate(owners)
   for (let p = port; p <= last; p++) {
-    const server = serve(deps, now)
+    const server = serve(deps, now, admit)
     const bound = await listen(server, p)
     if (bound === "taken") continue
     return {

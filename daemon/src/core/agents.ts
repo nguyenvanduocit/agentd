@@ -8,6 +8,8 @@ export interface AgentCommand {
 
 export interface AgentStatus {
   name: string
+  /** The agent's name as a user reads it ("Claude Code"): apps show it as it is. */
+  title: string
   ready: boolean
   reason: string
 }
@@ -30,6 +32,8 @@ const PROGRAMS = {
 export type AgentName = AdapterName | keyof typeof PROGRAMS
 
 export const AGENT_NAMES: readonly AgentName[] = ["claude", "codex", "grok"]
+
+const TITLES: Record<AgentName, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok" }
 
 export function isAgentName(name: string): name is AgentName {
   return (AGENT_NAMES as readonly string[]).includes(name)
@@ -81,14 +85,15 @@ export function agentCommand(name: AgentName, env: Env, adapter: AdapterOf, node
 
 /** Whether the machine can start `name` now, and if not, why. */
 export function agentStatus(name: AgentName, env: Env, find: (program: string) => string | undefined, adapter: AdapterOf): AgentStatus {
-  if (seamed(name, env)) return { name, ready: true, reason: "" }
+  const status = (reason: string) => ({ name, title: TITLES[name], ready: reason === "", reason })
+  if (seamed(name, env)) return status("")
   if (name === "grok") {
     const { program, reason } = PROGRAMS.grok.needs
-    return find(program) ? { name, ready: true, reason: "" } : { name, ready: false, reason }
+    return status(find(program) ? "" : reason)
   }
   const state = adapter(name)
-  if (state?.kind === "ready") return { name, ready: true, reason: "" }
-  return { name, ready: false, reason: state?.kind === "failed" ? state.reason : installingReason(ADAPTERS[name]) }
+  if (state?.kind === "ready") return status("")
+  return status(state?.kind === "failed" ? state.reason : installingReason(ADAPTERS[name]))
 }
 
 /** Why `open` for this agent is refused, or undefined when it can start. The server sees this text. */

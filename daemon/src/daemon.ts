@@ -7,7 +7,7 @@ import type { Command } from "./core/cli.ts"
 import { installedVersion, layoutOf, type Layout } from "./core/layout.ts"
 import { agentdHome, sessionsFile } from "./core/paths.ts"
 import { controlOutcome, EXIT_RESTART, EXIT_STOPPED, isManaged } from "./core/exit.ts"
-import { addBrowser, removeOrigin, selectApps, type App } from "./core/registry.ts"
+import { addBrowser, removeOrigin, selectApps, withdrawn, type App } from "./core/registry.ts"
 import { releaseBase } from "./core/update.ts"
 import { agentEnv } from "./core/wrapper.ts"
 import { AdapterStore } from "./adapters.ts"
@@ -198,6 +198,41 @@ function gatewayDeps(file: string, hub: AppHub, browsers: BrowserSessions, hello
   }
 }
 
+/** How often the daemon reads its registry for an origin that another process took away. */
+const REGISTRY_CHECK_MS = 2000
+
+/**
+ * Ends what still runs for an origin that another process removed from the registry (`agentd apps remove`): its link
+ * and its pages' sockets, as Disconnect in the menu does. The daemon stays up. Returns what stops the checks.
+ */
+function followRegistry(file: string, hub: AppHub, browsers: BrowserSessions): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const check = async () => {
+    try {
+      // What runs is taken before the file is read: an app or a page is saved before it is linked, so one linked by
+      // then is in the file unless it was removed, and one paired while the file is read is not judged on old content.
+      const linked = hub.servers()
+      const pages = browsers.origins()
+      const gone = withdrawn(await loadRegistry(file), linked, pages)
+      for (const origin of gone.pages) {
+        say(`${origin} was disconnected: ending its pages' sessions`)
+        browsers.endOrigin(origin)
+      }
+      for (const server of gone.apps) {
+        say(`${server} was disconnected: ending its link and sessions`)
+        await hub.detach(server, true)
+      }
+    } catch (e) {
+      warn(`cannot read ${file}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    timer = setTimeout(() => void check(), REGISTRY_CHECK_MS)
+    timer.unref()
+  }
+  timer = setTimeout(() => void check(), REGISTRY_CHECK_MS)
+  timer.unref()
+  return () => clearTimeout(timer)
+}
+
 /** Forgets the app and the browser grant of `origin` and ends their sessions; the daemon stays up so it can be connected again. */
 async function disconnectOrigin(file: string, hub: AppHub, browsers: BrowserSessions, origin: string): Promise<void> {
   await updateRegistry(file, (r) => removeOrigin(r, origin))
@@ -238,11 +273,13 @@ function beginTray(c: TrayContext): () => void {
   })
 }
 
-/** What runs beside the apps: the icon in the menu bar and the updates; returns what ends them. */
+/** What runs beside the apps: the icon in the menu bar, the updates and the registry checks; returns what ends them. */
 function beginExtras(c: TrayContext): () => void {
   const stopTray = beginTray(c)
   const stopUpdates = beginUpdates(c.layout, () => c.hub.size + c.browsers.size === 0, c.stop)
+  const stopFollowing = followRegistry(c.file, c.hub, c.browsers)
   return () => {
+    stopFollowing()
     stopUpdates()
     stopTray()
   }

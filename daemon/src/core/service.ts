@@ -33,13 +33,14 @@ function fileName(manager: "launchd" | "systemd", name: string): string {
 /**
  * What a service needs from the shell that installs it: a service starts with an empty environment, so PATH (where
  * node, npm and the agents are), the seams of the tests (AGENTD_*), the XDG directories and the variables that name
- * the user's screen (the tray program needs them to find it) are copied into its definition. AGENTD_RESTART and the
- * service seams themselves are not.
+ * the user's screen (the tray program needs them to find it) are copied into its definition. AGENTD_RESTART, the
+ * service seams themselves and AGENTD_CONSENT are not: a seam that answers the consent dialog, left in a shell that
+ * installs the service, would let every page in without asking the user.
  */
 const SCREEN = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"]
 
 function copiedIntoService(name: string): boolean {
-  if (name === "AGENTD_RESTART" || name === "AGENTD_MANAGED" || name.startsWith("AGENTD_SERVICE_")) return false
+  if (name === "AGENTD_RESTART" || name === "AGENTD_MANAGED" || name === "AGENTD_CONSENT" || name.startsWith("AGENTD_SERVICE_")) return false
   return name === "PATH" || name === "XDG_CONFIG_HOME" || name === "XDG_STATE_HOME" || SCREEN.includes(name) || name.startsWith("AGENTD_")
 }
 

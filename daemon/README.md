@@ -40,7 +40,7 @@ Running the command again installs the latest release and restarts the service o
 agentd pair --app <origin> --code <code>      pair this machine with an app
 agentd [run] [--app <origin>] [--dir <dir>]    connect and serve agents
 agentd apps [list]                             the apps and web pages this machine is connected to
-agentd apps remove <origin>                    disconnect one of them (service restart applies it)
+agentd apps remove <origin>                    disconnect one of them (a running daemon ends its sessions within 2 s)
 agentd service install [--dir <dir>]           start at login, restart when it crashes, restart now on the current version
 agentd service start | restart                 start it again after a Stop from the web UI; restart it
 agentd service uninstall | status
@@ -60,7 +60,7 @@ agentd version
 
 One daemon serves many apps. An app is a server that implements `contract/define.acp.ts` (with the `hub/` library, or by hand; MindChains is one): the daemon pairs with it, dials out to it and runs agents for it, with a socket, a set of agents and an MCP wrapper (`bin/<n>/agentd-mcp`) of its own per app, so sessions never mix. Updates do not come from an app but from the release server (see Update).
 
-**The gateway** is an HTTP and WebSocket server on `127.0.0.1`, port 47615 or the next free one up to 47624 (`AGENTD_LOCAL_PORT` replaces the first port; `0` means any free port). The daemon logs `local gateway on 127.0.0.1:<port>`, or `local gateway off` when all ten are taken (paired apps keep working). Every request is checked in order: `Host` is `127.0.0.1:<port>` or `localhost:<port>` (else 421, DNS rebinding); `Origin` is present and is `https`, or `http` on a loopback host (else 403; the browser sets it, page script cannot forge it). The origin is reflected in `Access-Control-Allow-Origin`.
+**The gateway** is an HTTP and WebSocket server on `127.0.0.1`, port 47615 or the next free one up to 47624 (`AGENTD_LOCAL_PORT` replaces the first port; `0` means any free port). The daemon logs `local gateway on 127.0.0.1:<port>`, or `local gateway off` when all ten are taken (paired apps keep working). Every request is checked in order: the connection comes from a process of the daemon's own OS user (else `403 {granted:false, reason:"peer"}`, and a WebSocket upgrade is closed); `Host` is `127.0.0.1:<port>` or `localhost:<port>` (else 421, DNS rebinding); `Origin` is present and is `https`, or `http` on a loopback host (else 403; the browser sets it, page script cannot forge it). The origin is reflected in `Access-Control-Allow-Origin`.
 
 | Request | Answer |
 |---------|--------|
@@ -70,9 +70,13 @@ One daemon serves many apps. An app is a server that implements `contract/define
 | `DELETE /v1/connect` | Forgets the caller's browser grant and the app at its origin, and ends their sessions (the page's open `/v1/session` sockets close with their agents). Never touches another origin's app. The daemon stays up so the page can connect again. |
 | `GET /v1/session` (WebSocket) | Browser-granted origins only. One socket is one set of agents, ended with the socket; at most 5 sessions per socket. Messages are in `src/core/localproto.ts`: the page sends `open`, `write`, `close`; the daemon sends `hello`, `opened`, `error`, `frame`. The page is the ACP client of the lines. |
 
-Refusals: `403 {granted:false, reason:"denied"|"timeout"}`, `429 cooldown` (30 s after a deny or timeout, per origin; and three refusals within ten minutes from any origins lock every dialog until the oldest is ten minutes old, so new subdomains do not buy new dialogs; an Allow clears the count), `409 busy` (one dialog at a time), `503 no-dialog` (the machine cannot ask: nothing is granted), `400 malformed`, `502 pairing` (the app refused the code). `sdk/client/` (`@agentd/client`) is the client for pages.
+Refusals: `403 {granted:false, reason:"peer"}` (the caller's process belongs to another OS user, or its owner cannot be found), `403 {granted:false, reason:"denied"|"timeout"}`, `429 cooldown` (30 s after a deny or timeout, per origin; and three refusals within ten minutes from any origins lock every dialog until the oldest is ten minutes old, so new subdomains do not buy new dialogs; an Allow clears the count), `409 busy` (one dialog at a time), `503 no-dialog` (the machine cannot ask: nothing is granted), `400 malformed`, `502 pairing` (the app refused the code). `sdk/client/` (`@agentd/client`) is the client for pages.
 
-**The dialog** is native: `osascript` on macOS (the text goes in as `argv`, never inside the script), `zenity` or `kdialog` on Linux. It names the page's origin (from the `Origin` header, never from the body), says that Allow lets the app run the ready agents with access to the user's files and shell until the user disconnects it, and has Deny as its default button. 60 s without an answer counts as Deny. A machine with neither tool, or without a graphical session, answers `no-dialog`: the daemon never grants without asking. Windows has no dialog implementation yet.
+**The dialog** is native: `osascript` on macOS (the text goes in as `argv`, never inside the script), `zenity` or `kdialog` on Linux. It names the page's origin (from the `Origin` header, never from the body) and says what Allow gives, in the words of the next paragraph: a server can start the user's agents at any time, even when none of its pages is open; a browser grant, whenever one of its pages is open; either way the agents run as the user and can read and change any of their files and run any program, until the user disconnects it. Deny is the default button. 60 s without an answer counts as Deny. A machine with neither tool, or without a graphical session, answers `no-dialog`: the daemon never grants without asking. Windows has no dialog implementation yet.
+
+**What Allow gives** is full access to the user's account on this computer. Whoever drives a session (the app's server, or the origin's pages) is its ACP client and chooses its folder (`cwd` of `session/new`), the MCP servers the agent starts (any command), the agent's options and the answers to its permission requests (`grok` runs with `--always-approve`). The agents run as the user, with the user's own settings, skills and MCP servers. The daemon narrows none of that: it starts the agent the app names and passes the ACP lines through as they are. Keeping an app to one folder would take an OS sandbox around the agents. The access ends with Disconnect in the menu bar, `DELETE /v1/connect` from a page of the origin, or `agentd apps remove <origin>`: a running daemon reads its registry every 2 s and ends the link and page sockets of an origin it no longer lists.
+
+The gateway's checks stop web pages: a browser sets `Host` and `Origin` and page script cannot change them. They also stop the programs of other OS users on this computer: before anything else, the gateway looks up the owner of the connecting socket (`/proc/net/tcp` and `/proc/net/tcp6` on Linux, `lsof` on macOS) and answers only a process of its own user. An owner it cannot find counts as another user, and a lookup that fails is logged once. The lookup runs once per connection; on macOS it adds about 20 ms to the first request of a connection. A program of the same user can still send any `Origin` and use a browser grant of any origin: it already runs as the user, with the same access the grant gives.
 
 **Browsers.** Chrome 142 shows its own "local network" prompt the first time a public page calls loopback ([Chrome](https://developer.chrome.com/blog/local-network-access)); a page that looks for the daemon at load shows it to everyone, so an app should look only when its daemon settings are open. A request to the literal `127.0.0.1` needs no `targetAddressSpace` option. Safari has blocked `http://127.0.0.1` and `ws://127.0.0.1` from https pages ([WebKit 173161](https://bugs.webkit.org/show_bug.cgi?id=173161)); whether current Safari still does is not verified here. A page whose browser blocks the call sees "no daemon", the same as when none runs.
 
@@ -177,16 +181,18 @@ when a chat session opens, so no timeout of a chat can cut an install.
 
 ## Design in one line per block
 
-- One socket on the `/daemon` namespace per app; every stdout line, stderr chunk and exit of every agent travels in one ordered
+- One socket on the `/agentd` namespace per app; every stdout line, stderr chunk and exit of every agent travels in one ordered
   `frame` event. The contract is `contract/define.acp.ts`; `../contract/client.generated.ts` is generated from it,
   so a renamed method fails `tsc`.
 - A dropped socket ends every agent (SIGTERM, then SIGKILL after 2 s, to the whole process group) and frames of the
   old connection are never sent after the reconnect. Reconnects back off from 0.5 s to 15 s and send `hello` each time.
-- A token the server refuses ends the daemon with exit code 0 and no retry (pair again, then `service start`).
+- A token the server refuses (`unauthorized`: unknown or revoked) detaches that app with no retry (pair again, then
+  `service start`); the daemon exits 0 when it was the last app and no page grant exists. A server that could not
+  check the token now (`unavailable`, its token store failed) is retried with the reconnect backoff.
 - `launcher.sh` (shell, linted by shellcheck) is the launcher; it ships beside `daemon.js` in the tarball and the
   daemon refreshes `~/.agentd/bin/agentd` from it after an update.
 - The server names an agent (`claude`, `codex`, `grok`); the command table lives in `src/core/agents.ts`
-  (adapter versions follow `agent/package.json`). The server cannot make the daemon run another program.
+  (adapter versions follow `agent/package.json`). The ACP lines that follow are the app's: see "What Allow gives".
 - `src/core` is pure (decisions, parsing, paths); the rest does the I/O. The lint rule `src/core` forbids I/O imports there.
 
 ## Test seam
@@ -196,7 +202,7 @@ of that agent and counts it as ready. Tests and the e2e suite use it to run a fa
 Other seams, for tests only: `AGENTD_HOME` (replaces `~/.agentd`), `AGENTD_SERVICE_LABEL` and
 `AGENTD_SERVICE_DIR` (name and directory of the service definition, so a test never touches the user's service),
 `AGENTD_SERVICE_MANAGER=loop|launchd|systemd` (skips detection), `AGENTD_QUICK_SECONDS` (the launcher's 30 s),
-`AGENTD_NODE_DIST` (the install script's Node.js mirror), `AGENTD_ADAPTERS=off` (no adapter install), `AGENTD_LOCAL_PORT` (the gateway's first port, `0` for any), `AGENTD_CONSENT=<program>` (runs in place of the dialog with the title and the text as arguments; exit 0 is Allow), `AGENTD_TRAY` (`off` or a program), `AGENTD_ADAPTER_SPEC_<NAME>` (the package spec the
+`AGENTD_NODE_DIST` (the install script's Node.js mirror), `AGENTD_ADAPTERS=off` (no adapter install), `AGENTD_LOCAL_PORT` (the gateway's first port, `0` for any), `AGENTD_CONSENT=<program>` (runs in place of the dialog with the title and the text as arguments; exit 0 is Allow; never copied into a service definition), `AGENTD_TRAY` (`off` or a program), `AGENTD_ADAPTER_SPEC_<NAME>` (the package spec the
 adapter install gets, for example `file:/path/fake-adapter.tgz`; the install directory is named after a hash of it).
 
 ## Develop

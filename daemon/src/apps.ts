@@ -70,6 +70,11 @@ export class AppHub {
     return this.entries.has(server)
   }
 
+  /** The servers of the apps with a link. */
+  servers(): string[] {
+    return [...this.entries.keys()]
+  }
+
   /** Connects to the app now. */
   add(app: App): void {
     if (this.entries.has(app.server)) return
@@ -81,7 +86,7 @@ export class AppHub {
         say(`disconnected from ${app.server} (${reason}); ending ${entry.fleet.size} agent(s), reconnecting`)
         entry.fleet.endAll()
       },
-      onTrouble: (message) => warn(`cannot reach ${app.server}: ${message}; retrying`),
+      onTrouble: (message) => warn(`cannot reach ${app.server} (${message}); retrying`),
       onRejected: (message) => {
         warn(`${app.server} refused this daemon (${message}): the token is revoked or wrong, so this app stays stopped. To use it again: agentd pair --app ${app.server} --code <code>, then agentd service start`)
         void this.detach(app.server)

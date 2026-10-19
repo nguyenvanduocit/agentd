@@ -1,17 +1,17 @@
 import { execFileSync } from "node:child_process";
 import * as _cp from "node:child_process";
 import * as _fs from "node:fs";
-import * as _os from "node:os";
 import * as _path from "node:path";
 
-// A machine: its own HOME and XDG directories (config and state), so no scenario touches the real ones. The agent is the
-// fake ACP agent (it answers `initialize`), and the machine has no tray and no adapters to install.
+// A machine: its own HOME and XDG directories (config and state), so no scenario touches the real ones; the HOME is
+// under the run's directory, which scripts/e2e.sh removes however the run ends. The agent is the fake ACP agent (it
+// answers `initialize`), and the machine has no tray and no adapters to install.
 const _daemons = new Set();
 const _killDaemons = () => { for (const d of _daemons) { try { process.kill(-d.child.pid, "SIGKILL"); } catch {} } };
 process.on("exit", _killDaemons);
 
 const machine = (extraEnv = {}) => {
-  const home = _fs.mkdtempSync(_path.join(_os.tmpdir(), "agentd-e2e-__RUN__-"));
+  const home = _fs.mkdtempSync(_path.join("__WORK__", "machines", "agentd-e2e-__RUN__-"));
   const dir = _path.join(home, "work");
   _fs.mkdirSync(dir);
   const env = {

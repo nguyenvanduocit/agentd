@@ -1,11 +1,11 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { io } from "socket.io-client"
-import { build, listeningPorts, processTree, Rig, Sandbox, sh, TestDaemon, TestServer, TOKEN, waitFor } from "./harness.ts"
+import { build, listeningPorts, processTree, Rig, Sandbox, sh, sleep, TestDaemon, TestServer, TOKEN, waitFor } from "./harness.ts"
 
 beforeAll(async () => {
   await build()
@@ -94,6 +94,26 @@ describe("namespace /agentd", () => {
     expect((await r.server.status()).rejects).toBe(1)
   })
 
+  test("a server that cannot check the token now is retried, not taken for a revoke", async () => {
+    const r = await start({ claude: "sleep 60" })
+    await r.server.unavailable(2)
+    await r.server.kick(true)
+    await r.server.waitHellos(2)
+    expect((await r.server.status()).rejects).toBe(2)
+    expect(r.daemon.out).toContain("(unavailable)")
+    expect(r.daemon.out).not.toContain("stays stopped")
+  })
+
+  test("agentd apps remove, while the daemon runs, disconnects that app and leaves the daemon up", async () => {
+    const r = await start({ claude: "sleep 60" })
+    const cli = spawnSync("node", [(await build()).bundle, "apps", "remove", r.server.origin], { env: r.box.env(), encoding: "utf8" })
+    expect(cli.status).toBe(0)
+    await waitFor("the app's link to close", async () => !(await r.server.status()).connected)
+    await sleep(1500)
+    expect((await r.server.status()).hellos?.length).toBe(1)
+    expect(await Promise.race([r.daemon.exited, sleep(100).then(() => "running")])).toBe("running")
+  })
+
   test("a daemon with a refused token says so, exits 0 and is not retried", async () => {
     const r = await start({ claude: "sleep 60" })
     r.box.writeConfig(r.server.origin, "revoked")
@@ -151,6 +171,25 @@ describe("bridge subcommand", () => {
     const res = await run(r, ["mcp", "--session", "s1", "--config", cfg])
     expect(res.code).toBe(1)
     expect(res.out).toContain("refused the bridge (unauthorized)")
+  })
+
+  test("a server that cannot check the token now is retried, then the bridge gets through", async () => {
+    const r = await start({ claude: "sleep 60" })
+    await r.server.unavailable(2)
+    const res = await run(r, ["mcp", "--session", "s1"], async (p) => {
+      await waitFor("the bridge's socket", async () => (await r.server.status()).connects?.mcp === 1)
+      p.stdin.end()
+    })
+    expect(res.code).toBe(0)
+    expect((await r.server.status()).rejects).toBe(2)
+  })
+
+  test("a server that stays unavailable ends the bridge after a few tries", async () => {
+    const r = await start({ claude: "sleep 60" })
+    await r.server.unavailable(1000)
+    const res = await run(r, ["mcp", "--session", "s1"])
+    expect(res.code).toBe(1)
+    expect(res.out).toContain("(unavailable)")
   })
 
   test("a server that cannot be reached ends the bridge after a few tries", async () => {
