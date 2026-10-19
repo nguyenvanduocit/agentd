@@ -38,8 +38,8 @@ func TestSummary(t *testing.T) {
 }
 
 func TestBuildMenuWithoutApps(t *testing.T) {
-	got := labels(BuildMenu(State{Version: "1.2.3", Managed: true}))
-	want := []string{"agentd 1.2.3", "Nothing connected", "---", "Open log", "Restart", "Stop daemon"}
+	got := labels(BuildMenu(State{Version: "1.2.3", Managed: true, Log: true}))
+	want := []string{"agentd 1.2.3", "Nothing connected", "---", "Settings…", "Open log", "Restart", "Stop daemon"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -102,4 +102,28 @@ func TestActionLineIsOneJSONObject(t *testing.T) {
 	if got != `{"t":"action","id":"disconnect:https://a"}` {
 		t.Fatalf("got %s", got)
 	}
+}
+
+func TestSettingsOpensTheWindowAndIsNotReported(t *testing.T) {
+	for _, e := range BuildMenu(State{Version: "1"}) {
+		if e.Label == "Settings…" {
+			if e.ID != SettingsID {
+				t.Fatalf("got %+v", e)
+			}
+			return
+		}
+	}
+	t.Fatal("no settings entry")
+}
+
+func TestOpenLogIsDisabledWhenTheDaemonWritesToATerminal(t *testing.T) {
+	for _, e := range BuildMenu(State{Version: "1", Log: false}) {
+		if e.ID == "logs" {
+			if !e.Disabled || e.Label != "Open log (in the terminal)" {
+				t.Fatalf("got %+v", e)
+			}
+			return
+		}
+	}
+	t.Fatal("no log entry")
 }

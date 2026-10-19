@@ -16,7 +16,25 @@ type State struct {
 	Managed  bool     `json:"managed"`
 	// GatewayOff: no port was free, so web pages cannot reach the daemon.
 	GatewayOff bool `json:"gatewayOff"`
+	// Log: the daemon writes its log to a file Open log can open; without one it writes to the terminal it runs in.
+	Log    bool    `json:"log"`
+	Agents []Agent `json:"agents"`
+	// Updates is the setting "install updates automatically". Updatable: the daemon can update itself at all (it is
+	// installed and has a release server); the setting changes nothing otherwise.
+	Updates   bool `json:"updates"`
+	Updatable bool `json:"updatable"`
 }
+
+// Agent is an agent the daemon can start; Reason says why it cannot when it is not Ready.
+type Agent struct {
+	Name   string `json:"name"`
+	Title  string `json:"title"`
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason"`
+}
+
+// SettingsID is the entry that opens the settings window: the tray handles it and does not report it.
+const SettingsID = "settings"
 
 // Entry is one line of the tray menu. A non-empty ID is reported to the daemon when the entry is chosen.
 type Entry struct {
@@ -90,15 +108,24 @@ func BuildMenu(s State) []Entry {
 	if len(s.Apps)+len(s.Pages) > 0 {
 		menu = append(menu, Entry{Separator: true})
 	}
-	menu = append(menu, Entry{ID: "logs", Label: "Open log"})
+	menu = append(menu, Entry{ID: SettingsID, Label: "Settings…"})
+	if s.Log {
+		menu = append(menu, Entry{ID: "logs", Label: "Open log"})
+	} else {
+		menu = append(menu, Entry{ID: "logs", Label: "Open log (in the terminal)", Disabled: true})
+	}
 	if s.Managed {
 		menu = append(menu, Entry{ID: "restart", Label: "Restart"})
 	} else {
 		menu = append(menu, Entry{ID: "restart", Label: "Restart (not managed)", Disabled: true})
 	}
-	stop := "Stop daemon"
-	if s.Sessions > 0 {
-		stop += " (ends " + plural(s.Sessions, "agent", "agents") + ")"
+	return append(menu, Entry{ID: "stop", Label: StopLabel(s)})
+}
+
+// StopLabel names Stop and the agents it ends.
+func StopLabel(s State) string {
+	if s.Sessions == 0 {
+		return "Stop daemon"
 	}
-	return append(menu, Entry{ID: "stop", Label: stop})
+	return "Stop daemon (ends " + plural(s.Sessions, "agent", "agents") + ")"
 }

@@ -60,12 +60,26 @@ describe("the tray program", () => {
     const t = fakeTray()
     await start(t.file, [app], { AGENTD_MANAGED: "1" })
     await waitFor("the first state", () => t.lines()[0])
-    expect(JSON.parse(t.lines()[0]!)).toMatchObject({ t: "state", version: "0.0.0-itest", apps: [app.origin], pages: [], sessions: 0, managed: true, gatewayOff: false })
+    expect(JSON.parse(t.lines()[0]!)).toMatchObject({ t: "state", version: "0.0.0-itest", apps: [app.origin], pages: [], sessions: 0, managed: true, gatewayOff: false, log: false, updates: true, updatable: false })
+    const agents = (JSON.parse(t.lines()[0]!) as { agents: { name: string; title: string; ready: boolean }[] }).agents
+    expect(agents.find((a) => a.name === "codex")).toMatchObject({ ready: true })
+    expect(agents.every((a) => a.title !== "")).toBe(true)
+  })
+
+  test("the updates switch of its window saves the setting beside the config file and shows it", async () => {
+    const t = fakeTray(['{"t":"action","id":"updates:off"}'])
+    await start(t.file)
+    const settings = join(box!.config, "agentd", "settings.json")
+    await waitFor("the setting to be saved", () => existsSync(settings))
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({ updates: false })
+    await waitFor("a state with updates off", () => t.lines().some((l) => !(JSON.parse(l) as { updates: boolean }).updates))
+    expect(daemon!.proc.exitCode).toBeNull()
   })
 
   test("gets a new state when something changes, and only then", async () => {
     const t = fakeTray()
-    await start(t.file)
+    // No adapter install: one that ends changes the agents the state shows.
+    await start(t.file, [], { AGENTD_ADAPTERS: "off" })
     await waitFor("the first state", () => t.lines().length >= 1)
     await new Promise((r) => setTimeout(r, 5000))
     expect(t.lines()).toHaveLength(1)

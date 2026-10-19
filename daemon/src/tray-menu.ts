@@ -37,6 +37,12 @@ export interface TrayMenuDeps {
   stop: (code: number) => void
   restart: () => void
   disconnect: (origin: string) => Promise<void>
+  /** The setting "install updates automatically". */
+  updates: () => boolean
+  /** Whether this daemon can update itself at all; the setting changes nothing otherwise. */
+  updatable: boolean
+  /** Saves the updates setting and turns the checks on or off. */
+  setUpdates: (on: boolean) => Promise<void>
 }
 
 function openLog(logFile: string | undefined): void {
@@ -48,7 +54,8 @@ function openLog(logFile: string | undefined): void {
   spawn(cmd.file, cmd.args, { stdio: "ignore", detached: true }).on("error", (e) => warn(`tray: cannot open the log: ${e.message}`)).unref()
 }
 
-function act(d: TrayMenuDeps, action: TrayAction): void {
+/** Does what the user chose; `refresh` sends the state again at once, for a choice that changes it. */
+function act(d: TrayMenuDeps, action: TrayAction, refresh: () => void): void {
   switch (action.kind) {
     case "logs":
       openLog(d.logFile)
@@ -63,21 +70,40 @@ function act(d: TrayMenuDeps, action: TrayAction): void {
     case "disconnect":
       say(`disconnect ${action.origin} requested from the tray menu`)
       d.disconnect(action.origin).catch((e: unknown) => warn(`tray: cannot disconnect ${action.origin}: ${e instanceof Error ? e.message : String(e)}`))
+      return
+    case "updates":
+      // A setting that could not be saved is sent back as it was, so the window's switch goes back too.
+      d.setUpdates(action.on)
+        .catch((e: unknown) => warn(`tray: cannot save the updates setting: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(refresh)
   }
 }
 
 /** Starts the tray and keeps it showing what the daemon serves. Returns what ends it. */
 export function startTrayMenu(d: TrayMenuDeps): () => void {
-  const tray = new Tray(d.file, (action) => act(d, action))
   const push = (): void => {
     loadRegistry(d.registryFile).then(
       (r) => {
         const hello = d.hello()
-        tray.update(trayState({ version: hello.version, apps: r.apps.map((a) => a.server).filter(d.linked), browsers: r.browsers.map((b) => b.origin), sessions: d.sessions(), managed: hello.managed, gatewayPort: d.gatewayPort }))
+        tray.update(
+          trayState({
+            version: hello.version,
+            apps: r.apps.map((a) => a.server).filter(d.linked),
+            browsers: r.browsers.map((b) => b.origin),
+            sessions: d.sessions(),
+            managed: hello.managed,
+            gatewayPort: d.gatewayPort,
+            logFile: d.logFile,
+            agents: hello.agents,
+            updates: d.updates(),
+            updatable: d.updatable,
+          }),
+        )
       },
       () => undefined,
     )
   }
+  const tray = new Tray(d.file, (action) => act(d, action, push))
   tray.start()
   push()
   const timer = setInterval(push, REFRESH_MS)

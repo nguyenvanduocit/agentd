@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { openCommand, parseTrayLine, trayBinary, trayState } from "../../src/core/tray.ts"
 
+const claude = { name: "claude", title: "Claude Code", ready: true, reason: "" }
+const facts = { version: "1", apps: [], browsers: [], sessions: 0, managed: false, gatewayPort: 47615, logFile: undefined, agents: [], updates: true, updatable: true }
+
 describe("trayState", () => {
   test("is the state message the tray reads", () => {
-    expect(trayState({ version: "1.2.3", apps: ["https://a"], browsers: ["http://localhost:5173"], sessions: 2, managed: true, gatewayPort: 47615 })).toEqual({
+    expect(trayState({ version: "1.2.3", apps: ["https://a"], browsers: ["http://localhost:5173"], sessions: 2, managed: true, gatewayPort: 47615, logFile: "/h/logs/daemon.log", agents: [claude], updates: false, updatable: true })).toEqual({
       t: "state",
       version: "1.2.3",
       apps: ["https://a"],
@@ -11,24 +14,38 @@ describe("trayState", () => {
       sessions: 2,
       managed: true,
       gatewayOff: false,
+      log: true,
+      agents: [claude],
+      updates: false,
+      updatable: true,
     })
   })
 
   test("says when no port was free for the gateway", () => {
-    expect(trayState({ version: "1", apps: [], browsers: [], sessions: 0, managed: false, gatewayPort: undefined }).gatewayOff).toBe(true)
+    expect(trayState({ ...facts, gatewayPort: undefined }).gatewayOff).toBe(true)
+  })
+
+  test("says when there is no log file to open: the daemon writes to its terminal", () => {
+    expect(trayState(facts).log).toBe(false)
+  })
+
+  test("carries only what the window shows of an agent", () => {
+    expect(trayState({ ...facts, agents: [{ ...claude, command: "secret" } as typeof claude] }).agents).toEqual([claude])
   })
 })
 
 describe("parseTrayLine", () => {
-  test("reads the four things a user can choose", () => {
+  test("reads what a user can choose in the menu and the settings window", () => {
     expect(parseTrayLine('{"t":"action","id":"logs"}')).toEqual({ kind: "logs" })
     expect(parseTrayLine('{"t":"action","id":"restart"}')).toEqual({ kind: "restart" })
     expect(parseTrayLine('{"t":"action","id":"stop"}')).toEqual({ kind: "stop" })
     expect(parseTrayLine('{"t":"action","id":"disconnect:https://a.example"}')).toEqual({ kind: "disconnect", origin: "https://a.example" })
+    expect(parseTrayLine('{"t":"action","id":"updates:on"}')).toEqual({ kind: "updates", on: true })
+    expect(parseTrayLine('{"t":"action","id":"updates:off"}')).toEqual({ kind: "updates", on: false })
   })
 
-  test("anything else is ignored: unknown ids, a disconnect without a valid origin, other messages, not JSON", () => {
-    for (const bad of ['{"t":"action","id":"format-disk"}', '{"t":"action","id":"disconnect:"}', '{"t":"action","id":"disconnect:ftp://x"}', '{"t":"action","id":"disconnect:http://evil.example"}', '{"t":"state"}', '{"id":"stop"}', "oops", ""]) {
+  test("anything else is ignored: unknown ids, a disconnect without a valid origin, an updates choice that is neither, other messages, not JSON", () => {
+    for (const bad of ['{"t":"action","id":"format-disk"}', '{"t":"action","id":"updates:"}', '{"t":"action","id":"updates:yes"}', '{"t":"action","id":"settings"}', '{"t":"action","id":"disconnect:"}', '{"t":"action","id":"disconnect:ftp://x"}', '{"t":"action","id":"disconnect:http://evil.example"}', '{"t":"state"}', '{"id":"stop"}', "oops", ""]) {
       expect(parseTrayLine(bad)).toBeUndefined()
     }
   })

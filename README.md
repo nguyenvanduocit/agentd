@@ -11,7 +11,7 @@ web app (page)  ──@agentd/client──▶  agentd on this computer  ──�
 | Part | Where | What |
 |------|-------|------|
 | Daemon | `daemon/` | Node.js (bundled by bun). Pairs with any number of apps, runs their agents, listens only on `127.0.0.1` for web pages (detect, native consent dialog, browser sessions), updates itself from the GitHub release, runs as a launchd or systemd user service. |
-| Tray | `tray/` | A Go program ([mygo](https://github.com/egoist/mygo), no cgo): the daemon's icon in the menu bar or notification area. Built for macOS, Linux and Windows. |
+| Tray | `tray/` | A Go program ([mygo](https://github.com/egoist/mygo), no cgo): the daemon's icon in the menu bar or notification area, and its settings window. Built for macOS, Linux and Windows. |
 | Hub | `hub/` | Go library for an app's server: pairing, the `/agentd` socket namespace, agent sessions as `hub.Conn`, the user's daemons list. No dependency on any app. |
 | Release | `release/` | Go library for an app's server: the daemon version the latest release offers (its signed `latest.json`), for the "update pending" hint of the daemons list. |
 | Page SDK | `sdk/client/` | `@agentd/client`: detect the daemon, ask to connect, run an agent from a page, the install command. Built from here and attached to each GitHub release as `agentd-client-<version>.tgz`, which apps install from. |

@@ -65,9 +65,9 @@ Settings > Daemon detects when it opens and when the window gets focus, never at
 
 ### 8. Tray icon (`tray/`, `daemon/src/tray.ts`, `daemon/src/tray-menu.ts`, `daemon/src/core/tray.ts`)
 
-A Go program (own module, mygo, no cgo) the daemon starts. It reads state lines on stdin and prints the entry the user chose on stdout; it ends with its stdin. Menu: version, status line, each app and web page with Disconnect, Open log, Restart (disabled when not managed), Stop daemon (says how many agents it ends). The daemon pushes a state when it changes (checked every 2 s). A tray that ends quickly three times is given up. `AGENTD_TRAY=off|<path>`.
+A Go program (own module, mygo, no cgo) the daemon starts. It reads state lines on stdin and prints the entry the user chose on stdout; it ends with its stdin. Menu: version, status line, each app and web page with Disconnect, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when not managed), Stop daemon (says how many agents it ends). Settings… opens the tray's own native window (mygo `ui`, no webview; `tray/settings.go`): the same status, Disconnect per origin, each agent with Ready or its reason, the switch "Install updates automatically" (saved in `settings.json` beside the registry, applied at once: off ends the release checks; disabled on a daemon that cannot update), and the controls. The daemon pushes a state when it changes (checked every 2 s). A tray that ends quickly three times is given up. `AGENTD_TRAY=off|<path>`.
 
-Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64, windows amd64; `scripts/build-daemon.sh` packs them as `tray/<os>-<arch>/` from `$TRAY_DIR` or builds them when Go is installed. The tarball grows from 80 KB to 13.3 MB. The Dockerfile has a `tray` stage.
+Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64, windows amd64; `scripts/build-daemon.sh` packs them as `tray/<os>-<arch>/` from `$TRAY_DIR` or builds them when Go is installed. The tarball grows from 80 KB to about 20 MB (measured 20,199,035 bytes; the window's native UI adds about 3 MB per tray program). The Dockerfile has a `tray` stage.
 
 ## Constraints
 

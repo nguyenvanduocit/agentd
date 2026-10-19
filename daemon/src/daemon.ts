@@ -8,6 +8,7 @@ import { installedVersion, layoutOf, type Layout } from "./core/layout.ts"
 import { agentdHome, sessionsFile } from "./core/paths.ts"
 import { controlOutcome, EXIT_RESTART, EXIT_STOPPED, isManaged } from "./core/exit.ts"
 import { addBrowser, removeOrigin, selectApps, withdrawn, type App } from "./core/registry.ts"
+import { settingsFile } from "./core/settings.ts"
 import { releaseBase } from "./core/update.ts"
 import { agentEnv, WRAPPER } from "./core/wrapper.ts"
 import { AdapterStore } from "./adapters.ts"
@@ -25,6 +26,7 @@ import { refreshLauncher } from "./launcher.ts"
 import { writeApp } from "./appentry.ts"
 import { rotateLog, say, stampLines, stdoutIs, warn } from "./log.ts"
 import { SessionState } from "./state.ts"
+import { SettingsStore } from "./settings.ts"
 import { ReleaseWatcher } from "./releases.ts"
 import { Updater } from "./updater.ts"
 import { RELEASE_KEY, RELEASE_URL, VERSION } from "./version.ts"
@@ -99,23 +101,49 @@ function releaseCheckMs(env: Readonly<Record<string, string | undefined>>): numb
   return Number.isInteger(n) && n >= 50 ? n : RELEASE_CHECK_MS
 }
 
+interface Updates {
+  /** Whether this daemon can update itself at all: it is an installed daemon and there is a release server. */
+  updatable: boolean
+  /** Starts or ends the checks, as the setting "install updates automatically" says. */
+  turn: (on: boolean) => void
+  /** Ends the checks, with the daemon. */
+  stop: () => void
+}
+
 /**
- * Keeps this daemon on the version the release server offers, when it is an installed daemon and there is a release server:
- * asks at start and every few hours, and hands each offer to the updater. Returns what ends it.
+ * Keeps this daemon on the version the release server offers, when it is updatable and the setting asks for it: asks
+ * at start and every few hours, and hands each offer to the updater. Turned off, it asks nothing; a version already
+ * unpacked stays `current` and runs at the next start.
  */
-function beginUpdates(layout: Layout | undefined, idle: () => boolean, stop: (code: number) => void): () => void {
-  if (layout === undefined) return () => undefined
-  const base = releaseBase(process.env, RELEASE_URL)
-  if (base === undefined) {
-    say("updates are off: there is no release server (AGENTD_RELEASE_URL is empty)")
-    return () => undefined
+function updateSwitch(layout: Layout | undefined, idle: () => boolean, stop: (code: number) => void): Updates {
+  const base = layout === undefined ? undefined : releaseBase(process.env, RELEASE_URL)
+  if (layout === undefined || base === undefined) {
+    if (layout !== undefined) say("updates are off: there is no release server (AGENTD_RELEASE_URL is empty)")
+    return { updatable: false, turn: () => undefined, stop: () => undefined }
   }
-  const updater = makeUpdater(layout, base, idle, stop)
-  const watcher = new ReleaseWatcher({ base, intervalMs: releaseCheckMs(process.env), onOffer: (offer) => updater.offer(offer) })
-  watcher.start()
-  return () => {
-    watcher.stop()
-    updater.stop()
+  let end: (() => void) | undefined
+  const halt = () => {
+    end?.()
+    end = undefined
+  }
+  return {
+    updatable: true,
+    turn: (on) => {
+      if (on && end !== undefined) return
+      halt()
+      if (!on) {
+        say("updates are off: turned off in the settings")
+        return
+      }
+      const updater = makeUpdater(layout, base, idle, stop)
+      const watcher = new ReleaseWatcher({ base, intervalMs: releaseCheckMs(process.env), onOffer: (offer) => updater.offer(offer) })
+      watcher.start()
+      end = () => {
+        watcher.stop()
+        updater.stop()
+      }
+    },
+    stop: halt,
   }
 }
 
@@ -283,11 +311,12 @@ interface TrayContext {
   hello: () => Hello
   gatewayPort: number | undefined
   layout: Layout | undefined
+  settings: SettingsStore
   stop: (code: number) => void
 }
 
-/** The icon in the menu bar, when this platform has one; returns what ends it. */
-function beginTray(c: TrayContext): () => void {
+/** The icon in the menu bar and its settings window, when this platform has one; returns what ends it. */
+function beginTray(c: TrayContext, updates: Updates): () => void {
   const trayProgram = trayFile(process.env)
   if (trayProgram === undefined) return () => undefined
   return startTrayMenu({
@@ -301,17 +330,24 @@ function beginTray(c: TrayContext): () => void {
     stop: c.stop,
     restart: () => restartRequested("the tray menu", c.hello().managed, c.hub.size + c.browsers.size, c.stop),
     disconnect: (origin) => disconnectOrigin(c.file, c.hub, c.browsers, origin),
+    updates: () => c.settings.get().updates,
+    updatable: updates.updatable,
+    setUpdates: async (on) => {
+      await c.settings.change({ updates: on })
+      updates.turn(on)
+    },
   })
 }
 
 /** What runs beside the apps: the icon in the menu bar, the updates and the registry checks; returns what ends them. */
 function beginExtras(c: TrayContext): () => void {
-  const stopTray = beginTray(c)
-  const stopUpdates = beginUpdates(c.layout, () => c.hub.size + c.browsers.size === 0, c.stop)
+  const updates = updateSwitch(c.layout, () => c.hub.size + c.browsers.size === 0, c.stop)
+  updates.turn(c.settings.get().updates)
+  const stopTray = beginTray(c, updates)
   const stopFollowing = followRegistry(c.file, c.hub, c.browsers)
   return () => {
     stopFollowing()
-    stopUpdates()
+    updates.stop()
     stopTray()
   }
 }
@@ -321,7 +357,7 @@ export async function runDaemon(cmd: RunCommand): Promise<number> {
   stampLines()
   const host = currentHost()
   const file = registryFile(cmd, host)
-  const registry = await loadRegistry(file)
+  const [registry, settings] = await Promise.all([loadRegistry(file), SettingsStore.open(settingsFile(file))])
   const apps = selectApps(registry, cmd.app)
   const cwd = workDir(cmd.dir)
   const { root, bin } = makeTempDirs()
@@ -348,7 +384,7 @@ export async function runDaemon(cmd: RunCommand): Promise<number> {
   connectApps(apps, hub, adapters, hello)
   const gateway = await startGateway(gatewayDeps(file, hub, browsers, hello), gatewayPort(process.env))
   announce(gateway?.port, cwd, apps.length)
-  const stopExtras = beginExtras({ file, hub, browsers, hello, gatewayPort: gateway?.port, layout, stop: stop.resolve })
+  const stopExtras = beginExtras({ file, hub, browsers, hello, gatewayPort: gateway?.port, layout, settings, stop: stop.resolve })
 
   const code = await stop.promise
   adapters.stop()

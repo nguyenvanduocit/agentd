@@ -84,13 +84,14 @@ The gateway's checks stop web pages: a browser sets `Host` and `Origin` and page
 
 ## Tray icon
 
-The daemon starts `tray/` (a Go program built with [mygo](https://github.com/egoist/mygo), no cgo) as its icon in the macOS menu bar or the Windows and Linux notification area. The menu shows the version, what is connected (each app and web page with its own Disconnect), the running agents, Open log, Restart (disabled when no service restarts the daemon) and Stop daemon (which says how many agents it ends). The daemon feeds it state lines on its stdin and reads the chosen entry from its stdout (`tray/menu.go`, `src/core/tray.ts`); the tray ends when its stdin does, so a killed daemon takes its icon along. A tray that ends at once three times (no display, no notification area) is given up and the daemon runs without an icon.
+The daemon starts `tray/` (a Go program built with [mygo](https://github.com/egoist/mygo), no cgo) as its icon in the macOS menu bar or the Windows and Linux notification area. The menu shows the version, what is connected (each app and web page with its own Disconnect), the running agents, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when no service restarts the daemon) and Stop daemon (which says how many agents it ends). Settings… opens the tray's own window (native UI drawn by mygo, no webview; `tray/settings.go`): the same status, each connected app and web page with Disconnect, each agent with Ready or the reason it is not, the switch "Install updates automatically", and Open log, Restart and Stop. The daemon feeds the tray state lines on its stdin and reads what the user chose, in the menu or the window, from its stdout (`tray/menu.go`, `src/core/tray.ts`); the tray ends when its stdin does, so a killed daemon takes its icon and window along. A tray that ends at once three times (no display, no notification area) is given up and the daemon runs without an icon.
 
-- The program sits at `tray/<os>-<arch>/agentd-tray` (`.exe` on Windows) beside `daemon.js`; `scripts/build-tray.sh <outdir>` builds darwin arm64 and amd64, linux amd64 and arm64, and windows amd64, and `scripts/build-daemon.sh` packs them (from `$TRAY_DIR`, or built on the spot when Go is installed). The tarball is about 13 MB with them, against 80 KB without.
+- The program sits at `tray/<os>-<arch>/agentd-tray` (`.exe` on Windows) beside `daemon.js`; `scripts/build-tray.sh <outdir>` builds darwin arm64 and amd64, linux amd64 and arm64, and windows amd64, and `scripts/build-daemon.sh` packs them (from `$TRAY_DIR`, or built on the spot when Go is installed). The tarball is about 20 MB with them (each program about 9 MB, of which 3 MB is the native UI of the settings window), against 80 KB without.
 - `AGENTD_TRAY=off` starts none; `AGENTD_TRAY=<path>` runs that program instead (tests).
+- The updates switch applies at once and is saved in `settings.json` (see Files). Off, the daemon stops asking the releases page; a version it already unpacked stays `current` and runs at the next start. It is disabled, and says why, on a daemon that is not installed under `~/.agentd/daemon` or has no releases page: such a daemon never updates.
 - Stop from the menu is the same as Stop from an app: the daemon exits 0 and a service leaves it stopped. Opening agentd from Applications (or `agentd service start`) starts it again.
 - Under systemd the unit gets `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` from the shell that ran `service install`, so the tray finds the screen.
-- Verified on macOS only (the menu and its Stop entry against a real daemon). The Linux and Windows builds compile and are not run.
+- Verified on macOS only, against a real daemon: the menu and its Stop entry; the settings window, its Disconnect, Stop and updates switch (off and on, saved and applied). The Linux and Windows builds compile and are not run.
 
 ## Agent adapters
 
@@ -156,7 +157,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
   it (only an `agentd.app` with the bundle id `com.agentd.app`, only a desktop entry marked `X-Agentd=1`).
 - **Log.** `daemon.log` is rotated at 5 MiB, 3 files kept (`.1`, `.2`). It is copied and truncated in place, because
   the service manager holds the file open: a few lines written during the copy can be lost.
-- **Update.** At start and every six hours the daemon asks the releases page (`AGENTD_RELEASE_URL`, else the `RELEASE_URL` baked in
+- **Update.** Unless "Install updates automatically" is off in the tray's settings window, at start and every six hours the daemon asks the releases page (`AGENTD_RELEASE_URL`, else the `RELEASE_URL` baked in
   at build time, `https://github.com/nguyenvanduocit/agentd/releases` for a release; empty switches updates off) for
   `<releases>/latest/download/latest.json`; GitHub redirects that, and the tarball, to its storage host, which the daemon follows
   (https only; plain http only inside one origin, for the local stand-in). A different version must be signed (below); it
@@ -186,6 +187,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
   Remove it all with `agentd service uninstall && rm -rf ~/.agentd`.
 - Config `{apps:[{server, token}], browsers:[{origin, grantedAt}]}`, mode 0600, written through a temporary file and a rename: `$XDG_CONFIG_HOME` or `~/.config` + `/agentd/daemon.json` (Linux, macOS);
   `%APPDATA%\agentd\daemon.json` (Windows). `pair` and the gateway write it. A daemon with nothing saved runs and waits for an app to ask.
+- Settings `{updates}` in `settings.json` beside the config file (`--config` moves both), written by the tray's settings window through a temporary file and a rename. Read at start; a missing file, or one that is not JSON (said in the log), is the defaults: updates on.
 - Orphan record `sessions.json`: `$XDG_STATE_HOME` or `~/.local/state` + `/agentd/` (Windows: `%LOCALAPPDATA%`; not kept there).
   It lists the process groups of running agents with the start time of each leader. After `kill -9` of the daemon,
   the next start ends the groups that are still running.

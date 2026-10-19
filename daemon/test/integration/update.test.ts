@@ -2,7 +2,7 @@
 // server stub that the test steers.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, ReleaseServer, sh, sleep, TestServer, waitFor } from "./harness.ts"
@@ -50,7 +50,43 @@ async function setup(running: Version, env: Record<string, string> = {}): Promis
 
 const versions = async (s: TestServer) => ((await s.status()).hellos ?? []).map((h) => h.version)
 
+/** A tray program that turns updates on from its settings window once `go` exists, and records the states after that. */
+function switchingTray(): { file: string; go: string; states: () => { updates: boolean; updatable: boolean }[] } {
+  const dir = mkdtempSync(join(tmpdir(), "mc-tray-"))
+  dirs.push(dir)
+  const file = join(dir, "tray")
+  const go = join(dir, "go")
+  const lines = join(dir, "lines")
+  writeFileSync(file, `#!/bin/sh\nwhile [ ! -e ${go} ]; do sleep 0.1; done\necho '{"t":"action","id":"updates:on"}'\ncat > ${lines}\n`)
+  chmodSync(file, 0o755)
+  const states = () => (existsSync(lines) ? readFileSync(lines, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { updates: boolean; updatable: boolean }) : [])
+  return { file, go, states }
+}
+
 describe("update", () => {
+  test("turned off in the settings, the daemon never asks the release server; turned on in the tray's window, it asks at once", async () => {
+    const one = await publish("1.0.0")
+    const r = releases!
+    const s = (server = await TestServer.start("test-token"))
+    const m = (machine = new Machine())
+    await m.install(one)
+    m.pair(s.origin)
+    const settings = join(m.box.config, "agentd", "settings.json")
+    mkdirSync(join(m.box.config, "agentd"), { recursive: true })
+    writeFileSync(settings, '{"updates":false}\n')
+    const tray = switchingTray()
+    m.startLoop({ AGENTD_RELEASE_URL: r.origin, AGENTD_RELEASE_CHECK_MS: "200", AGENTD_LOCAL_PORT: "0", AGENTD_TRAY: tray.file })
+    await s.waitHellos(1)
+    await sleep(1500)
+    expect(m.out).toContain("updates are off: turned off in the settings")
+    expect(r.latestHits).toBe(0)
+
+    writeFileSync(tray.go, "")
+    await waitFor("the daemon to ask the release server", () => r.latestHits > 0, 10_000)
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({ updates: true })
+    await waitFor("a state with updates on", () => tray.states().some((st) => st.updates && st.updatable))
+  })
+
   test("a newer version is downloaded, checked, unpacked, made current, and the daemon restarts on it and says hello with it", async () => {
     const one = await publish("1.0.0")
     const two = await publish("2.0.0")
