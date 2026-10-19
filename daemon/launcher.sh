@@ -2,15 +2,15 @@
 # agentd: the launcher. install.sh copies it to ~/.agentd/bin/agentd; a service manager
 # runs it as `agentd run`.
 #
-#   - puts a Node.js that install.sh downloaded (~/.agentd/node) first on PATH,
-#   - runs `node ~/.agentd/daemon/current/daemon.js "$@"`,
+#   - puts a Node.js that install.sh downloaded (~/.agentd/node) first on PATH (the ACP adapters run on it),
+#   - runs `~/.agentd/daemon/current/agentd "$@"` (the Go engine),
 #   - keeps the previous version: when a version exits non-zero within 30 s of its start, twice in a row, `current`
 #     points back at the previous one and the daemon does not update to the bad version again (daemon/rejected),
 #   - starts the daemon again at once when it exits with 75 (a Restart from the web UI, or an update in place),
 #   - with AGENTD_RESTART=loop (no service manager) starts it again after every crash (a non-zero exit), with a
 #     growing delay, and marks the daemon as managed (AGENTD_MANAGED=1; the service definitions set it too).
 #
-# The exit codes are the protocol (daemon/src/core/exit.ts): 0 stay stopped, 75 start again now, anything else is a
+# The exit codes are the protocol (daemon/home/exit.go): 0 stay stopped, 75 start again now, anything else is a
 # crash. Without the loop, the exit code of the daemon is the exit code of the launcher, and the service manager
 # restarts it after a crash only. pair, version, service and mcp are not supervised: they run as they are.
 #
@@ -18,7 +18,7 @@
 MC_HOME="${AGENTD_HOME:-$HOME/.agentd}"
 D="$MC_HOME/daemon"
 QUICK_SECONDS="${AGENTD_QUICK_SECONDS:-30}" # a test seam
-EXIT_RESTART=75 # EXIT_RESTART in daemon/src/core/exit.ts
+EXIT_RESTART=75 # ExitRestart in daemon/home/exit.go
 
 if [ -x "$MC_HOME/node/bin/node" ]; then
   PATH="$MC_HOME/node/bin:$PATH"
@@ -27,14 +27,14 @@ export PATH
 
 say() { printf '%s launcher: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
-if [ ! -f "$D/current/daemon.js" ]; then
-  say "no daemon is installed ($D/current/daemon.js is missing): run the install command from the app's web UI again"
+if [ ! -f "$D/current/agentd" ]; then
+  say "no daemon is installed ($D/current/agentd is missing): run the install command from the app's web UI again"
   exit 1
 fi
 
 case "${1:-run}" in
   run | --*) ;;
-  *) exec node "$D/current/daemon.js" "$@" ;;
+  *) exec "$D/current/agentd" "$@" ;;
 esac
 
 CHILD=""
@@ -48,7 +48,7 @@ version_dir() {
 }
 
 # plain_version <text>: succeeds when the text is a plain version (nothing that could leave $D, and none of $D's own
-# entries, in any case: macOS file names ignore it). VERSION_PATTERN in daemon/src/core/update.ts says the same.
+# entries, in any case: macOS file names ignore it). IsVersion in daemon/update says the same.
 plain_version() {
   case "$1" in
     '' | .* | *[!0-9A-Za-z.-]*) return 1 ;;
@@ -64,7 +64,7 @@ forget_crashes() { rm -f "$D/crashes"; }
 rollback() {
   prev=""
   if [ -f "$D/previous" ]; then read -r prev <"$D/previous" || true; fi
-  if plain_version "$prev" && [ "$prev" != "$1" ] && [ -f "$D/$prev/daemon.js" ]; then
+  if plain_version "$prev" && [ "$prev" != "$1" ] && [ -f "$D/$prev/agentd" ]; then
     ln -sfn "$prev" "$D/current"
     rm -f "$D/previous" "$D/crashes"
     printf '%s\n' "$1" >"$D/rejected"
@@ -87,7 +87,7 @@ note_crash() {
 run_once() {
   running="$(version_dir)"
   started="$(date +%s)"
-  node "$D/current/daemon.js" "$@" &
+  "$D/current/agentd" "$@" &
   CHILD=$!
   wait "$CHILD"
   RUN_CODE=$?

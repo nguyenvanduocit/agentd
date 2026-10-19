@@ -23,8 +23,11 @@ func PathFromShell(out string) (string, bool) {
 }
 
 // EnginePath is the PATH of the engine and its agents: the Node.js the app carries first (the adapters run on it and
-// install with its npm), then the user's.
+// install with its npm), then the user's; just the user's when the app carries none.
 func EnginePath(nodeBin, user string) string {
+	if nodeBin == "" {
+		return user
+	}
 	return nodeBin + string(os.PathListSeparator) + user
 }
 

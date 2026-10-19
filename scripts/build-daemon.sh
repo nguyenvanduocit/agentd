@@ -1,5 +1,6 @@
 #!/bin/bash
-# Builds the user-machine daemon: a one-file Node bundle and its launcher packed as an npm tarball, plus the index the server serves.
+# Builds the user-machine daemon: the Go engine (cmd/agentd) for darwin and linux on arm64 and amd64, its launcher and the tray
+# programs packed as one npm-shaped tarball, plus the index the server serves.
 #
 #   scripts/build-daemon.sh <outdir>
 #
@@ -7,13 +8,15 @@
 # sha256, signature}) and install.sh (daemon/install.sh.in with this release's values). <outdir>/latest holds the version, which
 # cmd/agentd-server (the local stand-in for GitHub Releases) serves as the latest release. The version is
 # $VERSION (RELEASE=1: required, x.y.z, and an existing tarball of it is never overwritten), or 0.0.0-g<git describe> (a semver prerelease; the "g" keeps an all-digit hash from reading as a numeric
-# identifier with leading zeros, which semver forbids), or 0.0.0-dev when there is no git history. Run the result with: npx -y <tgz> version
+# identifier with leading zeros, which semver forbids), or 0.0.0-dev when there is no git history. package/ of the tarball holds agentd-<os>-<arch>
+# (the engine of each platform; install.sh and the updater install the one of the machine as <home>/daemon/<version>/agentd),
+# launcher.sh, package.json and tray/. Run the result: untar it and run package/agentd-<os>-<arch> version
 #
 # RELEASE_URL is the releases page the daemon takes updates from and install.sh downloads from, baked in:
 # https://github.com/<owner>/<repo>/releases (the default of a RELEASE=1 build), or the local stand-in's origin in development.
 #
-# Every build is signed (scripts/sign-daemon.ts): `signature` is the Ed25519 signature of the version and the tarball's
-# sha256, and the bundle bakes in the public key a daemon checks every update against. The private key is the file
+# Every build is signed (cmd/sign-daemon): `signature` is the Ed25519 signature of the version and the tarball's
+# sha256, and every engine bakes in the public key a daemon checks every update against. The private key is the file
 # $DAEMON_SIGNING_KEY (PKCS8 PEM). Without it the dev key .dev-signing/daemon-signing.key is used, made on first use:
 # daemons built with it accept only updates built with it. RELEASE=1 (the Dockerfile) requires $DAEMON_SIGNING_KEY and
 # fails unless its public key is daemon/release.pub, so a wrong key never ships daemons that installed ones refuse.
@@ -30,7 +33,7 @@ if [ -z "${VERSION:-}" ]; then
   fi
 else
   # The shape the daemon (VERSION_PATTERN) and the release server (versionPattern) accept: anything else would be signed
-  # and published but refused by every daemon, and it is embedded in --define.
+  # and published but refused by every daemon, and it is embedded in -ldflags -X.
   if ! [[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]{0,63}$ ]] || [[ "$VERSION" =~ ^(current|previous|rejected|crashes)$ ]]; then
     echo "VERSION \"$VERSION\" is not a plain version: [0-9A-Za-z.-], at most 64, starting with a letter or digit" >&2
     exit 1
@@ -41,7 +44,10 @@ if [ "${RELEASE:-}" = 1 ] && ! [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*
   echo "RELEASE=1 needs VERSION=x.y.z (got \"$VERSION\")" >&2
   exit 1
 fi
-SIGN=(bun "$ROOT/scripts/sign-daemon.ts")
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+(cd "$ROOT" && go build -o "$STAGE/sign-daemon" ./cmd/sign-daemon)
+SIGN=("$STAGE/sign-daemon")
 if [ -n "${DAEMON_SIGNING_KEY:-}" ]; then
   KEY="$DAEMON_SIGNING_KEY"
 elif [ "${RELEASE:-}" = 1 ]; then
@@ -66,7 +72,7 @@ if [ "${RELEASE:-}" = 1 ] && ! cmp -s <(printf '%s\n' "$PUB") "$ROOT/daemon/rele
 fi
 RELEASE_KEY="$("${SIGN[@]}" public-b64 "$KEY")"
 
-# The releases page the daemon takes updates from, baked into the bundle (AGENTD_RELEASE_URL overrides it at run time).
+# The releases page the daemon takes updates from, baked into the engine (AGENTD_RELEASE_URL overrides it at run time).
 # A release says it: a daemon that points at a development server would never update.
 if [ -z "${RELEASE_URL:-}" ]; then
   if [ "${RELEASE:-}" = 1 ]; then
@@ -92,17 +98,19 @@ if [ "${RELEASE:-}" = 1 ] && [ -e "$RELEASE_DIR/$TARBALL" ]; then
   exit 1
 fi
 
-[ -d "$ROOT/daemon/node_modules" ] || (cd "$ROOT/daemon" && bun install --frozen-lockfile)
-
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
 PKG="$STAGE/package"
 mkdir "$PKG"
 
-# CommonJS: Node 20 runs daemon.js without a package.json "type" next to it (dist/daemon.js alone, or in the tarball).
-bun build "$ROOT/daemon/src/main.ts" --target=node --format=cjs \
-  --define "AGENTD_VERSION=\"$VERSION\"" --define "AGENTD_RELEASE_KEY=\"$RELEASE_KEY\"" --define "AGENTD_RELEASE_URL=\"$RELEASE_URL\"" --outfile "$PKG/daemon.js"
-chmod 755 "$PKG/daemon.js"
+# One static engine per platform: the tarball is the same for every machine, as the update protocol is. No cgo, so every
+# platform builds from any machine.
+HOME_PKG=github.com/nguyenvanduocit/agentd/daemon/home
+LDFLAGS="-s -w -X $HOME_PKG.Version=$VERSION -X $HOME_PKG.ReleaseKey=$RELEASE_KEY -X $HOME_PKG.ReleaseURL=$RELEASE_URL"
+for os in darwin linux; do
+  for arch in arm64 amd64; do
+    (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "$PKG/agentd-$os-$arch" ./cmd/agentd)
+    chmod 755 "$PKG/agentd-$os-$arch"
+  done
+done
 # The launcher install.sh puts at ~/.agentd/bin/agentd; the daemon refreshes it from here after an update.
 cp "$ROOT/daemon/launcher.sh" "$PKG/launcher.sh"
 chmod 755 "$PKG/launcher.sh"
@@ -111,31 +119,25 @@ cat >"$PKG/package.json" <<JSON
 {
   "name": "agentd",
   "version": "$VERSION",
-  "description": "Runs your coding agents for the apps you allow, on your own machine",
-  "bin": { "agentd": "daemon.js" },
-  "engines": { "node": ">=20" }
+  "description": "Runs your coding agents for the apps you allow, on your own machine"
 }
 JSON
 
-# The tray program (tray/, Go): $TRAY_DIR holds a build of every platform (scripts/build-tray.sh); without it one is built
-# here when Go is installed. A build without Go and without TRAY_DIR has no tray, and says so.
-if [ -z "${TRAY_DIR:-}" ] && command -v go >/dev/null; then
+# The tray program (tray/, Go): $TRAY_DIR holds a build of every platform (scripts/build-tray.sh); without it one is built here.
+if [ -z "${TRAY_DIR:-}" ]; then
   TRAY_DIR="$STAGE/tray-build"
   "$ROOT/scripts/build-tray.sh" "$TRAY_DIR"
 fi
-if [ -n "${TRAY_DIR:-}" ]; then
-  if [ ! -d "$TRAY_DIR" ]; then
-    echo "TRAY_DIR $TRAY_DIR is not a directory" >&2
-    exit 1
-  fi
-  mkdir "$PKG/tray"
-  cp -R "$TRAY_DIR"/. "$PKG/tray/"
-else
-  echo "no tray program in this build: Go is not installed and TRAY_DIR is not set" >&2
+if [ ! -d "$TRAY_DIR" ]; then
+  echo "TRAY_DIR $TRAY_DIR is not a directory" >&2
+  exit 1
 fi
+mkdir "$PKG/tray"
+cp -R "$TRAY_DIR"/. "$PKG/tray/"
 
-# npm's layout: one top-level package/ directory. gzip -n leaves the timestamp out of the header.
-tar -cf - -C "$STAGE" package | gzip -n >"$RELEASE_DIR/$TARBALL"
+# npm's layout: one top-level package/ directory. gzip -n leaves the timestamp out of the header. COPYFILE_DISABLE keeps
+# macOS tar from adding a ._<name> member for each file's extended attributes (they would unpack as files of their own).
+COPYFILE_DISABLE=1 tar -cf - -C "$STAGE" package | gzip -n >"$RELEASE_DIR/$TARBALL"
 
 if command -v sha256sum >/dev/null; then SHA="$(sha256sum "$RELEASE_DIR/$TARBALL" | cut -d' ' -f1)"; else SHA="$(shasum -a 256 "$RELEASE_DIR/$TARBALL" | cut -d' ' -f1)"; fi
 SIGNATURE="$("${SIGN[@]}" sign "$KEY" "$VERSION" "$SHA")"

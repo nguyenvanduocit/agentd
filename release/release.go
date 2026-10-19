@@ -102,8 +102,8 @@ func publicKey() (ed25519.PublicKey, error) {
 	return pub, nil
 }
 
-// check is nil when key signed o's version and sha256, as scripts/sign-daemon.ts signs them (and as the daemon
-// checks them, daemon/src/core/signature.ts).
+// check is nil when key signed o's version and sha256, as cmd/sign-daemon signs them (and as the daemon
+// checks them, daemon/update/signature.go).
 func check(o Offer, key ed25519.PublicKey) error {
 	if !versionPattern.MatchString(o.Version) {
 		return fmt.Errorf("version %q is not a plain version", o.Version)

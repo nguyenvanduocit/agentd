@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -19,35 +20,52 @@ import (
 // maxLog is how large the engine's log may grow before the app starts a new one at the next start of the engine.
 const maxLog = 5 << 20
 
-// EngineFiles are what the app runs: Node.js, the engine's daemon.js, and where its log goes.
+// EngineFiles are what the app runs: the engine (agentd's Go binary), the Node.js it runs the ACP adapters on, and where
+// its log goes. Node is empty when the app carries none; the engine then reports its adapters not ready.
 type EngineFiles struct {
-	Node, Script, Home, Log string
+	Engine, Node, Home, Log string
 }
 
-// FindEngine finds the engine the app carries in its resources: daemon.js in engine/, and node in node/bin of the
-// platform's resources (merged into the app's by mygo build, in a directory of its own under go run).
-// AGENTD_APP_NODE and AGENTD_APP_ENGINE name others (development, tests); AGENTD_HOME moves the engine's home.
+// NodeBin is the directory of the Node.js the app carries, or "" without one.
+func (f EngineFiles) NodeBin() string {
+	if f.Node == "" {
+		return ""
+	}
+	return filepath.Dir(f.Node)
+}
+
+// FindEngine finds what the app carries in its resources: engine/agentd, and node/bin/node for the adapters. Both are
+// merged into the app's resources by mygo build from the platform's directory, and stay in a directory of their own
+// under go run, so each is looked for in the resources and then in the platform's.
+// AGENTD_APP_ENGINE and AGENTD_APP_NODE name others (development, tests); AGENTD_HOME moves the engine's home. An app
+// without an engine cannot run; one without Node.js runs, and its adapters are not ready.
 func FindEngine(resources, home string, env func(string) string) (EngineFiles, error) {
-	f := EngineFiles{Node: env("AGENTD_APP_NODE"), Script: env("AGENTD_APP_ENGINE"), Home: env("AGENTD_HOME")}
+	f := EngineFiles{Engine: env("AGENTD_APP_ENGINE"), Node: env("AGENTD_APP_NODE"), Home: env("AGENTD_HOME")}
 	if f.Home == "" {
 		f.Home = filepath.Join(home, ".agentd")
 	}
 	f.Log = filepath.Join(f.Home, "logs", "daemon.log")
-	if f.Script == "" {
-		f.Script = filepath.Join(resources, "engine", "daemon.js")
+	if f.Engine == "" {
+		f.Engine = carried(resources, "engine", "agentd")
 	}
 	if f.Node == "" {
-		for _, dir := range []string{resources, filepath.Join(resources, runtime.GOOS+"-"+runtime.GOARCH)} {
-			if node := filepath.Join(dir, "node", "bin", "node"); exists(node) {
-				f.Node = node
-				break
-			}
-		}
+		f.Node = carried(resources, "node", "bin", "node")
 	}
-	if f.Node == "" || !exists(f.Script) {
-		return f, fmt.Errorf("this app carries no engine (node: %q, daemon.js: %q)", f.Node, f.Script)
+	if f.Engine == "" || !exists(f.Engine) {
+		return f, fmt.Errorf("this app carries no engine (looked for %q)", cmp.Or(f.Engine, filepath.Join(resources, "engine", "agentd")))
 	}
 	return f, nil
+}
+
+// carried is the path of a file the app ships, in the resources or else in the platform's directory of them; "" when it
+// is in neither.
+func carried(resources string, rel ...string) string {
+	for _, dir := range []string{resources, filepath.Join(resources, runtime.GOOS+"-"+runtime.GOARCH)} {
+		if p := filepath.Join(append([]string{dir}, rel...)...); exists(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 func exists(p string) bool {
@@ -74,21 +92,21 @@ func StartEngine(f EngineFiles, home, path string, onState func(State)) (*Engine
 		return nil, fmt.Errorf("the engine's channel: %w", err)
 	}
 	theirs := os.NewFile(uintptr(fds[1]), "agentd-ui-engine")
-	defer theirs.Close()
+	defer func() { _ = theirs.Close() }()
 	// A net.Conn, on the poller: closing it ends a read in flight, so the engine sees its channel close.
 	file := os.NewFile(uintptr(fds[0]), "agentd-ui")
 	ours, err := net.FileConn(file)
-	file.Close()
+	_ = file.Close()
 	if err != nil {
 		return nil, fmt.Errorf("the engine's channel: %w", err)
 	}
 	logFile, err := openLog(f.Log)
 	if err != nil {
-		ours.Close()
+		_ = ours.Close()
 		return nil, err
 	}
-	defer logFile.Close()
-	cmd := exec.Command(f.Node, f.Script, "run")
+	defer func() { _ = logFile.Close() }()
+	cmd := exec.Command(f.Engine, "run")
 	cmd.Dir = home
 	// The last of a duplicated name wins: the app's PATH and channel replace whatever its own environment says.
 	cmd.Env = append(os.Environ(), "PATH="+path, "AGENTD_UI_FD=3", "AGENTD_MANAGED=1", "AGENTD_HOME="+f.Home)
@@ -96,7 +114,7 @@ func StartEngine(f EngineFiles, home, path string, onState func(State)) (*Engine
 	cmd.ExtraFiles = []*os.File{theirs}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		ours.Close()
+		_ = ours.Close()
 		return nil, fmt.Errorf("start the engine: %w", err)
 	}
 	e := &Engine{cmd: cmd, conn: ours, started: time.Now(), done: make(chan struct{})}
@@ -141,7 +159,7 @@ func (e *Engine) wait() {
 	default:
 		e.code = -1 // killed by a signal, or never waited on: a crash
 	}
-	e.conn.Close()
+	_ = e.conn.Close()
 	close(e.done)
 }
 

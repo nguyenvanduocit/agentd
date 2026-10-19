@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds agentd.app, the desktop app (tray/, with mygo), for macOS. Into its resources go the engine (the daemon bundled
-# from daemon/, which never updates itself: the app does) and Node.js, the version daemon/install.sh.in pins, checked
-# against nodejs.org's SHASUMS256.txt.
+# Builds agentd.app, the desktop app (tray/, with mygo), for macOS. Into its resources go the engine (agentd, the Go
+# binary of cmd/agentd, which never updates itself: the app does) and Node.js for the ACP adapters, the version
+# daemon/install.sh.in pins, checked against nodejs.org's SHASUMS256.txt.
 #
 #   scripts/build-desktop.sh
 #
@@ -21,17 +21,21 @@ CACHE="${AGENTD_NODE_CACHE:-$HOME/Library/Caches/agentd-build/node}"
 RES="$ROOT/tray/resources"
 
 rm -rf "$RES" "$ROOT/tray/build"
-mkdir -p "$RES/engine" "$CACHE"
+mkdir -p "$CACHE"
 
-# The engine: the daemon as a release bundles it, with no release key and no releases page: the app updates it.
-(cd "$ROOT/daemon" && bun install --frozen-lockfile >/dev/null && bun build src/main.ts --target=node --format=cjs \
-  --define "AGENTD_VERSION=\"$VERSION\"" --define 'AGENTD_RELEASE_KEY=""' --define 'AGENTD_RELEASE_URL=""' \
-  --outfile "$RES/engine/daemon.js" >&2)
-# daemon.js is CommonJS: Node reads a module's type from the nearest package.json, so the engine brings its own.
-printf '{ "type": "commonjs" }\n' >"$RES/engine/package.json"
+# The engine for one architecture, into the platform's resources, which mygo build merges into that platform's app
+# (resources/darwin-<arch>/engine/agentd is engine/agentd in Contents/Resources). It has no release key and no releases
+# page: the app updates it.
+engine_for() {
+  local arch="$1" pkg=github.com/nguyenvanduocit/agentd/daemon/home
+  mkdir -p "$RES/darwin-$arch/engine"
+  (cd "$ROOT" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -trimpath \
+    -ldflags "-s -w -X $pkg.Version=$VERSION -X $pkg.ReleaseKey= -X $pkg.ReleaseURL=" \
+    -o "$RES/darwin-$arch/engine/agentd" ./cmd/agentd)
+}
 
 # Node.js for one architecture, from nodejs.org once, checked against its SHASUMS256.txt: bin (node, npm, npx) and lib
-# (npm itself), into the platform's resources, which mygo build merges into that platform's app.
+# (npm itself), into the platform's resources, which mygo build merges into that platform's app. The adapters run on it.
 node_for() {
   local arch="$1" name sums tgz want got
   name="node-v$NODE_VERSION-darwin-${arch/amd64/x64}" # Node.js names Intel builds x64
@@ -52,6 +56,7 @@ node_for() {
 
 platforms=""
 for arch in $ARCHES; do
+  engine_for "$arch"
   node_for "$arch"
   platforms="${platforms:+$platforms,}darwin/$arch"
 done

@@ -16,7 +16,7 @@ The daemon is no longer MindChains-specific (see `2026-10-19-daemon-multi-app-de
 ## Non-goals
 
 - Deploying the agentd server, buying or choosing its domain, publishing to npmjs (needs the user).
-- The daemon on native Windows; a Go rewrite of the daemon; cross-origin app servers (a page connects the app at its own origin).
+- The daemon on native Windows; cross-origin app servers (a page connects the app at its own origin).
 - In-place migration of daemons already installed under the old names (see "Existing installs").
 - Renaming MindChains' own browser contract (`startDaemonPairing`, `DaemonList` in `frontend/src/rpc/define.ts`): it is MindChains' UI contract.
 

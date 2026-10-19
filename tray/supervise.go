@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Exit codes are the engine's protocol with whatever runs it (daemon/src/core/exit.ts): 0 stays stopped (a Stop from an
+// Exit codes are the engine's protocol with whatever runs it (daemon/home/exit.go): 0 stays stopped (a Stop from an
 // app's server), 75 asks to be started again (a Restart, an update), anything else is a crash.
 const (
 	exitStopped = 0

@@ -28,9 +28,12 @@ const a = machine({ AGENTD_RELEASE_URL: "" });
 const bundle = _path.join(a.home, "daemon");
 _fs.mkdirSync(bundle);
 _cp.execFileSync("tar", ["-xzf", _path.join("__DIST__/download/v0.0.1", tarball), "-C", bundle, "--strip-components=1"]);
+// A file made under this browser carries its quarantine flag, and macOS kills an unnotarized binary that has one; the installer's curl sets none.
+_cp.spawnSync("xattr", ["-dr", "com.apple.quarantine", bundle]);
 const consent = _path.join(a.home, "consent");
 _fs.writeFileSync(consent, `#!/bin/sh\necho "$1" >> ${_path.join(a.home, "asked")}\nexit 0\n`, { mode: 0o755 });
-a.start(`node ${_path.join(bundle, "daemon.js")} run`, { AGENTD_CONSENT: consent });
+const engine = _path.join(bundle, `agentd-${process.platform}-${process.arch === "x64" ? "amd64" : process.arch}`);
+a.start(`${engine} run`, { AGENTD_CONSENT: consent });
 const gatewayLine = async () => { for (let i = 0; i < 100; i++) { const m = /local gateway on 127\.0\.0\.1:(\d+)/.exec(a.output()); if (m) return m[1]; await sleep(200); } return undefined; };
 check("the daemon says where its gateway listens", !!(await gatewayLine()));
 await refocus();
@@ -66,7 +69,8 @@ await page.waitForFunction(() => /protocolVersion/.test(document.querySelector("
 check("the installed daemon answers an agent", (await text("ping-result")).includes('"protocolVersion":1'));
 
 // --- C: the release server publishes a newer daemon; the running one takes it
-_cp.execFileSync("bash", ["__ROOT__/scripts/build-daemon.sh", "__DIST__"], { env: { ...process.env, PATH: "__PATH__", VERSION: "0.0.2", RELEASE_URL: "__AGENTD_URL__", TRAY_DIR: "__EMPTY_TRAY__" }, stdio: "ignore" });
+const built = await run("bash __ROOT__/scripts/build-daemon.sh __DIST__", { PATH: "__PATH__", VERSION: "0.0.2", RELEASE_URL: "__AGENTD_URL__", TRAY_DIR: "__EMPTY_TRAY__" });
+check("the release server has a newer daemon", built.status === 0, built.output.trim().split("\n").slice(-3).join(" | "));
 await waitRow((t) => /: online \(agentd 0\.0\.2\)/.test(t), "the daemon online on 0.0.2", 90000);
 check("the daemon updated itself from the release server and came back", /updated to 0\.0\.2/.test(b.output()), b.output().trim().split("\n").slice(-2).join(" | "));
 await b.destroy();

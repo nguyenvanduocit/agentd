@@ -81,7 +81,7 @@ func (d *desktop) ready() {
 	d.files = files
 	// The login shell may take a moment: the main thread does not wait for it.
 	go func() {
-		path := EnginePath(filepath.Dir(files.Node), LoginPath())
+		path := EnginePath(files.NodeBin(), LoginPath())
 		mygo.RunOnMain(func() {
 			d.path = path
 			d.start()
@@ -164,7 +164,7 @@ func (d *desktop) beforeQuit(q *mygo.QuitEvent) {
 func (d *desktop) handle(id string) bool {
 	switch id {
 	case StartID:
-		if d.engine == nil && d.files.Node != "" {
+		if d.engine == nil && d.files.Engine != "" {
 			d.crashes = 0
 			d.start()
 		}

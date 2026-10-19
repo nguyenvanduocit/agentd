@@ -19,3 +19,9 @@ func TestEnginePathPutsTheBundledNodeFirst(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestEnginePathWithoutBundledNodeIsTheUsers(t *testing.T) {
+	if got := EnginePath("", "/opt/homebrew/bin:/usr/bin"); got != "/opt/homebrew/bin:/usr/bin" {
+		t.Fatalf("got %q", got)
+	}
+}

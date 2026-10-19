@@ -4,7 +4,7 @@ Runs your coding agents (Claude, Codex, Grok) on your own machine for the apps y
 client; the daemon starts the agent process, relays its stdio lines over a socket, and runs the agent with your MCP
 servers, skills and folders. It serves any number of apps (each one dials in from the daemon's side) and shows an icon in
 the menu bar. Its only listening port is a gateway on `127.0.0.1`, which web pages use to find it and to ask for a
-connection. Node.js >= 20.
+connection. A Go program; Node.js >= 20 only for the agents' ACP adapters.
 
 ## Install
 
@@ -19,7 +19,9 @@ one-time pairing code.
 
 macOS (arm64, x64) and Linux (x64, arm64, glibc). It needs `curl`, `tar`, `bash` and `shasum` or `sha256sum`, no
 sudo, and writes only under your home directory. Windows: use WSL. The script checks the daemon tarball against the
-sha256 baked into it when the release was built, uses the machine's Node.js >= 20 (with `npm`), or else downloads the pinned LTS
+sha256 baked into it when the release was built and installs the engine of the machine's platform (the tarball carries
+`agentd-<os>-<arch>` for darwin and linux on arm64 and amd64) as `~/.agentd/daemon/<version>/agentd`. The agents' adapters run on
+Node.js: it uses the machine's Node.js >= 20 (with `npm`), or else downloads the pinned LTS
 from nodejs.org into `~/.agentd/node` (checked against that release's `SHASUMS256.txt`). It does not check the
 release signature: the first install trusts GitHub's TLS and the script it serves, so a compromised release can
 serve another script. Signing protects the updates of a daemon already installed.
@@ -34,7 +36,7 @@ Running the command again installs the latest release and restarts the service o
 
 ## Commands
 
-`~/.agentd/bin/agentd` is the launcher; it runs `node ~/.agentd/daemon/current/daemon.js`.
+`~/.agentd/bin/agentd` is the launcher; it runs `~/.agentd/daemon/current/agentd` (the Go engine), with Node.js on its PATH for the adapters.
 
 ```
 agentd pair --app <origin> --code <code>      pair this machine with an app
@@ -68,7 +70,7 @@ One daemon serves many apps. An app is a server that implements `contract/define
 | `POST /v1/connect {mode:"server", code}` | Shows the dialog. On Allow: pairs with the server **at the caller's origin** using `code`, saves the app and links to it at once (pairing an app that is already linked replaces its token and links again). A body that names a server is `400`: a page cannot point the daemon at an origin that is not its own. `200 {granted:true}` |
 | `POST /v1/connect {mode:"browser"}` | Shows the dialog. On Allow: saves the origin as a browser grant (it may then open sessions). A granted origin gets `200` without a dialog. |
 | `DELETE /v1/connect` | Forgets the caller's browser grant and the app at its origin, and ends their sessions (the page's open `/v1/session` sockets close with their agents). Never touches another origin's app. The daemon stays up so the page can connect again. |
-| `GET /v1/session` (WebSocket) | Browser-granted origins only. One socket is one set of agents, ended with the socket; at most 5 sessions per socket. Messages are in `src/core/localproto.ts`: the page sends `open`, `write`, `close`, `mcp`; the daemon sends `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client of the lines, and may serve the agent MCP tools (below). |
+| `GET /v1/session` (WebSocket) | Browser-granted origins only. One socket is one set of agents, ended with the socket; at most 5 sessions per socket. Messages are in `daemon/pagemcp/localproto.go`: the page sends `open`, `write`, `close`, `mcp`; the daemon sends `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client of the lines, and may serve the agent MCP tools (below). |
 
 **Tools from the page.** A page's agent can call tools the page itself serves. `opened` carries `mcp: {command:"<tmp>/agentd-XXXXXX/bin/page/agentd-mcp", args:[], env:[{name:"AGENTD_MCP_SOCKET", value}, {name:"AGENTD_MCP_TOKEN", value}]}`, the stdio MCP server the page lists (with a name) in `session/new`'s `mcpServers`. The command is the pages' own wrapper (it runs `mcp --page`) by absolute path, as the ACP schema asks, so it starts whatever `PATH` the agent gives its MCP servers (verified with Claude's adapter 0.86: `test/integration/pagetools.real.test.ts`, run with `RUN_REAL_CLAUDE=1`); it sends the token to the daemon's Unix socket `<tmp>/agentd-XXXXXX/mcp.sock`, then relays each line of the agent's MCP client to the page as `{t:"mcp", id, line}`, and each `{t:"mcp", id, line}` of the page back to the agent. The socket's directory is mode 0700, so other OS users cannot reach it; the token (256 random bits, one per session) is in the environment, not the arguments, which other users can read with `ps`. It opens no port. The token is bound to the page's socket and the session, and dies with either, which ends the bridge (it exits 1); a token the daemon does not know is refused and the bridge exits 1 with the reason. If the agent starts the server again, the newer bridge replaces the older. A page `mcp` while no bridge is connected is an `error` for that session. Lines keep the 32 MiB cap, and the bridge's lines to a page wait, as the agent's output does, while the page's socket is behind. A daemon that cannot listen on the socket (a temporary path too long for one) says so in its log and sends no `mcp`.
 
@@ -84,10 +86,10 @@ The gateway's checks stop web pages: a browser sets `Host` and `Origin` and page
 
 ## Tray icon
 
-The daemon starts `tray/` (a Go program built with [mygo](https://github.com/egoist/mygo), no cgo) as `agentd-tray child`, its icon in the macOS menu bar or the Windows and Linux notification area; without `child` the same program is agentd.app, which starts the daemon instead (below). The menu shows the version, what is connected (each app and web page with its own Disconnect), the running agents, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when no service restarts the daemon) and Stop daemon (which says how many agents it ends). Settings… opens the tray's own window (native UI drawn by mygo, no webview; `tray/settings.go`): the same status, each connected app and web page with Disconnect, each agent with Ready or the reason it is not, the switch "Install updates automatically", and Open log, Restart and Stop. The daemon feeds the tray state lines on its stdin and reads what the user chose, in the menu or the window, from its stdout (`tray/menu.go`, `src/core/tray.ts`); the tray ends when its stdin does, so a killed daemon takes its icon and window along. A tray that ends at once three times (no display, no notification area) is given up and the daemon runs without an icon.
+The daemon starts `tray/` (a Go program built with [mygo](https://github.com/egoist/mygo), no cgo) as `agentd-tray child`, its icon in the macOS menu bar or the Windows and Linux notification area; without `child` the same program is agentd.app, which starts the daemon instead (below). The menu shows the version, what is connected (each app and web page with its own Disconnect), the running agents, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when no service restarts the daemon) and Stop daemon (which says how many agents it ends). Settings… opens the tray's own window (native UI drawn by mygo, no webview; `tray/settings.go`): the same status, each connected app and web page with Disconnect, each agent with Ready or the reason it is not, the switch "Install updates automatically", and Open log, Restart and Stop. The daemon feeds the tray state lines on its stdin and reads what the user chose, in the menu or the window, from its stdout (`tray/menu.go`, `daemon/tray/state.go`); the tray ends when its stdin does, so a killed daemon takes its icon and window along. A tray that ends at once three times (no display, no notification area) is given up and the daemon runs without an icon.
 
-- **Started by agentd.app.** With `AGENTD_UI_FD=<fd>` (the app hands over one end of a socket pair as fd 3) the daemon starts no tray program: it sends its state lines on that descriptor and takes the user's choices from it, the same JSON lines both ways (`src/applink.ts`), and it stops, ending its agents, when the app's end closes (`agentd.app closed its channel: stopping`). The app sets `AGENTD_MANAGED=1`, so Restart exits 75 and the app starts it again; it keeps the log (`~/.agentd/logs/daemon.log`), Open log and Quit itself. See `docs/design/desktop-app.md`.
-- The program sits at `tray/<os>-<arch>/agentd-tray` (`.exe` on Windows) beside `daemon.js`; `scripts/build-tray.sh <outdir>` builds darwin arm64 and amd64, linux amd64 and arm64, and windows amd64, and `scripts/build-daemon.sh` packs them (from `$TRAY_DIR`, or built on the spot when Go is installed). The tarball is about 20 MB with them (each program about 9 MB, of which 3 MB is the native UI of the settings window), against 80 KB without.
+- **Started by agentd.app.** With `AGENTD_UI_FD=<fd>` (the app hands over one end of a socket pair as fd 3) the daemon starts no tray program: it sends its state lines on that descriptor and takes the user's choices from it, the same JSON lines both ways (`daemon/tray/applink.go`), and it stops, ending its agents, when the app's end closes (`agentd.app closed its channel: stopping`). The app sets `AGENTD_MANAGED=1`, so Restart exits 75 and the app starts it again; it keeps the log (`~/.agentd/logs/daemon.log`), Open log and Quit itself. See `docs/design/desktop-app.md`.
+- The program sits at `tray/<os>-<arch>/agentd-tray` (`.exe` on Windows) beside `agentd`; `scripts/build-tray.sh <outdir>` builds darwin arm64 and amd64, linux amd64 and arm64, and windows amd64, and `scripts/build-daemon.sh` packs them (from `$TRAY_DIR`, or built on the spot). The tarball is about 20 MB with them (each program about 9 MB, of which 3 MB is the native UI of the settings window), against 80 KB without.
 - `AGENTD_TRAY=off` starts none; `AGENTD_TRAY=<path>` runs that program instead (tests).
 - The updates switch applies at once and is saved in `settings.json` (see Files). Off, the daemon stops asking the releases page; a version it already unpacked stays `current` and runs at the next start. It is disabled, and says why, on a daemon that is not installed under `~/.agentd/daemon` or has no releases page: such a daemon never updates.
 - Stop from the menu is the same as Stop from an app: the daemon exits 0 and a service leaves it stopped (`agentd service start` starts it again; agentd.app runs the daemon as its child instead, see `docs/design/desktop-app.md`).
@@ -121,7 +123,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
 
 ## Service, restart, update, rollback
 
-- **Exit codes are the protocol with the service** (`src/core/exit.ts`, `launcher.sh`): `0` stays stopped (a Stop from the
+- **Exit codes are the protocol with the service** (`home/exit.go`, `launcher.sh`): `0` stays stopped (a Stop from the
   web UI, a SIGTERM from the service manager, a revoked token), `75` starts again now (a Restart from the web UI, an
   update in place; the launcher starts it at once, without the throttle), any other code is a crash and restarts
   after the throttle. `service status` tells "stopped" (last exit 0) from "restarting after a crash".
@@ -152,18 +154,18 @@ when a chat session opens, so no timeout of a chat can cut an install.
   at build time, `https://github.com/nguyenvanduocit/agentd/releases` for a release; empty switches updates off) for
   `<releases>/latest/download/latest.json`; GitHub redirects that, and the tarball, to its storage host, which the daemon follows
   (https only; plain http only inside one origin, for the local stand-in). A different version must be signed (below); it
-  is then downloaded from `<releases><url>` (`/download/v<version>/agentd-<version>.tgz`), checked against the sha256, unpacked into `~/.agentd/daemon/<version>`, and `current` is renamed
+  is then downloaded from `<releases><url>` (`/download/v<version>/agentd-<version>.tgz`), checked against the sha256, unpacked into `~/.agentd/daemon/<version>` (the engine of this machine's platform becomes `agentd`; the tarball's other engines are dropped), and `current` is renamed
   onto it (atomic). When no session is running (checked every 5 s; a turn in progress is never cut) the daemon exits with
   code 75 and the launcher starts it again at once on the new version. A failed download, a wrong
   sha256 or a bad tarball changes nothing and is retried from 30 s up to 30 min; a bad signature changes nothing and is
   not retried (it is logged again at every check). Only a daemon installed under
-  `~/.agentd/daemon/<version>/` updates itself; a source run, a test bundle or an npx copy never does. The releases page,
+  `~/.agentd/daemon/<version>/` updates itself; a source run or a copy outside that directory never does. The releases page,
   not an app, is the update source: a daemon that serves several apps updates the same way whichever of them leave.
-- **Signed updates.** `scripts/build-daemon.sh` bakes the release public key into the bundle (`AGENTD_RELEASE_KEY`,
-  base64 of the SPKI DER; `../daemon/release.pub` for releases) and writes `signature` into `latest.json`: the
+- **Signed updates.** `scripts/build-daemon.sh` bakes the release public key into every engine (`-X daemon/home.ReleaseKey`,
+  base64 of the SPKI DER; `../daemon/release.pub` for releases) and writes `signature` into `latest.json` (`cmd/sign-daemon`): the
   Ed25519 signature of `"agentd\n<version>\n<sha256>\n"`.
   Before it downloads anything (and for a version already on disk too) the daemon checks it with that key
-  (`src/core/signature.ts`); a missing or wrong signature, or a bundle without a key, refuses the update and logs
+  (`daemon/update`, `SignatureProblem`); a missing or wrong signature, or an engine without a key, refuses the update and logs
   `cannot update to <version>: refused: <why>`. Nothing turns the check off. Limits: signing covers the update channel
   only (an app's server still drives agents in auto-approve mode); an offer older than the running x.y.z is refused (a replayed old manifest cannot roll a daemon back), but a daemon
   can be kept on its version by serving it the same manifest for ever (the signature has no expiry); no key rotation (losing the release key means reinstalling daemons).
@@ -187,18 +189,19 @@ when a chat session opens, so no timeout of a chat can cut an install.
 ## Design in one line per block
 
 - One socket on the `/agentd` namespace per app; every stdout line, stderr chunk and exit of every agent travels in one ordered
-  `frame` event. The contract is `contract/define.acp.ts`; `../contract/client.generated.ts` is generated from it,
-  so a renamed method fails `tsc`.
+  `frame` event. The contract is `contract/define.acp.ts`; `../contract/server.generated.go` is generated from it and the daemon's
+  client (`link/`) is written against its types, so a renamed method fails the build.
 - A dropped socket ends every agent (SIGTERM, then SIGKILL after 2 s, to the whole process group) and frames of the
   old connection are never sent after the reconnect. Reconnects back off from 0.5 s to 15 s and send `hello` each time.
 - A token the server refuses (`unauthorized`: unknown or revoked) detaches that app with no retry (pair again, then
   `service start`); the daemon exits 0 when it was the last app and no page grant exists. A server that could not
   check the token now (`unavailable`, its token store failed) is retried with the reconnect backoff.
-- `launcher.sh` (shell, linted by shellcheck) is the launcher; it ships beside `daemon.js` in the tarball and the
+- `launcher.sh` (shell, linted by shellcheck) is the launcher; it ships beside the engines in the tarball and the
   daemon refreshes `~/.agentd/bin/agentd` from it after an update.
-- The server names an agent (`claude`, `codex`, `grok`); the command table lives in `src/core/agents.ts`
+- The server names an agent (`claude`, `codex`, `grok`); the command table lives in `agents/agents.go`
   (adapter versions follow `agent/package.json`). The ACP lines that follow are the app's: see "What Allow gives".
-- `src/core` is pure (decisions, parsing, paths); the rest does the I/O. The lint rule `src/core` forbids I/O imports there.
+- The packages that decide (`cli`, `registry`, the `core` files of each) are pure functions of their inputs; `run`, `link`,
+  `gateway`, `proc` and the other shells do the I/O.
 
 ## Test seam
 
@@ -213,23 +216,14 @@ adapter install gets, for example `file:/path/fake-adapter.tgz`; the install dir
 ## Develop
 
 ```
-cd daemon
-bun install
-bunx tsc --noEmit
-bun run lint
-bun test test/unit                 # pure logic, no processes
-bun run test                       # unit + integration; the integration build (about 35 MB of binaries) lives in a directory of the run, removed at its end
-bun test test/integration          # real `node daemon.js` under the real launcher and install.sh, against a Go app-server double; needs go (scripts/go.sh), lsof, curl, tar, bash
-AGENTD_TEST_NETWORK=1 bun test test/integration/install.test.ts   # also downloads Node.js from nodejs.org (about 50 MB)
-AGENTD_TEST_LAUNCHD=1 bun test test/integration/service.test.ts   # macOS: one real launchd job with a unique label, removed afterwards
-RUN_REAL_CLAUDE=1 bun test test/integration/claude.real.test.ts   # two short turns with the real Claude adapter (costs money)
-(cd ../tray && go vet ./... && go test ./...)   # the tray's menu model
-(cd ../sdk/client && bun test)                  # the SDK pages use
-bun test --coverage test/unit
-../scripts/build-daemon.sh /tmp/dist   # download/v<version>/{agentd-<version>.tgz (daemon.js, launcher.sh, package.json), latest.json (signed), install.sh}; dev key in ../.dev-signing/ (made on first use)
+go vet ./daemon/... ./cmd/... && go test ./daemon/... ./cmd/... ./scripts/pipeline/   # unit + integration against real processes (about 3 min)
+go test -short ./daemon/...                                                          # skips the tests that build a release
+RUN_REAL_CLAUDE=1 go test -run Real ./daemon/run/                                    # two short turns with the real Claude adapter (costs money)
+(cd tray && go vet ./... && go test ./...)                                           # the tray's menu model and the app's engine supervision
+(cd sdk/client && bun test)                                                          # the SDK pages use
+scripts/build-daemon.sh /tmp/dist   # download/v<version>/{agentd-<version>.tgz (agentd-<os>-<arch> x4, launcher.sh, package.json, tray/), latest.json (signed), install.sh}; dev key in .dev-signing/ (made on first use)
 ```
 
-The app-server double is `test/server/main.go` (build tag `daemontest`, so it stays out of `go build ./...`): it serves the generated
-`contract` code on `/agentd`, a loopback `/ctl` API for the tests, and `POST /agentd/pair`. Installs and updates in the tests
-come from the real local stand-in for GitHub Releases (`cmd/agentd-server`, started by `test/integration/harness.ts`) or from the `ReleaseStub` in
-`test/integration/versions.ts`, which a test steers (what `latest.json` says, download counts and delays).
+The integration tests build `cmd/agentd` and `cmd/fake-agent` once per run into a temporary directory and run each daemon as a
+process with its own `AGENTD_HOME` and `HOME`. The app server they talk to is the `hub/` library or the contract server in
+`daemon/run/app_test.go`; installs and updates come from the release stand-in `cmd/agentd-server`, started in process by `scripts/pipeline`.

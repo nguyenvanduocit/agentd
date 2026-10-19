@@ -21,10 +21,17 @@ RUN="run$$-$RANDOM"
 PIDS=()
 # A scenario's machines (HOME, daemon) live under $WORK/machines and their processes carry /agentd-e2e-$RUN- in their
 # command lines: however the run ends (a failed build, a scenario that throws, Ctrl-C), none of them is left behind.
+end_machines() {
+  # On macOS a machine's process is a launchd job (e2e/lib/prelude.mjs), and launchd starts a job again when it is killed: remove it first.
+  if command -v launchctl >/dev/null; then
+    launchctl list | awk -v p="agentd-e2e-$RUN-" 'index($3, p) == 1 { print $3 }' | while read -r job; do launchctl remove "$job" 2>/dev/null || true; done
+  fi
+  pkill -KILL -f "/agentd-e2e-$RUN-" 2>/dev/null || true
+}
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
-  pkill -KILL -f "/agentd-e2e-$RUN-" 2>/dev/null || true
+  end_machines
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -34,7 +41,7 @@ APORT="$(free_port)"
 AGENTD_URL="http://127.0.0.1:$RPORT"
 APP_URL="http://127.0.0.1:$APORT"
 
-# The release: daemon 0.0.1 (no tray: the scenario does not look at it) and the server.
+# The release: daemon 0.0.1 (the Go engine of every platform; no tray: the scenario does not look at it) and the server.
 VERSION=0.0.1 RELEASE_URL="$AGENTD_URL" TRAY_DIR="$WORK/empty-tray" ./scripts/build-daemon.sh "$DIST" >&2
 go build -o "$WORK/agentd-server" ./cmd/agentd-server
 go build -o "$WORK/fake-agent" ./cmd/fake-agent
@@ -61,6 +68,6 @@ for (const s of await listTaskSpaces()) {
   if (s.name?.endsWith(" __RUN__") && s.ownership === "agent") await (await taskSpace(s.spaceId ?? s.id)).finish({ keep: [] });
 }
 JS
-  pkill -KILL -f "/agentd-e2e-$RUN-" 2>/dev/null || true
+  end_machines
 done
 exit "$status"

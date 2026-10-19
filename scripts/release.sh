@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds a release of agentd and, with --publish, publishes it as a GitHub release (tag v<version>). It carries:
 # agentd.app, the desktop app for macOS (agentd-darwin-<arch>.dmg, and the signed update installed apps take:
-# agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json); the daemon tarball, its latest.json and
-# install.sh (the install from a terminal); and the SDK tarball (@agentd/client). The latest release serves them all.
+# agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json); the daemon tarball (the Go engine of darwin and linux on
+# arm64 and amd64), its latest.json and install.sh (the install from a terminal); and the SDK tarball (@agentd/client). The latest release serves them all.
 #
 #   DAEMON_SIGNING_KEY=.release-signing/daemon-signing.key APP_UPDATE_KEY=.release-signing/mygo-update.key \
 #     scripts/release.sh <x.y.z> [--publish]
@@ -40,6 +40,13 @@ SHA="$(shasum -a 256 "$DIR/agentd-$VERSION.tgz" | cut -d' ' -f1)"
 grep -q "\"sha256\":\"$SHA\"" "$DIR/latest.json" || { echo "latest.json does not carry the tarball's sha256" >&2; exit 1; }
 grep -q "^SHA256='$SHA'" "$DIR/install.sh" || { echo "install.sh does not carry the tarball's sha256" >&2; exit 1; }
 grep -q "releases/download/v$VERSION/agentd-$VERSION.tgz'" "$DIR/install.sh" || { echo "install.sh does not point at this release's tarball" >&2; exit 1; }
+
+# The tarball carries the Go engine of every platform the installer and the updater pick from.
+LISTING="$(tar -tzf "$DIR/agentd-$VERSION.tgz")"
+for engine in agentd-darwin-arm64 agentd-darwin-amd64 agentd-linux-arm64 agentd-linux-amd64; do
+  grep -qx "package/$engine" <<<"$LISTING" || { echo "the daemon tarball has no package/$engine" >&2; exit 1; }
+done
+grep -qx "package/launcher.sh" <<<"$LISTING" || { echo "the daemon tarball has no package/launcher.sh" >&2; exit 1; }
 
 # The app of each processor: its disk image under a name that stays from release to release (the SDK's download links),
 # and its signed update, whose manifest names this version and this release's archive, as installed apps read it from

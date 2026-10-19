@@ -13,44 +13,39 @@ import (
 	"time"
 )
 
-// fakeEngine speaks the engine's side of the channel on fd 3: it sends a state, writes each choice it gets to `got`,
-// exits 75 when told "exit75", and exits 0 when the channel closes, unless `stubborn` (then only a signal ends it).
-const fakeEngine = `
-const net = require("node:net"), fs = require("node:fs")
-const [got, stubborn] = process.argv.slice(2)
-const s = new net.Socket({ fd: 3, readable: true, writable: true })
-s.write(JSON.stringify({ t: "state", version: "9.9.9", apps: ["https://a"], pages: [], sessions: 1 }) + "\n")
-let rest = ""
-s.on("data", (d) => {
-  const lines = (rest + d).split("\n"); rest = lines.pop()
-  for (const l of lines) { fs.appendFileSync(got, l + "\n"); if (l.includes("exit75")) process.exit(75) }
-})
-s.on("close", () => { if (stubborn !== "stubborn") process.exit(0) })
-setInterval(() => {}, 1000)
-`
+// fakeEngine is the compiled testdata/fakeengine: the app runs it as it runs agentd (`<engine> run`), and the
+// environment tells it where to write its choices and whether to ignore its channel.
+var fakeEngine string
 
-// start runs the fake engine as the app runs daemon.js (`node <script> run`): a wrapper hands the fake the file to
-// write its choices to and whether to ignore its channel.
+func TestMain(m *testing.M) {
+	os.Exit(buildFakeEngine(m))
+}
+
+func buildFakeEngine(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "fakeengine")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	fakeEngine = filepath.Join(dir, "agentd")
+	if out, err := exec.Command("go", "build", "-o", fakeEngine, "./testdata/fakeengine").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "build the fake engine: %v\n%s", err, out)
+		return 1
+	}
+	return m.Run()
+}
+
+// start runs the fake engine as the app runs agentd.
 func start(t *testing.T, stubborn bool) (*Engine, chan State, string) {
 	t.Helper()
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("no node")
-	}
 	dir := t.TempDir()
-	fake, wrapper, got := filepath.Join(dir, "engine.js"), filepath.Join(dir, "daemon.js"), filepath.Join(dir, "got")
-	mode := ""
+	got := filepath.Join(dir, "got")
+	t.Setenv("FAKE_ENGINE_GOT", got)
 	if stubborn {
-		mode = "stubborn"
+		t.Setenv("FAKE_ENGINE_STUBBORN", "1")
 	}
-	body := fmt.Sprintf("process.argv = [process.argv[0], process.argv[1], %q, %q]\nrequire(%q)\n", got, mode, fake)
-	if err := os.WriteFile(fake, []byte(fakeEngine), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(wrapper, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f := EngineFiles{Node: node, Script: wrapper, Home: dir, Log: filepath.Join(dir, "logs", "daemon.log")}
+	f := EngineFiles{Engine: fakeEngine, Home: dir, Log: filepath.Join(dir, "logs", "daemon.log")}
 	states := make(chan State, 8)
 	e, err := StartEngine(f, dir, os.Getenv("PATH"), func(s State) { states <- s })
 	if err != nil {
@@ -129,39 +124,49 @@ func TestAnExitOfTheEngineIsItsCode(t *testing.T) {
 	}
 }
 
-func TestFindEngineFindsTheNodeTheAppCarries(t *testing.T) {
+func TestFindEngineFindsTheEngineAndTheNodeTheAppCarries(t *testing.T) {
 	res := t.TempDir()
 	env := func(string) string { return "" }
+	put := func(parts ...string) string {
+		p := filepath.Join(append([]string{res}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	platform := goruntime.GOOS + "-" + goruntime.GOARCH
 	if _, err := FindEngine(res, "/Users/ann", env); err == nil {
 		t.Fatal("an app without an engine has one")
 	}
-	if err := os.MkdirAll(filepath.Join(res, "engine"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(res, "engine", "daemon.js"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// go run: node in the platform's own directory of the resources
-	platformNode := filepath.Join(res, goruntime.GOOS+"-"+goruntime.GOARCH, "node", "bin", "node")
-	if err := os.MkdirAll(filepath.Dir(platformNode), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(platformNode, nil, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// go run: the engine in the platform's own directory of the resources; no node, and the engine still runs
+	platformEngine := put(platform, "engine", "agentd")
 	f, err := FindEngine(res, "/Users/ann", env)
-	if err != nil || f.Node != platformNode || f.Home != "/Users/ann/.agentd" || f.Log != "/Users/ann/.agentd/logs/daemon.log" {
+	if err != nil || f.Engine != platformEngine || f.Node != "" || f.NodeBin() != "" ||
+		f.Home != "/Users/ann/.agentd" || f.Log != "/Users/ann/.agentd/logs/daemon.log" {
 		t.Fatalf("got %+v, %v", f, err)
 	}
+	platformNode := put(platform, "node", "bin", "node")
+	if f, _ := FindEngine(res, "/Users/ann", env); f.Node != platformNode || f.NodeBin() != filepath.Dir(platformNode) {
+		t.Fatalf("node %q, want %q", f.Node, platformNode)
+	}
 	// a built app: the platform's resources are merged in
-	merged := filepath.Join(res, "node", "bin", "node")
-	if err := os.MkdirAll(filepath.Dir(merged), 0o755); err != nil {
-		t.Fatal(err)
+	mergedEngine, mergedNode := put("engine", "agentd"), put("node", "bin", "node")
+	if f, _ := FindEngine(res, "/Users/ann", env); f.Engine != mergedEngine || f.Node != mergedNode {
+		t.Fatalf("got %+v, want %q and %q", f, mergedEngine, mergedNode)
 	}
-	if err := os.WriteFile(merged, nil, 0o755); err != nil {
-		t.Fatal(err)
+}
+
+func TestFindEngineTakesTheEngineAndNodeNamedByTheEnvironment(t *testing.T) {
+	env := map[string]string{"AGENTD_APP_ENGINE": fakeEngine, "AGENTD_APP_NODE": "/n/bin/node", "AGENTD_HOME": "/h"}
+	f, err := FindEngine(t.TempDir(), "/Users/ann", func(k string) string { return env[k] })
+	if err != nil || f.Engine != fakeEngine || f.Node != "/n/bin/node" || f.Home != "/h" || f.Log != "/h/logs/daemon.log" {
+		t.Fatalf("got %+v, %v", f, err)
 	}
-	if f, _ := FindEngine(res, "/Users/ann", env); f.Node != merged {
-		t.Fatalf("node %q, want %q", f.Node, merged)
+	env["AGENTD_APP_ENGINE"] = "/no/such/agentd"
+	if _, err := FindEngine(t.TempDir(), "/Users/ann", func(k string) string { return env[k] }); err == nil {
+		t.Fatal("an engine that is not there is found")
 	}
 }

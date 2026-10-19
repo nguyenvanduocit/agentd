@@ -6,7 +6,8 @@
 # <origin> is the app that gave you the command (https://host[:port]) and <code> its one-time pairing code.
 #
 # It, in order: picks a Node.js (the machine's when it is >= 20 with npm, else a pinned LTS under
-# ~/.agentd/node), downloads the daemon from the release and checks its sha256, unpacks it into
+# ~/.agentd/node) for the agents' adapters, downloads the daemon from the release and checks its sha256, unpacks it
+# (the engine of this machine's platform becomes ~/.agentd/daemon/<version>/agentd) into
 # ~/.agentd/daemon/<version> and points ~/.agentd/daemon/current at it, puts the launcher
 # ~/.agentd/bin/agentd in place, pairs this machine with the app when --code is given, and installs the daemon as a
 # service of your user (launchd on macOS, systemd --user on Linux) that starts at login and restarts when it dies.
@@ -36,6 +37,8 @@ NODE_DIST="${AGENTD_NODE_DIST:-https://nodejs.org/dist}"
 MC_HOME="${AGENTD_HOME:-${HOME:-/nonexistent}/.agentd}"
 
 TMP=""
+# agentd-<os>-<arch>: the file of the tarball's package/ that holds this machine's engine (set by check_system).
+ENGINE=""
 
 say() { printf 'agentd: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
@@ -75,6 +78,14 @@ check_system() {
     MINGW* | MSYS* | CYGWIN*) die "Windows is not supported: use WSL (open a WSL terminal and run this command there)" ;;
     *) die "$(uname -s) is not supported: agentd runs on macOS and Linux" ;;
   esac
+  local os arch
+  case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=amd64 ;;
+    arm64 | aarch64) arch=arm64 ;;
+    *) die "$(uname -m) is not supported: agentd runs on arm64 and amd64 (x86_64) processors" ;;
+  esac
+  ENGINE="agentd-$os-$arch"
   local missing="" tool
   for tool in curl tar; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
@@ -166,10 +177,11 @@ choose_node() {
 }
 
 # install_daemon unpacks the daemon into daemon/<version> (a temporary directory first, then one mv) and points
-# daemon/current at it. The version it replaces becomes `previous`, the launcher's rollback target.
+# daemon/current at it. The tarball carries the engine of every platform: this machine's becomes daemon/<version>/agentd
+# and the others are dropped. The version it replaces becomes `previous`, the launcher's rollback target.
 install_daemon() {
   local dest="$MC_HOME/daemon/$VERSION" actual old=""
-  if [ -f "$dest/daemon.js" ]; then
+  if [ -f "$dest/agentd" ]; then
     say "daemon $VERSION is already installed"
   else
     say "downloading daemon $VERSION from $TARBALL_URL"
@@ -178,15 +190,18 @@ install_daemon() {
     [ "$actual" = "$SHA256" ] || die "the daemon download is corrupt or was changed on the way (sha256 $actual, expected $SHA256). Nothing was installed"
     mkdir "$TMP/daemon"
     tar -xzf "$TMP/daemon.tgz" -C "$TMP/daemon" --strip-components=1 || die "cannot unpack the daemon download"
-    [ -f "$TMP/daemon/daemon.js" ] || die "the daemon download has no daemon.js"
+    [ -f "$TMP/daemon/$ENGINE" ] || die "the daemon download has no $ENGINE: no build of agentd for this machine"
     [ -f "$TMP/daemon/launcher.sh" ] || die "the daemon download has no launcher.sh"
+    find "$TMP/daemon" -maxdepth 1 -name 'agentd-*' ! -name "$ENGINE" -exec rm -f {} +
+    mv "$TMP/daemon/$ENGINE" "$TMP/daemon/agentd"
+    chmod 755 "$TMP/daemon/agentd"
     mkdir -p "$MC_HOME/daemon"
     rm -rf "$dest"
     mv "$TMP/daemon" "$dest"
   fi
   old="$(readlink "$MC_HOME/daemon/current" 2>/dev/null || true)"
   old="${old##*/}"
-  if [ -n "$old" ] && [ "$old" != "$VERSION" ] && [ -f "$MC_HOME/daemon/$old/daemon.js" ]; then
+  if [ -n "$old" ] && [ "$old" != "$VERSION" ] && [ -f "$MC_HOME/daemon/$old/agentd" ]; then
     printf '%s\n' "$old" >"$MC_HOME/daemon/previous"
   fi
   rm -f "$MC_HOME/daemon/rejected" "$MC_HOME/daemon/crashes"

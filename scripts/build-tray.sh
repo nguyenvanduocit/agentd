@@ -4,7 +4,7 @@
 #   scripts/build-tray.sh <outdir>
 #
 # Writes <outdir>/<os>-<arch>/agentd-tray (agentd-tray.exe on Windows), named as Go names its platforms: it is the
-# layout scripts/build-daemon.sh packs as tray/ and the daemon looks for (daemon/src/core/tray.ts trayBinary). No cgo: every
+# layout scripts/build-daemon.sh packs as tray/ and the daemon looks for (daemon/tray/state.go Binary). No cgo: every
 # platform builds from any machine. $TRAY_TARGETS ("darwin/arm64 linux/amd64") limits the list (tests).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
