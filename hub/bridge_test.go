@@ -1,36 +1,29 @@
 package hub_test
 
 import (
-	"os"
-	"regexp"
 	"slices"
 	"testing"
 
+	"github.com/nguyenvanduocit/agentd/daemon/cli"
+	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/hub"
 )
 
 // The command an app puts in session/new is the one the daemon puts on each agent's PATH, with the argument its mcp
-// subcommand reads: both live in the daemon's sources, so a rename there fails here.
+// subcommand reads: both live in the daemon's packages, so a rename there fails here.
 func TestTheBridgeCommandIsTheOneTheDaemonInstalls(t *testing.T) {
 	command, args := hub.BridgeCommand("grant-7")
-	if want := constIn(t, "../daemon/src/core/wrapper.ts", `export const WRAPPER = "([^"]+)"`); command != want {
-		t.Fatalf("command = %q, the daemon installs %q", command, want)
+	if command != home.Wrapper {
+		t.Fatalf("command = %q, the daemon installs %q", command, home.Wrapper)
 	}
 	if !slices.Equal(args, []string{"--session", "grant-7"}) {
 		t.Fatalf("args = %q, want --session grant-7", args)
 	}
-	constIn(t, "../daemon/src/core/cli.ts", `(session): \{ type: "string" \}`)
-}
-
-func constIn(t *testing.T, file, pattern string) string {
-	t.Helper()
-	b, err := os.ReadFile(file)
+	parsed, err := cli.Parse(append([]string{"mcp"}, args...)) // the wrapper runs `agentd mcp <args>`
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the daemon's mcp command does not take %q: %v", args, err)
 	}
-	m := regexp.MustCompile(pattern).FindSubmatch(b)
-	if m == nil {
-		t.Fatalf("%s has no match for %s", file, pattern)
+	if mcp, ok := parsed.(cli.MCP); !ok || mcp.Session != "grant-7" {
+		t.Fatalf("the daemon reads %#v, want the session grant-7", parsed)
 	}
-	return string(m[1])
 }
