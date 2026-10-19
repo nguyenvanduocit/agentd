@@ -3,22 +3,24 @@ import type { Duplex } from "node:stream"
 import { WebSocket, WebSocketServer } from "ws"
 import type { Hello } from "../../contract/define.acp.ts"
 import { MAX_LINE_BYTES } from "./core/lines.ts"
-import { parseToDaemon, type FromDaemon } from "./core/localproto.ts"
+import { parseToDaemon, type FromDaemon, type McpServer } from "./core/localproto.ts"
+import { pageMcpServer } from "./core/pagemcp.ts"
 import { Fleet, type FleetOptions } from "./fleet.ts"
 import { say } from "./log.ts"
+import type { McpBinding, McpRelay } from "./page-mcp.ts"
 import type { FrameSink } from "./session.ts"
 
 /** Sessions one page may keep: a page chooses what runs on the machine, so the number is bounded. */
 export const MAX_SESSIONS_PER_SOCKET = 5
 
 /**
- * The largest message a page may send: a `write` of a line at the cap, every byte of it escaped, with room for the
- * envelope. A prompt with images of several MB is far below it; ws would allow 100 MiB.
+ * The largest message a page may send: a `write` (or `mcp`) of a line at the cap, every byte of it escaped, with room
+ * for the envelope. A prompt with images of several MB is far below it; ws would allow 100 MiB.
  */
 const MAX_PAGE_MESSAGE_BYTES = 2 * MAX_LINE_BYTES + 64 * 1024
 
 /**
- * Bytes a page's socket may have waiting to go out before its agents' output is paused. A page that reads keeps it
+ * Bytes a page's socket may have waiting to go out before its agents' output (and their bridges' lines) is paused. A page that reads keeps it
  * near zero (the socket is local); this much is a page that stopped (a frozen or throttled tab) and would otherwise
  * make the daemon hold all the agents write. It still holds a few large messages, so a burst does not pause anything.
  */
@@ -57,13 +59,26 @@ class PageSocket {
 }
 
 export interface BrowserSessionOptions {
-  fleet: Omit<FleetOptions, "sink">
+  fleet: Omit<FleetOptions, "sink" | "ended">
   hello: () => Hello
+  /** The socket the agents' `agentd-mcp --page` bridges reach, closed by `shutdown`; without it `opened` names no MCP server. */
+  relay: McpRelay | undefined
+  /** The absolute path of the pages' `agentd-mcp` wrapper, the command `opened` names. */
+  bridgeCommand: string
+}
+
+/** One page's socket: its agents, and the bridges of their sessions to the page's MCP server. */
+interface PageEntry {
+  ws: WebSocket
+  page: PageSocket
+  fleet: Fleet
+  origin: string
+  bridges: Map<string, McpBinding>
 }
 
 /** The sockets of pages that were allowed to run agents; each socket has its own fleet, ended when it closes. */
 export class BrowserSessions {
-  private readonly open = new Set<{ ws: WebSocket; fleet: Fleet; origin: string }>()
+  private readonly open = new Set<PageEntry>()
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAGE_MESSAGE_BYTES })
 
   constructor(private readonly o: BrowserSessionOptions) {}
@@ -93,42 +108,81 @@ export class BrowserSessions {
     for (const s of this.open) if (s.origin === origin) s.ws.terminate()
   }
 
-  /** Closes every socket (an upgraded socket would keep the gateway's server open) and ends the agents. */
+  /** Closes every socket (an upgraded socket would keep the gateway's server open) and the relay, and ends the agents. */
   async shutdown(graceMs: number): Promise<void> {
     const all = [...this.open]
     for (const s of all) s.ws.terminate()
     await Promise.all(all.map((s) => s.fleet.shutdown(graceMs)))
     this.wss.close()
+    await this.o.relay?.close()
   }
 
   private serve(ws: WebSocket, origin: string): void {
     const page = new PageSocket(ws)
-    const send = (m: FromDaemon): void => page.send(m)
-    const sink: FrameSink = { send: (id, kind, data, code) => send({ t: "frame", id, kind, data, code }), backlog: () => page.backlog() }
-    const fleet = new Fleet({ ...this.o.fleet, sink: () => sink })
-    const entry = { ws, fleet, origin }
+    const bridges = new Map<string, McpBinding>()
+    const sink: FrameSink = { send: (id, kind, data, code) => page.send({ t: "frame", id, kind, data, code }), backlog: () => page.backlog() }
+    const unbind = (id: string): void => {
+      bridges.get(id)?.end()
+      bridges.delete(id)
+    }
+    const fleet = new Fleet({ ...this.o.fleet, sink: () => sink, ended: unbind })
+    const entry: PageEntry = { ws, page, fleet, origin, bridges }
     this.open.add(entry)
     const end = (): void => {
       fleet.endAll()
+      for (const id of [...bridges.keys()]) unbind(id)
       page.release()
       this.open.delete(entry)
     }
     ws.on("close", end)
     ws.on("error", end)
-    ws.on("message", (data: Buffer) => this.handle(fleet, send, data.toString()))
+    ws.on("message", (data: Buffer) => this.handle(entry, data.toString()))
     const hello = this.o.hello()
-    send({ t: "hello", version: hello.version, agents: hello.agents })
+    page.send({ t: "hello", version: hello.version, agents: hello.agents })
   }
 
-  private handle(fleet: Fleet, send: (m: FromDaemon) => void, text: string): void {
+  private handle(e: PageEntry, text: string): void {
     const m = parseToDaemon(text)
     if (m === undefined) {
-      send({ t: "error", id: "", message: "expected a JSON message: open, write or close" })
+      e.page.send({ t: "error", id: "", message: "expected a JSON message: open, write, close or mcp" })
       return
     }
-    if (m.t === "close") fleet.close(m.id)
-    else if (m.t === "write") void fleet.write(m.id, m.line).then((ok) => ok || send({ t: "error", id: m.id, message: `session ${m.id} is not running` }))
-    else if (fleet.size >= MAX_SESSIONS_PER_SOCKET) send({ t: "error", id: m.id, message: `a page may keep at most ${MAX_SESSIONS_PER_SOCKET} sessions` })
-    else fleet.open(m.id, m.agent).then((o) => send({ t: "opened", id: m.id, pid: o.pid, cwd: o.cwd }), (e: unknown) => send({ t: "error", id: m.id, message: e instanceof Error ? e.message : String(e) }))
+    switch (m.t) {
+      case "open":
+        this.openSession(e, m.id, m.agent)
+        break
+      case "write":
+        void e.fleet.write(m.id, m.line).then((ok) => ok || e.page.send({ t: "error", id: m.id, message: `session ${m.id} is not running` }))
+        break
+      case "close":
+        e.fleet.close(m.id)
+        break
+      case "mcp":
+        if (e.bridges.get(m.id)?.toBridge(m.line) !== true) e.page.send({ t: "error", id: m.id, message: `session ${m.id} has no MCP bridge connected` })
+        break
+    }
+  }
+
+  private openSession(e: PageEntry, id: string, agent: string): void {
+    if (e.fleet.size >= MAX_SESSIONS_PER_SOCKET) {
+      e.page.send({ t: "error", id, message: `a page may keep at most ${MAX_SESSIONS_PER_SOCKET} sessions` })
+      return
+    }
+    e.fleet.open(id, agent).then(
+      (o) => e.page.send({ t: "opened", id, pid: o.pid, cwd: o.cwd, mcp: this.bridgeFor(e, id) }),
+      (err: unknown) => e.page.send({ t: "error", id, message: err instanceof Error ? err.message : String(err) }),
+    )
+  }
+
+  /**
+   * The stdio server through which session `id`'s agent reaches the page's MCP server: a token of its own, bound to
+   * this page socket and session, that ends with either. Undefined when the daemon has no relay socket.
+   */
+  private bridgeFor(e: PageEntry, id: string): McpServer | undefined {
+    const relay = this.o.relay
+    if (relay === undefined) return undefined
+    const binding = relay.bind({ send: (line) => e.page.send({ t: "mcp", id, line }), backlog: () => e.page.backlog() })
+    e.bridges.set(id, binding)
+    return pageMcpServer(this.o.bridgeCommand, relay.path, binding.token)
   }
 }

@@ -54,7 +54,7 @@ agentd version
 | `--dir <dir>` | Working directory of the agents. Default: the directory the daemon was started in. |
 | `--config <file>` | Config file. Default: see below. |
 
-`mcp --session <id>` is the MCP stdio bridge that agents start through `agentd-mcp`; it is not meant to be run by hand.
+`mcp --session <id>` (an app's session) and `mcp --page` (a page's session, with `AGENTD_MCP_SOCKET` and `AGENTD_MCP_TOKEN` in its environment) are the MCP stdio bridges that agents start through `agentd-mcp`; they are not meant to be run by hand.
 
 ## Apps, web pages and the gateway
 
@@ -68,7 +68,9 @@ One daemon serves many apps. An app is a server that implements `contract/define
 | `POST /v1/connect {mode:"server", code}` | Shows the dialog. On Allow: pairs with the server **at the caller's origin** using `code`, saves the app and links to it at once (pairing an app that is already linked replaces its token and links again). A body that names a server is `400`: a page cannot point the daemon at an origin that is not its own. `200 {granted:true}` |
 | `POST /v1/connect {mode:"browser"}` | Shows the dialog. On Allow: saves the origin as a browser grant (it may then open sessions). A granted origin gets `200` without a dialog. |
 | `DELETE /v1/connect` | Forgets the caller's browser grant and the app at its origin, and ends their sessions (the page's open `/v1/session` sockets close with their agents). Never touches another origin's app. The daemon stays up so the page can connect again. |
-| `GET /v1/session` (WebSocket) | Browser-granted origins only. One socket is one set of agents, ended with the socket; at most 5 sessions per socket. Messages are in `src/core/localproto.ts`: the page sends `open`, `write`, `close`; the daemon sends `hello`, `opened`, `error`, `frame`. The page is the ACP client of the lines. |
+| `GET /v1/session` (WebSocket) | Browser-granted origins only. One socket is one set of agents, ended with the socket; at most 5 sessions per socket. Messages are in `src/core/localproto.ts`: the page sends `open`, `write`, `close`, `mcp`; the daemon sends `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client of the lines, and may serve the agent MCP tools (below). |
+
+**Tools from the page.** A page's agent can call tools the page itself serves. `opened` carries `mcp: {command:"<tmp>/agentd-XXXXXX/bin/page/agentd-mcp", args:[], env:[{name:"AGENTD_MCP_SOCKET", value}, {name:"AGENTD_MCP_TOKEN", value}]}`, the stdio MCP server the page lists (with a name) in `session/new`'s `mcpServers`. The command is the pages' own wrapper (it runs `mcp --page`) by absolute path, as the ACP schema asks, so it starts whatever `PATH` the agent gives its MCP servers (verified with Claude's adapter 0.86: `test/integration/pagetools.real.test.ts`, run with `RUN_REAL_CLAUDE=1`); it sends the token to the daemon's Unix socket `<tmp>/agentd-XXXXXX/mcp.sock`, then relays each line of the agent's MCP client to the page as `{t:"mcp", id, line}`, and each `{t:"mcp", id, line}` of the page back to the agent. The socket's directory is mode 0700, so other OS users cannot reach it; the token (256 random bits, one per session) is in the environment, not the arguments, which other users can read with `ps`. It opens no port. The token is bound to the page's socket and the session, and dies with either, which ends the bridge (it exits 1); a token the daemon does not know is refused and the bridge exits 1 with the reason. If the agent starts the server again, the newer bridge replaces the older. A page `mcp` while no bridge is connected is an `error` for that session. Lines keep the 32 MiB cap, and the bridge's lines to a page wait, as the agent's output does, while the page's socket is behind. A daemon that cannot listen on the socket (a temporary path too long for one) says so in its log and sends no `mcp`.
 
 Refusals: `403 {granted:false, reason:"peer"}` (the caller's process belongs to another OS user, or its owner cannot be found), `403 {granted:false, reason:"denied"|"timeout"}`, `429 cooldown` (30 s after a deny or timeout, per origin; and three refusals within ten minutes from any origins lock every dialog until the oldest is ten minutes old, so new subdomains do not buy new dialogs; an Allow clears the count), `409 busy` (one dialog at a time), `503 no-dialog` (the machine cannot ask: nothing is granted), `400 malformed`, `502 pairing` (the app refused the code). `sdk/client/` (`@agentd/client`) is the client for pages.
 
@@ -187,7 +189,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
 - Orphan record `sessions.json`: `$XDG_STATE_HOME` or `~/.local/state` + `/agentd/` (Windows: `%LOCALAPPDATA%`; not kept there).
   It lists the process groups of running agents with the start time of each leader. After `kill -9` of the daemon,
   the next start ends the groups that are still running.
-- A temporary directory with the `agentd-mcp` wrapper, first on every agent's `PATH`; removed on exit.
+- A temporary directory (mode 0700) with the `agentd-mcp` wrappers, one per app (`bin/<n>`) and one for pages (`bin/page`), first on the `PATH` of their agents, and the pages' bridge socket `mcp.sock`; removed on exit.
 
 ## Design in one line per block
 

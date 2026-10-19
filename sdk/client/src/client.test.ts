@@ -1,4 +1,4 @@
-import { ClientSideConnection, PROTOCOL_VERSION, client, ndJsonStream, type Client } from "@agentclientprotocol/sdk"
+import { ClientSideConnection, PROTOCOL_VERSION, client, ndJsonStream, type Client, type Stream } from "@agentclientprotocol/sdk"
 import { describe, expect, test } from "bun:test"
 import { connectBrowser, connectServer, detect, disconnect, openSession, reasonText, type Reason } from "./client.ts"
 
@@ -182,14 +182,25 @@ describe("openSession", () => {
 const tick = () => new Promise((r) => setTimeout(r, 0))
 
 /** A session opened on a fake daemon: the socket, the session's id and the session. */
-async function opened() {
+/** What a daemon that bridges pages' MCP servers puts in `opened`. */
+const MCP = {
+  command: "/tmp/agentd-x1/bin/page/agentd-mcp",
+  args: [],
+  env: [
+    { name: "AGENTD_MCP_SOCKET", value: "/tmp/agentd-abc123/mcp.sock" },
+    { name: "AGENTD_MCP_TOKEN", value: "tok" },
+  ],
+}
+
+/** `mcp` null: a daemon that sends no `mcp` in opened. */
+async function opened(mcp: object | null = MCP, version = "0.4.0") {
   const pending = openSession({ port: 47615 }, "claude", { WebSocket: FakeSocket as unknown as typeof WebSocket })
   await tick()
   const sock = FakeSocket.last
-  sock.say({ t: "hello", version: "1", agents: [] })
+  sock.say({ t: "hello", version, agents: [] })
   await tick()
   const id = sock.sent[0]?.id
-  sock.say({ t: "opened", id, pid: 42, cwd: "/work" })
+  sock.say({ t: "opened", id, pid: 42, cwd: "/work", ...(mcp === null ? {} : { mcp }) })
   const session = await pending
   const out = (data: string) => sock.say({ t: "frame", id, kind: "out", data, code: 0 })
   const writes = () => sock.sent.filter((m) => m.t === "write").map((m) => m.line)
@@ -306,5 +317,90 @@ describe("the official ACP SDK over a session", () => {
     await acp.initialize(INITIALIZE)
     sock.onsend = () => queueMicrotask(() => sock.say({ t: "frame", id, kind: "exit", data: "", code: 1 }))
     await expect(acp.prompt({ sessionId: "s-1", prompt: [{ type: "text", text: "hi" }] })).rejects.toThrow()
+  })
+
+  test("session/new takes mcpServer() as one of its mcpServers", async () => {
+    const { sock, id, session } = await opened()
+    actAsAgent(sock, id)
+    let asked: unknown
+    const onsend = sock.onsend
+    sock.onsend = (m) => {
+      const req = m.t === "write" ? (JSON.parse(String(m.line)) as { method: string; params: unknown }) : undefined
+      if (req?.method === "session/new") asked = req.params
+      onsend?.(m)
+    }
+    const page: Client = { requestPermission: () => Promise.resolve({ outcome: { outcome: "cancelled" } }), sessionUpdate: () => Promise.resolve() }
+    const acp = new ClientSideConnection(() => page, ndJsonStream(session.writable, session.readable))
+    await acp.initialize(INITIALIZE)
+    await acp.newSession({ cwd: session.cwd, mcpServers: [session.mcpServer("page")] })
+    expect(asked).toEqual({ cwd: "/work", mcpServers: [{ name: "page", ...MCP }] })
+  })
+})
+
+/** The page's MCP server of sdk/client/README.md ("Tools from the page"), as it is there. */
+async function serveTools({ readable, writable }: Stream) {
+  const out = writable.getWriter()
+  for await (const msg of readable) {
+    if (!("method" in msg) || !("id" in msg)) continue // a notification, or an answer
+    const result =
+      msg.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "page", version: "1" } }
+        : msg.method === "tools/list"
+          ? { tools: [{ name: "current_page", inputSchema: { type: "object" } }] }
+          : msg.method === "tools/call"
+            ? { content: [{ type: "text", text: location.pathname }] }
+            : undefined
+    await out.write(result === undefined ? { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `no method ${msg.method}` } } : { jsonrpc: "2.0", id: msg.id, result })
+  }
+}
+
+describe("the page's MCP server", () => {
+  test("mcpServer(name) is the stdio server the daemon named in opened, under that name", async () => {
+    const { session } = await opened()
+    expect(session.mcpServer("aiocean")).toEqual({ name: "aiocean", ...MCP })
+    const a = session.mcpServer("a")
+    a.env.push({ name: "X", value: "y" })
+    expect(session.mcpServer("a").env).toHaveLength(2) // each call is a copy
+  })
+
+  test("mcpServer() on a daemon that bridges no MCP server says so and names the daemon's version", async () => {
+    const { session } = await opened(null, "0.3.0")
+    expect(() => session.mcpServer("page")).toThrow("agentd 0.3.0 does not bridge a page's MCP server")
+  })
+
+  test("mcp.readable is the agent's MCP lines for this session; mcp.writable sends each line back as mcp", async () => {
+    const { sock, id, session } = await opened()
+    const reader = session.mcp.readable.getReader()
+    sock.say({ t: "mcp", id: "someone-else", line: '{"id":9}' })
+    sock.say({ t: "mcp", id, line: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' })
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
+    const writer = session.mcp.writable.getWriter()
+    await writer.write(new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n'))
+    expect(sock.sent.filter((m) => m.t === "mcp")).toEqual([{ t: "mcp", id, line: '{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}' }])
+    expect(sock.sent.some((m) => m.t === "write")).toBe(false)
+  })
+
+  test("the README's page server: ndJsonStream over session.mcp answers the agent's tools/list", async () => {
+    const { sock, id, session } = await opened()
+    void serveTools(ndJsonStream(session.mcp.writable, session.mcp.readable))
+    sock.say({ t: "mcp", id, line: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) })
+    sock.say({ t: "mcp", id, line: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) })
+    for (let i = 0; i < 20 && !sock.sent.some((m) => m.t === "mcp"); i++) await tick()
+    const answer = sock.sent.find((m) => m.t === "mcp")
+    expect(JSON.parse(String(answer?.line))).toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "current_page", inputSchema: { type: "object" } }] } })
+  })
+
+  test("mcp.readable is one stream, and ends when the agent exits or the socket closes", async () => {
+    const exits = await opened()
+    expect(exits.session.mcp.readable).toBe(exits.session.mcp.readable)
+    const all = readAll(exits.session.mcp.readable)
+    exits.sock.say({ t: "mcp", id: exits.id, line: "last" })
+    exits.sock.say({ t: "frame", id: exits.id, kind: "exit", data: "", code: 0 })
+    expect(await all).toBe("last\n")
+
+    const closes = await opened()
+    const rest = readAll(closes.session.mcp.readable)
+    closes.sock.close()
+    expect(await rest).toBe("")
   })
 })

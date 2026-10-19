@@ -6,17 +6,18 @@ One daemon on a user's machine serves any number of apps. An app's web UI finds 
 
 A user installs the daemon once. Every app that speaks the daemon protocol (`daemonrpc/define.acp.ts`) can detect it from its UI and request a connection; the user decides in a native dialog, per app, and sees and controls the daemon from the menu bar or notification area.
 
+A browser app with no server of its own gives its agent tools that live in the page (navigate, search, read the current page): the page serves MCP over its session socket, and the agent reaches it through `agentd-mcp`.
+
 ## Non-goals
 
 - Renaming the daemon, its home directory or its service labels.
 - A reusable server library for other repos (`internal/daemonhub` imports `internal/agent`, `internal/store` and `rpc`).
 - Scoping a grant to agents or folders: a grant is full access to the user's account (the session's ACP client chooses its folder, MCP servers and permission answers; agents run as the user). Confining an app would take an OS sandbox around the agents.
 - An app whose API lives on another origin than its page: the app connected is the one at the page's own origin. Supporting a separate API origin needs a way for that origin to vouch for page origins (for example a file the daemon fetches from it).
-- Tools that live in the page for browser apps: a browser session has the user's own MCP servers and skills only.
 - The daemon running natively on Windows (installer, service, dialog). The tray program is built for Windows; the daemon around it is a separate project.
 - A Go rewrite of the daemon: the adapters are Node packages and `socketrpc-gen` has no Go client (`--client go` is refused).
 
-Anti-goal: an origin that was never allowed running an agent; a page learning anything beyond "a daemon is here" and its own grants; a page seeing or changing the app of another origin; a page pointing the daemon at a server that is not its own origin.
+Anti-goal: an origin that was never allowed running an agent; a page learning anything beyond "a daemon is here" and its own grants; a page seeing or changing the app of another origin; a page pointing the daemon at a server that is not its own origin; a bridge reaching a page other than the one whose session started it.
 
 ## Parts
 
@@ -40,7 +41,11 @@ Refusals: `403 denied|timeout`, `429 cooldown` (30 s per origin, and a lockout o
 
 ### 3. Browser sessions (`daemon/src/session-ws.ts`, `daemon/src/core/localproto.ts`)
 
-One socket is one fleet, ended when the socket closes; at most 5 sessions per socket. Page to daemon: `open`, `write`, `close`. Daemon to page: `hello`, `opened`, `error`, `frame`. The page is the ACP client.
+One socket is one fleet, ended when the socket closes; at most 5 sessions per socket. Page to daemon: `open`, `write`, `close`, `mcp`. Daemon to page: `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client.
+
+### 3a. Tools from the page (`daemon/src/page-mcp.ts`, `daemon/src/core/pagemcp.ts`, `mcp --page` in `daemon/src/bridge.ts`)
+
+A browser grant has no server and no token, so `agentd-mcp --session` has nowhere to go; the page serves the tools itself. On `open` the daemon mints a token (256 random bits) bound to that page socket and session id, and `opened.mcp` names the stdio server with the socket path and the token in `env` (process arguments are readable by other OS users): the pages' own wrapper `bin/page/agentd-mcp` (`mcp --page`) by absolute path, as the ACP schema asks for `McpServerStdio.command`, so it does not depend on the `PATH` the agent gives its MCP servers. The bridge connects to the daemon's Unix socket `<tmp>/agentd-XXXXXX/mcp.sock` (the directory is mode 0700: no other OS user reaches it, and no TCP port opens), sends the token, gets `{ok:true}` or `{ok:false, message}`, then relays lines: stdin to the page as `{t:"mcp", id, line}`, the page's `{t:"mcp", id, line}` to stdout. The token dies with the session or the page socket, which closes the bridge; a newer bridge with the same token replaces the older. Lines keep the 32 MiB cap of `LineSplitter`, and lines to the page pause, as frames do, while the page's socket is behind. Claude's ACP adapter starts the stdio MCP servers of `session/new` and does not advertise MCP over ACP, so a stdio bridge is the route. The SDK gives the page `session.mcp` (its end, as ndjson byte streams) and `session.mcpServer(name)` (the entry for `mcpServers`).
 
 ### 4. Apps registry (`daemon/src/config.ts`, `daemon/src/core/registry.ts`)
 

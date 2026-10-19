@@ -36,13 +36,12 @@ function describeAgents(agents: AgentInfo[]): string {
   return agents.map((a) => (a.ready ? `${a.name} ready` : `${a.name} not ready (${a.reason})`)).join(", ")
 }
 
-/** Writes the wrapper this app's agents find as `agentd-mcp`; returns its directory. */
-function installWrapper(root: string, n: number, configFile: string, server: string): string {
-  const dir = join(root, String(n))
+/** Writes, in `dir`, the wrapper agents find as `agentd-mcp`: it runs `mcp <args>`. Returns `dir`. */
+export function installWrapper(dir: string, args: string[]): string {
   mkdirSync(dir, { recursive: true })
   const script = realpathSync(process.argv[1] ?? "")
   const file = join(dir, wrapperFileName(process.platform))
-  writeFileSync(file, wrapperScript(process.platform, { node: process.execPath, script, args: ["--config", configFile, "--app", server] }))
+  writeFileSync(file, wrapperScript(process.platform, { node: process.execPath, script, args }))
   chmodSync(file, 0o755)
   return dir
 }
@@ -78,7 +77,7 @@ export class AppHub {
   /** Connects to the app now. */
   add(app: App): void {
     if (this.entries.has(app.server)) return
-    const binDir = installWrapper(this.o.wrapperRoot, ++this.n, this.o.configFile, app.server)
+    const binDir = installWrapper(join(this.o.wrapperRoot, String(++this.n)), ["--config", this.o.configFile, "--app", app.server])
     const socket = openSocket({ server: app.server, auth: { role: "daemon", token: app.token } })
     const link = new Link(socket, {
       onConnect: () => void this.sayHello(entry).catch((e: unknown) => warn(`hello to ${app.server} failed: ${e instanceof Error ? e.message : String(e)}`)),

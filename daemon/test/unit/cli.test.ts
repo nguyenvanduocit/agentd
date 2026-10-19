@@ -86,6 +86,12 @@ describe("parseCli", () => {
     expect(err(["mcp"])).toContain("--session")
   })
 
+  test("mcp --page is the bridge to a page's MCP server; its socket and token come from the environment", () => {
+    expect(ok(["mcp", "--page"])).toEqual({ kind: "page-mcp" })
+    expect(err(["mcp", "--page", "--session", "s1"])).toContain("--session <id> or --page, not both")
+    expect(err(["mcp"])).toContain("--page")
+  })
+
   test("mistakes are errors, not guesses", () => {
     expect(err(["frobnicate"])).toContain('unknown command "frobnicate"')
     expect(err(["--nope"])).toContain("--nope")

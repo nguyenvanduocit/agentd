@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseCli, USAGE } from "./core/cli.ts"
 import { runApps } from "./apps-cli.ts"
-import { runBridge } from "./bridge.ts"
+import { runBridge, runPageBridge } from "./bridge.ts"
 import { runDaemon } from "./daemon.ts"
 import { exitOnFatal, say, warn } from "./log.ts"
 import { runPair } from "./pair.ts"
@@ -28,6 +28,8 @@ async function dispatch(argv: string[]): Promise<number> {
       return runPair(cmd)
     case "mcp":
       return runBridge(cmd)
+    case "page-mcp":
+      return runPageBridge(process.env)
     case "run":
       return runDaemon(cmd)
     case "service":

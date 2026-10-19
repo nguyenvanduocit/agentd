@@ -9,14 +9,15 @@ import { agentdHome, sessionsFile } from "./core/paths.ts"
 import { controlOutcome, EXIT_RESTART, EXIT_STOPPED, isManaged } from "./core/exit.ts"
 import { addBrowser, removeOrigin, selectApps, withdrawn, type App } from "./core/registry.ts"
 import { releaseBase } from "./core/update.ts"
-import { agentEnv } from "./core/wrapper.ts"
+import { agentEnv, WRAPPER } from "./core/wrapper.ts"
 import { AdapterStore } from "./adapters.ts"
-import { AppHub } from "./apps.ts"
+import { AppHub, installWrapper } from "./apps.ts"
 import { ask } from "./consent.ts"
 import { loadRegistry, registryFile, updateRegistry } from "./config.ts"
 import { gatewayPort } from "./core/local.ts"
 import { startGateway, type GatewayDeps } from "./local.ts"
-import { BrowserSessions } from "./session-ws.ts"
+import { McpRelay } from "./page-mcp.ts"
+import { BrowserSessions, type BrowserSessionOptions } from "./session-ws.ts"
 import { startTrayMenu, trayFile } from "./tray-menu.ts"
 import { pair } from "./pair.ts"
 import { currentHost, findProgram } from "./host.ts"
@@ -118,12 +119,31 @@ function beginUpdates(layout: Layout | undefined, idle: () => boolean, stop: (co
   }
 }
 
-/** The directory this run's MCP wrappers live in: `<tmp>/agentd-XXXXXX/bin` (SessionState removes leftovers of that name). */
+/**
+ * The directory this run's MCP wrappers live in: `<tmp>/agentd-XXXXXX/bin` (SessionState removes leftovers of that
+ * name). `root` is the daemon's own (mkdtemp makes it 0700): the socket of the pages' bridges goes there too.
+ */
 function makeTempDirs(): { root: string; bin: string } {
   const root = mkdtempSync(join(tmpdir(), "agentd-"))
   const bin = join(root, "bin")
   mkdirSync(bin)
   return { root, bin }
+}
+
+/** The socket of the pages' `agentd-mcp --page` bridges; without it pages run agents but serve them no tools. */
+async function listenForBridges(root: string): Promise<McpRelay | undefined> {
+  try {
+    return await McpRelay.listen(join(root, "mcp.sock"))
+  } catch (e) {
+    warn(`pages cannot serve MCP tools to their agents: ${e instanceof Error ? e.message : String(e)}`)
+    return undefined
+  }
+}
+
+/** The pages' agents: their own wrapper (`bin/page/agentd-mcp`, which runs `mcp --page`) and the bridges' socket. */
+async function makeBrowserSessions(root: string, bin: string, fleet: Omit<BrowserSessionOptions["fleet"], "binDir">, hello: () => Hello): Promise<BrowserSessions> {
+  const binDir = installWrapper(join(bin, "page"), ["--page"])
+  return new BrowserSessions({ fleet: { ...fleet, binDir }, hello, relay: await listenForBridges(root), bridgeCommand: join(binDir, WRAPPER) })
 }
 
 /** The layout updates and log rotation work in, or undefined (said in the log) for a daemon that is not installed. */
@@ -316,7 +336,7 @@ export async function runDaemon(cmd: RunCommand): Promise<number> {
   const stop = stopSignal()
 
   const layout = startUpdates()
-  const browsers = new BrowserSessions({ fleet: { cwd, binDir: bin, env: process.env, state, adapter: adapters.state }, hello })
+  const browsers = await makeBrowserSessions(root, bin, { cwd, env: process.env, state, adapter: adapters.state }, hello)
   const hub: AppHub = new AppHub({
     fleet: { cwd, env: process.env, state, adapter: adapters.state },
     wrapperRoot: bin,

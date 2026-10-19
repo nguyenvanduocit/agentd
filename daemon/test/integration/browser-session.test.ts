@@ -1,11 +1,11 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { once } from "node:events"
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, statSync, writeFileSync } from "node:fs"
 import { connect, type Socket } from "node:net"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { WebSocket } from "ws"
-import { build, groupAlive, Sandbox, TestDaemon, waitFor } from "./harness.ts"
+import { build, groupAlive, Sandbox, sh, TestDaemon, waitFor } from "./harness.ts"
 
 beforeAll(async () => {
   await build()
@@ -18,7 +18,10 @@ let box: Sandbox | undefined
 const sockets: WebSocket[] = []
 const pids: number[] = []
 
+const bridges: ChildProcess[] = []
+
 afterEach(async () => {
+  for (const b of bridges.splice(0)) b.kill("SIGKILL")
   for (const s of sockets.splice(0)) s.terminate()
   for (const p of pids.splice(0)) {
     try {
@@ -285,5 +288,191 @@ describe("refused upgrades", () => {
         ws.once("error", reject)
       }),
     ).rejects.toBeDefined()
+  })
+})
+
+interface McpServer {
+  command: string
+  args: string[]
+  env: { name: string; value: string }[]
+}
+
+/**
+ * An agent that starts MCP servers as an ACP agent does from session/new: a line `{"start": <server>}` runs that
+ * stdio server with the agent's environment plus the server's `env`; every other line goes to the server's stdin, the
+ * server's stdout comes out as the agent's, and its exit is the line `{"bridgeExit": <code>}`.
+ */
+const MCP_AGENT = `
+import { spawn } from "node:child_process"
+import { createInterface } from "node:readline"
+let server
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line)
+  if (m.start === undefined) return void server.stdin.write(line + "\\n")
+  const env = { ...process.env, ...Object.fromEntries(m.start.env.map((e) => [e.name, e.value])) }
+  server = spawn(m.start.command, m.start.args, { env, stdio: ["pipe", "pipe", "inherit"] })
+  createInterface({ input: server.stdout }).on("line", (l) => process.stdout.write(l + "\\n"))
+  server.on("exit", (code) => process.stdout.write(JSON.stringify({ bridgeExit: code }) + "\\n"))
+})
+`
+
+const MCP_INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agent", version: "1" } } }
+const MCP_INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" }
+const MCP_LIST = { jsonrpc: "2.0", id: 2, method: "tools/list" }
+const MCP_CALL = { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "current_page", arguments: {} } }
+
+/** The page's own MCP server: one tool, `current_page`, that says where the page is. */
+function serveTools(page: Page, id: string): void {
+  page.ws.on("message", (d: Buffer) => {
+    const m = JSON.parse(d.toString()) as { t: string; id: string; line: string }
+    if (m.t !== "mcp" || m.id !== id) return
+    const req = JSON.parse(m.line) as { id?: number; method: string }
+    if (req.id === undefined) return
+    const results: Record<string, object> = {
+      initialize: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "page", version: "1" } },
+      "tools/list": { tools: [{ name: "current_page", description: "Where the page is", inputSchema: { type: "object" } }] },
+      "tools/call": { content: [{ type: "text", text: "/projects/42" }] },
+    }
+    page.send({ t: "mcp", id, line: JSON.stringify({ jsonrpc: "2.0", id: req.id, result: results[req.method] }) })
+  })
+}
+
+/** `agentd-mcp --page` run by the test, outside any agent, with the environment of `server` (or `env` in its place). */
+async function pageBridge(server: McpServer, env: Record<string, string> = {}) {
+  const b = await build()
+  const own = Object.fromEntries(server.env.map((e) => [e.name, e.value]))
+  const p = spawn("node", [b.bundle, "mcp", "--page"], { env: { ...process.env, ...own, ...env }, stdio: ["pipe", "pipe", "pipe"] })
+  bridges.push(p)
+  let out = ""
+  let err = ""
+  p.stdout.on("data", (d: Buffer) => (out += d.toString()))
+  p.stderr.on("data", (d: Buffer) => (err += d.toString()))
+  const exited = new Promise<number | null>((resolve) => p.once("exit", resolve))
+  return { p, out: () => out, err: () => err, exited, send: (m: object) => p.stdin.write(JSON.stringify(m) + "\n") }
+}
+
+/** A page with session `id` open on the agent; returns the page and what `opened` said. */
+async function openOn(port: number, id = "s1") {
+  const page = await dial(port, PAGE)
+  page.send({ t: "open", id, agent: "claude" })
+  const opened = await next(page, `opened ${id}`, (m) => m.t === "opened" && m.id === id)
+  pids.push(opened.pid as number)
+  return { page, opened, mcp: opened.mcp as McpServer }
+}
+
+const mcpLine = (page: Page, id: string, what: string, pred: (line: string) => boolean) =>
+  next(page, what, (m) => m.t === "mcp" && m.id === id && pred(String(m.line)))
+
+describe("a page's MCP server", () => {
+  test("a page's agent finds agentd-mcp on its PATH, in the pages' own wrapper directory", async () => {
+    const port = await start(sh("command -v agentd-mcp; sleep 60"))
+    const { page } = await openOn(port)
+    const line = await next(page, "the wrapper path", (m) => m.t === "frame" && m.kind === "out")
+    expect(String(line.data)).toMatch(/agentd-[^/]+\/bin\/page\/agentd-mcp$/)
+  })
+
+  test("opened names the stdio server to pass to session/new: the pages' agentd-mcp by absolute path, with the daemon's private socket and a token in env", async () => {
+    const port = await start()
+    const { mcp } = await openOn(port)
+    // absolute, as the ACP schema asks: the server starts whatever PATH the agent gives its MCP servers
+    expect(mcp.command).toMatch(/^\/.+\/bin\/page\/agentd-mcp$/)
+    expect(mcp.args).toEqual([])
+    expect(mcp.env.map((e) => e.name)).toEqual(["AGENTD_MCP_SOCKET", "AGENTD_MCP_TOKEN"])
+    const [socket, token] = mcp.env.map((e) => e.value)
+    expect(statSync(socket!).isSocket()).toBe(true)
+    expect(dirname(socket!)).toMatch(/agentd-[0-9A-Za-z]{6}$/)
+    expect(statSync(dirname(socket!)).mode & 0o077).toBe(0) // no other OS user may reach the socket
+    expect(Buffer.from(token!, "base64url").length).toBeGreaterThanOrEqual(16)
+  })
+
+  test("the agent's initialize, tools/list and tools/call reach the page's server, and its answers reach the agent", async () => {
+    const port = await start(agentScript("mcp-agent.mjs", MCP_AGENT))
+    const { page, mcp } = await openOn(port)
+    serveTools(page, "s1")
+    page.send({ t: "write", id: "s1", line: JSON.stringify({ start: mcp }) })
+    for (const m of [MCP_INIT, MCP_INITIALIZED, MCP_LIST, MCP_CALL]) page.send({ t: "write", id: "s1", line: JSON.stringify(m) })
+    const answer = (id: number) => next(page, `the agent's answer ${id}`, (m) => m.t === "frame" && m.kind === "out" && String(m.data).includes(`"id":${id},`))
+    expect(JSON.parse(String((await answer(1)).data))).toMatchObject({ result: { serverInfo: { name: "page" } } })
+    expect(JSON.parse(String((await answer(2)).data))).toMatchObject({ result: { tools: [{ name: "current_page" }] } })
+    expect(JSON.parse(String((await answer(3)).data))).toMatchObject({ result: { content: [{ type: "text", text: "/projects/42" }] } })
+    await mcpLine(page, "s1", "the notification", (l) => l.includes("notifications/initialized"))
+  })
+
+  test("a wrong token is refused: the bridge says why and exits 1", async () => {
+    const port = await start(agentScript("mcp-agent.mjs", MCP_AGENT))
+    const { page, mcp } = await openOn(port)
+    const wrong = { ...mcp, env: mcp.env.map((e) => (e.name === "AGENTD_MCP_TOKEN" ? { ...e, value: "guessed" } : e)) }
+    page.send({ t: "write", id: "s1", line: JSON.stringify({ start: wrong }) })
+    await next(page, "the bridge's exit", (m) => m.t === "frame" && String(m.data) === '{"bridgeExit":1}')
+    const err = page.messages.filter((m) => m.t === "frame" && m.kind === "err").map((m) => String(m.data)).join("")
+    expect(err).toContain("agentd-mcp: the daemon refused the bridge (no open session has this token")
+    expect(page.messages.some((m) => m.t === "mcp")).toBe(false)
+  })
+
+  test("a bridge without its environment says what it needs and exits 1", async () => {
+    await start()
+    const bridge = await pageBridge({ command: "agentd-mcp", args: [], env: [] }, { AGENTD_MCP_SOCKET: "", AGENTD_MCP_TOKEN: "" })
+    expect(await bridge.exited).toBe(1)
+    expect(bridge.err()).toContain("AGENTD_MCP_SOCKET and AGENTD_MCP_TOKEN")
+  })
+
+  test("closing the page ends its bridge, which exits 1", async () => {
+    const port = await start()
+    const { page, mcp } = await openOn(port)
+    const bridge = await pageBridge(mcp)
+    bridge.send(MCP_INIT)
+    await mcpLine(page, "s1", "initialize on the page", (l) => l.includes('"initialize"'))
+    page.ws.close()
+    expect(await bridge.exited).toBe(1)
+    expect(bridge.err()).toContain("agentd-mcp: the daemon ended the bridge")
+  })
+
+  test("closing the session ends its bridge, and its token opens no other", async () => {
+    const port = await start()
+    const { page, mcp } = await openOn(port)
+    const bridge = await pageBridge(mcp)
+    bridge.send(MCP_INIT)
+    await mcpLine(page, "s1", "initialize on the page", (l) => l.includes('"initialize"'))
+    page.send({ t: "close", id: "s1" })
+    expect(await bridge.exited).toBe(1)
+    const late = await pageBridge(mcp)
+    expect(await late.exited).toBe(1)
+    expect(late.err()).toContain("refused the bridge")
+  })
+
+  test("a page line for a session with no bridge is an error that says so", async () => {
+    const port = await start()
+    const { page } = await openOn(port)
+    page.send({ t: "mcp", id: "s1", line: "{}" })
+    const err = await next(page, "the error", (m) => m.t === "error" && m.id === "s1")
+    expect(String(err.message)).toContain("no MCP bridge")
+  })
+
+  test("another page's token reaches that page only, even with the same session id", async () => {
+    const port = await start()
+    const a = await openOn(port)
+    const b = await openOn(port)
+    const bridge = await pageBridge(b.mcp)
+    bridge.send(MCP_INIT)
+    await mcpLine(b.page, "s1", "initialize on page b", (l) => l.includes('"initialize"'))
+    a.page.send({ t: "mcp", id: "s1", line: '{"jsonrpc":"2.0","id":1,"result":{"from":"a"}}' })
+    b.page.send({ t: "mcp", id: "s1", line: '{"jsonrpc":"2.0","id":1,"result":{"from":"b"}}' })
+    await waitFor("b's answer on the bridge", () => bridge.out().includes('"from":"b"'))
+    expect(bridge.out()).not.toContain('"from":"a"')
+    expect(a.page.messages.some((m) => m.t === "mcp")).toBe(false)
+  })
+
+  test("a bridge started again for the session replaces the older one", async () => {
+    const port = await start()
+    const { page, mcp } = await openOn(port)
+    const older = await pageBridge(mcp)
+    older.send(MCP_INIT)
+    await mcpLine(page, "s1", "the older initialize", (l) => l.includes('"initialize"'))
+    const newer = await pageBridge(mcp)
+    expect(await older.exited).toBe(1)
+    newer.send({ ...MCP_INIT, id: 7 })
+    await mcpLine(page, "s1", "the newer initialize", (l) => l.includes('"id":7'))
+    page.send({ t: "mcp", id: "s1", line: '{"jsonrpc":"2.0","id":7,"result":{}}' })
+    await waitFor("the answer on the newer bridge", () => newer.out().includes('"id":7'))
   })
 })

@@ -67,10 +67,41 @@ await local.disconnect() // takes this page's grant back; open sessions end
 
 `new ClientSideConnection((agent) => myClient, ndJsonStream(session.writable, session.readable))` works over the same streams.
 
+### Tools from the page
+
+A page can give its agent tools of its own (navigate, search, read what is on screen): the page runs an MCP server, and the agent reaches it through the daemon. `session.mcp` is the page's end, as bytes of JSON-RPC lines like `readable` and `writable`; `session.mcpServer(name)` is the stdio server to list in `session/new`, which the agent starts and which relays its MCP lines to `session.mcp`. Take `session.mcp` before `session/new`: lines that come before it is taken are not kept.
+
+```ts
+import { ndJsonStream, type Stream } from "@agentclientprotocol/sdk"
+
+const session = await openSession(found, "claude")
+void serveTools(ndJsonStream(session.mcp.writable, session.mcp.readable)) // JSON-RPC messages both ways
+// ... initialize as above, then:
+const { sessionId } = await acp.agent.request("session/new", { cwd: session.cwd, mcpServers: [session.mcpServer("page")] })
+
+async function serveTools({ readable, writable }: Stream) {
+  const out = writable.getWriter()
+  for await (const msg of readable) {
+    if (!("method" in msg) || !("id" in msg)) continue // a notification, or an answer
+    const result =
+      msg.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "page", version: "1" } }
+        : msg.method === "tools/list"
+          ? { tools: [{ name: "current_page", inputSchema: { type: "object" } }] }
+          : msg.method === "tools/call"
+            ? { content: [{ type: "text", text: location.pathname }] }
+            : undefined
+    await out.write(result === undefined ? { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `no method ${msg.method}` } } : { jsonrpc: "2.0", id: msg.id, result })
+  }
+}
+```
+
+Any MCP server whose transport reads and writes JSON-RPC messages works in place of `serveTools`. The agent may start the server again (a new `initialize` arrives on the same `session.mcp`). The bridge ends with the session and with the page's socket. A daemon older than 0.4 bridges no page server: `mcpServer()` throws and says so.
+
 ### Reference
 
 - `createLocalDaemon(deps)` is a small observable, not tied to a framework: wrap `state` and `subscribe` in your framework's reactivity (a Vue `ref`, a React store). `deps` is `{ startPairing, cancelPairing }` (server mode, the default) or `{ mode: "browser" }`; both take an optional `client` to replace the calls to the daemon. `detect()` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). `connect()` puts the reason of a refusal in `state.error` in plain words. `disconnect()` takes back what this page was allowed and looks again.
-- `openSession(d, agent)` gives an `AgentSession`: `readable` (stdout, each line ending in `\n`; it ends when the agent exits or the socket closes), `writable` (stdin; each complete line is sent, a partial one waits for its newline), and the line-level `write(line)`, `onFrame(cb)`, `onClose(cb)`, `close()`, `pid`, `cwd`. `readable` starts the first time it is taken and keeps no line from before: take it right after the session opens.
+- `openSession(d, agent)` gives an `AgentSession`: `readable` (stdout, each line ending in `\n`; it ends when the agent exits or the socket closes), `writable` (stdin; each complete line is sent, a partial one waits for its newline), and the line-level `write(line)`, `onFrame(cb)`, `onClose(cb)`, `close()`, `pid`, `cwd`. `readable` starts the first time it is taken and keeps no line from before: take it right after the session opens. `mcp` (`{ readable, writable }`) and `mcpServer(name)` (`{ name, command, args, env: [{ name, value }] }`, ACP's stdio MCP server) are for tools from the page.
 - `AgentInfo` is `{ name, title, ready, reason }`; `title` is the name to show, the agent's `name` when the daemon is older than the title.
 - `installCommand({ agentd, app, code })` is the curl line, or `undefined` while an origin or the code is not safe to paste into a shell.
 - `AGENTD_COMMANDS` are what the user runs on their machine: `status`, `logs`, `start`.

@@ -130,9 +130,35 @@ export interface Frame {
   code: number
 }
 
+/** A stdio MCP server as ACP's session/new takes it in `mcpServers`. */
+export interface McpServer {
+  name: string
+  command: string
+  args: string[]
+  env: { name: string; value: string }[]
+}
+
+/** The page's end of the bridge between the agent and the page's own MCP server, as an MCP transport takes it. */
+export interface McpStreams {
+  /**
+   * The lines of the agent's MCP client, as bytes, each ending in "\n"; it ends with the session. Like `readable`, it
+   * starts the first time it is taken and keeps no line from before: take it before session/new.
+   */
+  readonly readable: ReadableStream<Uint8Array>
+  /** The lines of the page's MCP server, as bytes: each complete line goes to the agent's MCP client. */
+  readonly writable: WritableStream<Uint8Array>
+}
+
 export interface AgentSession {
   pid: number
   cwd: string
+  /** The page's own MCP server, as the agent reaches it once session/new lists `mcpServer(name)`. */
+  readonly mcp: McpStreams
+  /**
+   * The MCP server, named `name`, to list in session/new's `mcpServers`: the agent then reaches the page's server through
+   * `mcp`. Throws on a daemon that does not bridge a page's MCP server (agentd 0.3 and older).
+   */
+  mcpServer(name: string): McpServer
   /** One line to the agent's stdin. */
   write(line: string): void
   /**
@@ -158,6 +184,9 @@ interface Incoming {
   kind?: Frame["kind"]
   data?: string
   code?: number
+  version?: string
+  line?: string
+  mcp?: Omit<McpServer, "name">
 }
 
 export interface SessionOptions {
@@ -185,7 +214,7 @@ function lineWriter(write: (line: string) => void): WritableStream<Uint8Array> {
   })
 }
 
-/** The stdout lines as bytes from the first time the stream is taken; a session that never takes it keeps no line. */
+/** Lines (stdout, or the agent's MCP lines) as bytes from the first time the stream is taken; a session that never takes it keeps no line. */
 function lineReader() {
   const encoder = new TextEncoder()
   let stream: ReadableStream<Uint8Array> | undefined
@@ -209,6 +238,12 @@ function lineReader() {
   }
 }
 
+/** The server of `opened.mcp` under `name`, a copy each time; a daemon that sent none bridges no page's MCP server. */
+function mcpServerOf(wire: Incoming["mcp"], version: string, name: string): McpServer {
+  if (wire === undefined) throw new Error(`agentd ${version} does not bridge a page's MCP server: update agentd on this computer`)
+  return { name, command: wire.command, args: [...wire.args], env: wire.env.map((e) => ({ name: e.name, value: e.value })) }
+}
+
 /** Opens `agent` on the daemon over a socket of its own; the page is the ACP client of the lines. */
 export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): Promise<AgentSession> {
   const Socket = o.WebSocket ?? WebSocket
@@ -217,28 +252,46 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
   const frames: ((f: Frame) => void)[] = []
   const closers: (() => void)[] = []
   const stdout = lineReader()
+  const mcpIn = lineReader()
+  let version = "(unknown version)"
   const send = (m: object): void => ws.send(JSON.stringify(m))
   const write = (line: string): void => send({ t: "write", id, line })
+  const end = (): void => {
+    stdout.end()
+    mcpIn.end()
+  }
   return new Promise((resolve, reject) => {
     ws.onerror = () => reject(new Error("cannot open a session: the daemon refused the connection (is this page allowed?)"))
     ws.onclose = () => {
       reject(new Error("the daemon closed the session"))
-      stdout.end()
+      end()
       for (const c of closers) c()
     }
     ws.onmessage = (e: MessageEvent<string>) => {
       const m = JSON.parse(e.data) as Incoming
-      if (m.t === "hello") send({ t: "open", id, agent })
-      else if (m.t === "error" && m.id === id) reject(new Error(m.message))
-      else if (m.t === "frame" && m.id === id) {
+      if (m.t === "hello") {
+        version = m.version ?? version
+        send({ t: "open", id, agent })
+      } else if (m.id !== id) return
+      else if (m.t === "error") reject(new Error(m.message))
+      else if (m.t === "mcp") mcpIn.line(m.line ?? "")
+      else if (m.t === "frame") {
         const frame: Frame = { kind: m.kind ?? "out", data: m.data ?? "", code: m.code ?? 0 }
         if (frame.kind === "out") stdout.line(frame.data)
-        else if (frame.kind === "exit") stdout.end()
+        else if (frame.kind === "exit") end()
         for (const f of frames) f(frame)
-      } else if (m.t === "opened" && m.id === id) {
+      } else if (m.t === "opened") {
+        const mcpOut = lineWriter((line) => send({ t: "mcp", id, line }))
         resolve({
           pid: m.pid ?? -1,
           cwd: m.cwd ?? "",
+          mcp: {
+            get readable() {
+              return mcpIn.stream
+            },
+            writable: mcpOut,
+          },
+          mcpServer: (name) => mcpServerOf(m.mcp, version, name),
           write,
           get readable() {
             return stdout.stream

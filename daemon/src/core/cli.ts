@@ -9,6 +9,7 @@ export type Command =
   | { kind: "run"; app: string | undefined; dir: string | undefined; config: string | undefined }
   | { kind: "pair"; app: string; code: string | undefined; config: string | undefined }
   | { kind: "mcp"; session: string; app: string | undefined; config: string | undefined }
+  | { kind: "page-mcp" }
   | { kind: "apps"; action: "list" | "remove"; origin: string | undefined; config: string | undefined }
   | { kind: "service"; action: ServiceAction; lines: number; follow: boolean; dir: string | undefined }
   | { kind: "version" }
@@ -43,6 +44,7 @@ const OPTIONS = {
   config: { type: "string" },
   code: { type: "string" },
   session: { type: "string" },
+  page: { type: "boolean" },
   lines: { type: "string", short: "n" },
   follow: { type: "boolean", short: "f" },
   help: { type: "boolean", short: "h" },
@@ -66,8 +68,11 @@ function pair(v: Values): Parsed {
   return { ok: true, command: { kind: "pair", app: v.app, code: v.code, config: v.config } }
 }
 
+/** `mcp --session <id>` bridges to an app's server; `mcp --page` to a page's, with the socket and token from the environment. */
 function mcp(v: Values): Parsed {
-  if (!v.session) return fail("mcp needs --session <id>")
+  if (v.page === true && v.session !== undefined) return fail("mcp takes --session <id> or --page, not both")
+  if (v.page === true) return { ok: true, command: { kind: "page-mcp" } }
+  if (!v.session) return fail("mcp needs --session <id> (an app's session) or --page (a page's)")
   return { ok: true, command: { kind: "mcp", session: v.session, app: v.app, config: v.config } }
 }
 

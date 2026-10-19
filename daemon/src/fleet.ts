@@ -22,6 +22,8 @@ export interface FleetOptions {
   state: Pick<SessionState, "add" | "remove">
   /** The sink for the connection that is current now. */
   sink: () => FrameSink
+  /** A session's agent is gone (it exited or was ended); its id may be opened again from now on. */
+  ended?: (id: string) => void
 }
 
 /** The agents running on this machine, by session id. */
@@ -66,6 +68,7 @@ export class Fleet {
     const session = new AgentSession(id, child, this.o.sink(), () => {
       this.sessions.delete(id)
       this.o.state.remove(pgid)
+      this.o.ended?.(id)
     })
     // Registered before the spawn settles: a socket that drops meanwhile still ends this agent.
     this.sessions.set(id, session)
