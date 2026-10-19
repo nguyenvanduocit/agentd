@@ -1,18 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import { AGENTD_COMMANDS, installCommand } from "./install.ts"
+import { AGENTD_COMMANDS, AGENTD_RELEASES, installCommand } from "./install.ts"
 
-const AGENTD = "https://agentd.example.com"
+const AGENTD = "https://agentd.example.com/releases"
 
 describe("installCommand", () => {
-  test("is the curl line that installs, pairs and starts a daemon: from agentd's server, for this app, with this code", () => {
+  test("is the curl line that installs, pairs and starts a daemon: from agentd's latest GitHub release, for this app, with this code", () => {
+    expect(installCommand({ app: "https://mind.example.com", code: "K7QX-29PD" })).toBe(
+      "curl -fsSL https://github.com/nguyenvanduocit/agentd/releases/latest/download/install.sh | bash -s -- --app https://mind.example.com --code K7QX-29PD",
+    )
+    expect(AGENTD_RELEASES).toBe("https://github.com/nguyenvanduocit/agentd/releases")
+  })
+
+  test("takes the releases page of another build (a fork, or a development server) instead", () => {
     expect(installCommand({ agentd: AGENTD, app: "https://mind.example.com", code: "K7QX-29PD" })).toBe(
-      "curl -fsSL https://agentd.example.com/install.sh | bash -s -- --app https://mind.example.com --code K7QX-29PD",
+      "curl -fsSL https://agentd.example.com/releases/latest/download/install.sh | bash -s -- --app https://mind.example.com --code K7QX-29PD",
     )
   })
 
   test("takes an origin with a port, an IPv6 literal and plain http on loopback", () => {
     expect(installCommand({ agentd: "http://127.0.0.1:7100", app: "http://localhost:5173", code: "ABCD-1234" })).toBe(
-      "curl -fsSL http://127.0.0.1:7100/install.sh | bash -s -- --app http://localhost:5173 --code ABCD-1234",
+      "curl -fsSL http://127.0.0.1:7100/latest/download/install.sh | bash -s -- --app http://localhost:5173 --code ABCD-1234",
     )
     expect(installCommand({ agentd: AGENTD, app: "http://[::1]:3000", code: "ABCD-1234" })).toContain("--app http://[::1]:3000")
   })
@@ -25,6 +32,9 @@ describe("installCommand", () => {
       { ...ok, app: "mind.example.com" },
       { ...ok, app: "ftp://mind.example.com" },
       { ...ok, agentd: "https://agentd.example.com/" },
+      { ...ok, agentd: "https://agentd.example.com/a/../b" },
+      { ...ok, agentd: "https://agentd.example.com/a?x=1" },
+      { ...ok, agentd: "https://agentd.example.com/a'b" },
       { ...ok, agentd: "https://agentd example" },
       { ...ok, agentd: "" },
       { ...ok, code: "abc" },

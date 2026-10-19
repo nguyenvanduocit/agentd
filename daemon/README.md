@@ -11,17 +11,17 @@ connection. Node.js >= 20.
 An app's web page shows one command; it installs, pairs and starts the daemon as a service of your user:
 
 ```
-curl -fsSL <agentd server>/install.sh | bash -s -- --app <app origin> --code <code>
+curl -fsSL https://github.com/nguyenvanduocit/agentd/releases/latest/download/install.sh | bash -s -- --app <app origin> --code <code>
 ```
 
-`<agentd server>` is the agentd release server that served the page's SDK (`cmd/agentd-server`); `<app origin>` is the app
-that gave you the command and `<code>` its one-time pairing code.
+`install.sh` is a file of agentd's latest GitHub release; `<app origin>` is the app that gave you the command and `<code>` its
+one-time pairing code.
 
 macOS (arm64, x64) and Linux (x64, arm64, glibc). It needs `curl`, `tar`, `bash` and `shasum` or `sha256sum`, no
 sudo, and writes only under your home directory. Windows: use WSL. The script checks the daemon tarball against the
-sha256 the release server rendered into it, uses the machine's Node.js >= 20 (with `npm`), or else downloads the pinned LTS
+sha256 baked into it when the release was built, uses the machine's Node.js >= 20 (with `npm`), or else downloads the pinned LTS
 from nodejs.org into `~/.agentd/node` (checked against that release's `SHASUMS256.txt`). It does not check the
-release signature: the first install trusts the release server's TLS and the script it serves, so a compromised server can
+release signature: the first install trusts GitHub's TLS and the script it serves, so a compromised release can
 serve another script. Signing protects the updates of a daemon already installed.
 
 | Flag | Meaning |
@@ -30,7 +30,7 @@ serve another script. Signing protects the updates of a daemon already installed
 | `--no-service` | Install and pair only; start it yourself: `~/.agentd/bin/agentd run`. |
 | `--foreground` | No service: run the daemon in this terminal (debugging, e2e). |
 
-Running the command again installs the version the release server serves now and restarts the service on it.
+Running the command again installs the latest release and restarts the service on it.
 
 ## Commands
 
@@ -140,26 +140,28 @@ when a chat session opens, so no timeout of a chat can cut an install.
   only `agentd service start` on the machine starts it again.
 - **Log.** `daemon.log` is rotated at 5 MiB, 3 files kept (`.1`, `.2`). It is copied and truncated in place, because
   the service manager holds the file open: a few lines written during the copy can be lost.
-- **Update.** At start and every six hours the daemon asks the release server (`AGENTD_RELEASE_URL`, else the `RELEASE_URL` baked in
-  at build time; empty switches updates off) for `/releases/latest.json`. A different version must be signed (below); it
-  is then downloaded from `<release server><url>`, checked against the sha256, unpacked into `~/.agentd/daemon/<version>`, and `current` is renamed
+- **Update.** At start and every six hours the daemon asks the releases page (`AGENTD_RELEASE_URL`, else the `RELEASE_URL` baked in
+  at build time, `https://github.com/nguyenvanduocit/agentd/releases` for a release; empty switches updates off) for
+  `<releases>/latest/download/latest.json`; GitHub redirects that, and the tarball, to its storage host, which the daemon follows
+  (https only; plain http only inside one origin, for the local stand-in). A different version must be signed (below); it
+  is then downloaded from `<releases><url>` (`/download/v<version>/agentd-<version>.tgz`), checked against the sha256, unpacked into `~/.agentd/daemon/<version>`, and `current` is renamed
   onto it (atomic). When no session is running (checked every 5 s; a turn in progress is never cut) the daemon exits with
   code 75 and the launcher starts it again at once on the new version. A failed download, a wrong
   sha256 or a bad tarball changes nothing and is retried from 30 s up to 30 min; a bad signature changes nothing and is
   not retried (it is logged again at every check). Only a daemon installed under
-  `~/.agentd/daemon/<version>/` updates itself; a source run, a test bundle or an npx copy never does. The release server,
+  `~/.agentd/daemon/<version>/` updates itself; a source run, a test bundle or an npx copy never does. The releases page,
   not an app, is the update source: a daemon that serves several apps updates the same way whichever of them leave.
 - **Signed updates.** `scripts/build-daemon.sh` bakes the release public key into the bundle (`AGENTD_RELEASE_KEY`,
-  base64 of the SPKI DER; `../daemon/release.pub` for releases) and writes `signature` into `releases/latest.json`: the
+  base64 of the SPKI DER; `../daemon/release.pub` for releases) and writes `signature` into `latest.json`: the
   Ed25519 signature of `"agentd\n<version>\n<sha256>\n"`.
   Before it downloads anything (and for a version already on disk too) the daemon checks it with that key
   (`src/core/signature.ts`); a missing or wrong signature, or a bundle without a key, refuses the update and logs
   `cannot update to <version>: refused: <why>`. Nothing turns the check off. Limits: signing covers the update channel
-  only (an app's server still drives agents in auto-approve mode); no anti-rollback (a compromised release server can offer an
-  older signed version again); no key rotation (losing the release key means reinstalling daemons).
+  only (an app's server still drives agents in auto-approve mode); an offer older than the running x.y.z is refused (a replayed old manifest cannot roll a daemon back), but a daemon
+  can be kept on its version by serving it the same manifest for ever (the signature has no expiry); no key rotation (losing the release key means reinstalling daemons).
 - **Rollback.** The launcher keeps `daemon/previous`. A version that exits non-zero within 30 s of its start, twice in a
   row (`daemon/crashes`), is rolled back: `current` points at `previous`, the bad version is written to
-  `daemon/rejected`, and the daemon does not update to that version again until the release server offers a different one.
+  `daemon/rejected`, and the daemon does not update to that version again until the releases page offers a different one.
 
 ## Files
 
@@ -206,17 +208,17 @@ bunx tsc --noEmit
 bun run lint
 bun test test/unit                 # pure logic, no processes
 bun run test                       # unit + integration; the integration build (about 35 MB of binaries) lives in a directory of the run, removed at its end
-bun test test/integration          # real `node daemon.js` under the real launcher and install.sh, against a Go server double; needs go (scripts/go.sh), lsof, curl, tar, bash
+bun test test/integration          # real `node daemon.js` under the real launcher and install.sh, against a Go app-server double; needs go (scripts/go.sh), lsof, curl, tar, bash
 AGENTD_TEST_NETWORK=1 bun test test/integration/install.test.ts   # also downloads Node.js from nodejs.org (about 50 MB)
 AGENTD_TEST_LAUNCHD=1 bun test test/integration/service.test.ts   # macOS: one real launchd job with a unique label, removed afterwards
 RUN_REAL_CLAUDE=1 bun test test/integration/claude.real.test.ts   # two short turns with the real Claude adapter (costs money)
 (cd ../tray && go vet ./... && go test ./...)   # the tray's menu model
 (cd ../sdk/client && bun test)                  # the SDK pages use
 bun test --coverage test/unit
-../scripts/build-daemon.sh /tmp/dist   # releases/agentd-<version>.tgz (daemon.js, launcher.sh, package.json) + signed releases/latest.json; dev key in ../.dev-signing/ (made on first use)
+../scripts/build-daemon.sh /tmp/dist   # download/v<version>/{agentd-<version>.tgz (daemon.js, launcher.sh, package.json), latest.json (signed), install.sh}; dev key in ../.dev-signing/ (made on first use)
 ```
 
 The app-server double is `test/server/main.go` (build tag `daemontest`, so it stays out of `go build ./...`): it serves the generated
 `contract` code on `/agentd`, a loopback `/ctl` API for the tests, and `POST /agentd/pair`. Installs and updates in the tests
-come from the real release server (`cmd/agentd-server`, started by `test/integration/harness.ts`) or from the `ReleaseStub` in
+come from the real local stand-in for GitHub Releases (`cmd/agentd-server`, started by `test/integration/harness.ts`) or from the `ReleaseStub` in
 `test/integration/versions.ts`, which a test steers (what `latest.json` says, download counts and delays).

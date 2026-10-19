@@ -2,7 +2,7 @@
 // starts them as real processes. Nothing here is mocked: the daemon under test is `node dist/daemon.js`.
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process"
 import { generateKeyPairSync } from "node:crypto"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -394,7 +394,24 @@ export function freePort(): Promise<number> {
   })
 }
 
-/** The real release server (cmd/agentd-server) over a directory of published artifacts: the installer and the releases. */
+/**
+ * Writes install.sh of the latest release in `dist` (daemon/install.sh.in with that release's version and sha256, as
+ * scripts/build-daemon.sh does), downloading from the release server at `origin`. A dist with no release has none.
+ */
+export function renderInstall(dist: string, origin: string): void {
+  if (!existsSync(join(dist, "latest"))) return
+  const version = readFileSync(join(dist, "latest"), "utf8").trim()
+  const dir = join(dist, "download", `v${version}`)
+  const { sha256 } = JSON.parse(readFileSync(join(dir, "latest.json"), "utf8")) as { sha256: string }
+  const script = readFileSync(join(import.meta.dir, "../../install.sh.in"), "utf8")
+    .replaceAll("@VERSION@", version)
+    .replaceAll("@SHA256@", sha256)
+    .replaceAll("@TARBALL_URL@", `${origin}/download/v${version}/agentd-${version}.tgz`)
+    .replaceAll("@INSTALL_URL@", `${origin}/latest/download/install.sh`)
+  writeFileSync(join(dir, "install.sh"), script, { mode: 0o755 })
+}
+
+/** The real stand-in for GitHub Releases (cmd/agentd-server) over a directory of release files. */
 export class ReleaseServer {
   /** The server's request log: one `request: <method> <path> <status>` line per request. */
   log = ""
@@ -410,7 +427,7 @@ export class ReleaseServer {
   /** How many times each daemon tarball was downloaded (status 200), by file name. */
   downloads(): Record<string, number> {
     const counts: Record<string, number> = {}
-    for (const m of this.log.matchAll(/request: GET \/releases\/(agentd-[^ ]+\.tgz) 200/g)) {
+    for (const m of this.log.matchAll(/request: GET \/download\/v[^/ ]+\/(agentd-[^ ]+\.tgz) 200/g)) {
       const name = m[1]!
       counts[name] = (counts[name] ?? 0) + 1
     }
@@ -421,9 +438,10 @@ export class ReleaseServer {
     const b = await build()
     const port = await freePort()
     const origin = `http://127.0.0.1:${port}`
-    const proc = spawn(b.releaseServer, ["-addr", `127.0.0.1:${port}`, "-dist", dist, "-public-url", origin], { stdio: ["ignore", "ignore", "pipe"] })
+    const proc = spawn(b.releaseServer, ["-addr", `127.0.0.1:${port}`, "-dist", dist], { stdio: ["ignore", "ignore", "pipe"] })
     leftovers.set(proc, false)
     await waitFor("the release server", async () => (await fetch(`${origin}/healthz`).catch(() => undefined))?.ok === true)
+    renderInstall(dist, origin)
     return new ReleaseServer(proc, origin, dist)
   }
 

@@ -3,7 +3,7 @@ import type { Offer } from "../../src/core/update.ts"
 import { ReleaseWatcher } from "../../src/releases.ts"
 import { waitFor } from "./harness.ts"
 
-const OFFER: Offer = { version: "2.0.0", url: "/releases/agentd-2.0.0.tgz", sha256: "a".repeat(64), signature: Buffer.alloc(64, 7).toString("base64") }
+const OFFER: Offer = { version: "2.0.0", url: "/download/v2.0.0/agentd-2.0.0.tgz", sha256: "a".repeat(64), signature: Buffer.alloc(64, 7).toString("base64") }
 
 const stops: (() => void)[] = []
 afterEach(() => {
@@ -12,7 +12,7 @@ afterEach(() => {
 
 function release(handle: (n: number) => Response | Promise<Response>) {
   let hits = 0
-  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => (new URL(req.url).pathname === "/releases/latest.json" ? handle(++hits) : new Response("nope", { status: 404 })) })
+  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => (new URL(req.url).pathname === "/latest/download/latest.json" ? handle(++hits) : new Response("nope", { status: 404 })) })
   stops.push(() => void s.stop(true))
   return { base: `http://127.0.0.1:${s.port}`, hits: () => hits }
 }
@@ -54,6 +54,36 @@ describe("ReleaseWatcher", () => {
     await waitFor("the offer after five answers", () => offers[0], 10_000)
     expect(mode).toBeGreaterThanOrEqual(5)
     expect(offers[0]).toEqual(OFFER)
+  })
+
+  test("a redirect inside the server's own origin is followed (GitHub sends a release asset on to another host)", async () => {
+    let hits = 0
+    const s = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        const path = new URL(req.url).pathname
+        if (path === "/latest/download/latest.json") return new Response(null, { status: 302, headers: { location: "/download/v2.0.0/latest.json" } })
+        if (path === "/download/v2.0.0/latest.json") return (hits++, Response.json(OFFER))
+        return new Response("nope", { status: 404 })
+      },
+    })
+    stops.push(() => void s.stop(true))
+    const { offers } = watch(`http://127.0.0.1:${s.port}`)
+    await waitFor("the offer behind the redirect", () => offers[0])
+    expect(offers[0]).toEqual(OFFER)
+    expect(hits).toBe(1)
+  })
+
+  test("a redirect loop ends: it is not followed forever", async () => {
+    let hits = 0
+    const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => (hits++, new Response(null, { status: 302, headers: { location: "/latest/download/latest.json" } })) })
+    stops.push(() => void s.stop(true))
+    const { offers } = watch(`http://127.0.0.1:${s.port}`, 60_000, 2000)
+    await waitFor("the hops to stop", () => hits >= 6, 5000)
+    await new Promise((res) => setTimeout(res, 300))
+    expect(hits).toBeLessThan(12)
+    expect(offers).toEqual([])
   })
 
   test("stop ends the asking", async () => {

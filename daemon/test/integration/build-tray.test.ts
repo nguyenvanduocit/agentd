@@ -38,7 +38,7 @@ describe("scripts/build-daemon.sh with a tray", () => {
       writeFileSync(join(trays, "darwin-arm64", "agentd-tray"), "#!/bin/sh\n")
       chmodSync(join(trays, "darwin-arm64", "agentd-tray"), 0o755)
       run("build-daemon.sh", [out], { TRAY_DIR: trays })
-      const tgz = execFileSync("sh", ["-c", `ls ${out}/releases/*.tgz`], { encoding: "utf8" }).trim()
+      const tgz = execFileSync("sh", ["-c", `ls ${out}/download/*/*.tgz`], { encoding: "utf8" }).trim()
       const listing = tarList(tgz)
       expect(listing).toMatch(/-rwxr-xr-x.* package\/tray\/darwin-arm64\/agentd-tray/)
       expect(listing).toContain("package/daemon.js")

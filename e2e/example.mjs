@@ -1,5 +1,5 @@
 // The whole product, through a real browser: an app built only on the hub library and the page SDK (examples/minimal-app),
-// the SDK built from this tree, a daemon installed by the install.sh the release server serves,
+// the SDK built from this tree, a daemon installed by the install.sh of the (local stand-in for the) GitHub release,
 // paired with the app, answering an agent, and updated from the release server. Nothing is mocked except the agent (a fake
 // ACP agent that answers `initialize`) and the native dialog (a program that exits 0, MINDCHAINS_CONSENT's counterpart).
 const task = await taskSpace("agentd e2e: example __RUN__");
@@ -20,11 +20,11 @@ await page.waitForSelector(q("daemons"), { state: "attached" });
 check("with no daemon anywhere the page offers the install command and no local connection", (await visible("install-start")) && !(await visible("local")));
 
 // --- A: a daemon already runs on this computer, unpaired: the page offers to connect it, the user answers its dialog
-const tarball = _fs.readdirSync("__DIST__/releases").find((f) => f.endsWith(".tgz"));
+const tarball = _fs.readdirSync("__DIST__/download/v0.0.1").find((f) => f.endsWith(".tgz"));
 const a = machine({ AGENTD_RELEASE_URL: "" });
 const bundle = _path.join(a.home, "daemon");
 _fs.mkdirSync(bundle);
-_cp.execFileSync("tar", ["-xzf", _path.join("__DIST__/releases", tarball), "-C", bundle, "--strip-components=1"]);
+_cp.execFileSync("tar", ["-xzf", _path.join("__DIST__/download/v0.0.1", tarball), "-C", bundle, "--strip-components=1"]);
 const consent = _path.join(a.home, "consent");
 _fs.writeFileSync(consent, `#!/bin/sh\necho "$1" >> ${_path.join(a.home, "asked")}\nexit 0\n`, { mode: 0o755 });
 a.start(`node ${_path.join(bundle, "daemon.js")} run`, { AGENTD_CONSENT: consent });
@@ -44,14 +44,14 @@ await a.destroy();
 await waitRow((t) => /: offline/.test(t), "the daemon offline after it stopped");
 check("a daemon that stopped shows offline", (await rows()).length === 1);
 
-// --- B: no daemon here: the install command, run in a terminal, installs agentd from the release server and pairs it
+// --- B: no daemon here: the install command, run in a terminal, installs agentd from the release and pairs it
 await page.reload();
 await page.waitForSelector(q("install-start"), { state: "visible", timeout: 15000 });
 await page.click(q("install-start"));
 await page.waitForSelector(q("install-command"), { state: "visible", timeout: 15000 });
 const command = await text("install-command");
-const parts = /^curl -fsSL (\S+)\/install\.sh \| bash -s -- --app (\S+) --code ([A-Za-z0-9-]{4,32})$/.exec(command);
-check("the command installs from agentd's server and carries this app's origin and the code", !!parts && parts[1] === "__AGENTD_URL__" && parts[2] === "__APP_URL__", command);
+const parts = /^curl -fsSL (\S+)\/latest\/download\/install\.sh \| bash -s -- --app (\S+) --code ([A-Za-z0-9-]{4,32})$/.exec(command);
+check("the command installs from the release and carries this app's origin and the code", !!parts && parts[1] === "__AGENTD_URL__" && parts[2] === "__APP_URL__", command);
 const b = machine({ AGENTD_RELEASE_URL: "__AGENTD_URL__", AGENTD_RELEASE_CHECK_MS: "500", AGENTD_RESTART: "loop" });
 b.start(command.replace(" --code ", " --foreground --code "));
 await waitRow((t) => /: online \(agentd 0\.0\.1\)/.test(t), "the installed daemon online");

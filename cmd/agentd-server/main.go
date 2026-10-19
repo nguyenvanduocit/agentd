@@ -1,7 +1,8 @@
-// Command agentd-server serves the agentd installer and the signed daemon release from a directory of published
-// artifacts (see package server).
+// Command agentd-server is a local stand-in for GitHub Releases: it serves the files scripts/build-daemon.sh writes under
+// the URLs GitHub gives a release's assets (see package server). For development and the end-to-end tests; the real
+// releases are on GitHub.
 //
-//	agentd-server -dist ./dist -public-url https://agentd.example.com -addr :7100
+//	agentd-server -dist ./dist -addr 127.0.0.1:7100
 package main
 
 import (
@@ -48,11 +49,10 @@ func logRequests(next http.Handler) http.Handler {
 
 func run() error {
 	addr := flag.String("addr", env("AGENTD_ADDR", "127.0.0.1:7100"), "listen address (AGENTD_ADDR)")
-	dist := flag.String("dist", env("AGENTD_DIST", "dist"), "directory of published artifacts (AGENTD_DIST)")
-	public := flag.String("public-url", env("AGENTD_PUBLIC_URL", "http://127.0.0.1:7100"), "the server's own origin, baked into install.sh (AGENTD_PUBLIC_URL)")
+	dist := flag.String("dist", env("AGENTD_DIST", "dist"), "directory of release files (AGENTD_DIST)")
 	flag.Parse()
 
-	h, err := server.Handler(server.Config{Dist: *dist, PublicURL: *public})
+	h, err := server.Handler(server.Config{Dist: *dist})
 	if err != nil {
 		return fmt.Errorf("configure: %w", err)
 	}
@@ -65,7 +65,7 @@ func run() error {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	log.Printf("agentd-server: serving %s as %s on %s", *dist, *public, *addr)
+	log.Printf("agentd-server: serving %s on %s", *dist, *addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)
 	}

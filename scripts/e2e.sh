@@ -35,7 +35,7 @@ RUN="run$$-$RANDOM"
 VERSION=0.0.1 RELEASE_URL="$AGENTD_URL" TRAY_DIR="$WORK/empty-tray" ./scripts/build-daemon.sh "$DIST" >&2
 go build -o "$WORK/agentd-server" ./cmd/agentd-server
 go build -o "$WORK/fake-agent" ./cmd/fake-agent
-"$WORK/agentd-server" -addr "127.0.0.1:$RPORT" -dist "$DIST" -public-url "$AGENTD_URL" >"$WORK/server.log" 2>&1 &
+"$WORK/agentd-server" -addr "127.0.0.1:$RPORT" -dist "$DIST" >"$WORK/server.log" 2>&1 &
 PIDS+=("$!")
 for _ in $(seq 1 40); do curl -s -o /dev/null "$AGENTD_URL/healthz" && break; sleep 0.25; done
 

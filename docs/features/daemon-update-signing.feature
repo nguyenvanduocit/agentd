@@ -3,12 +3,12 @@ Feature: Apply only daemon updates signed with the release key
   release server cannot replace the daemon on machines that run it. The first install, through install.sh, is not covered.
 
   Scenario: Install a signed update
-    Given the release server offers a newer version with its sha256 and the release key's signature of both
+    Given the release offers a newer version with its sha256 and the release key's signature of both
     When the daemon checks the signature against the release key baked into its bundle
     Then it downloads the tarball, checks the sha256 and installs the new version
 
   Scenario Outline: Refuse an update the release key did not sign
-    Given the release server offers a newer version with <offer>
+    Given the release offers a newer version with <offer>
     When the daemon checks the offer
     Then it downloads nothing and keeps running its current version
     And it logs why it refused the update
@@ -24,7 +24,7 @@ Feature: Apply only daemon updates signed with the release key
 
   Scenario: Refuse every update without a baked release key
     Given the daemon was bundled without a release key
-    When the release server offers a correctly signed newer version
+    When the release offers a correctly signed newer version
     Then the daemon refuses it and keeps running its current version
 
   Scenario: Sign every daemon build

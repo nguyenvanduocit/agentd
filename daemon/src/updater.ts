@@ -7,6 +7,7 @@ import { backoffDelay } from "./core/backoff.ts"
 import { versionDir, type Layout } from "./core/layout.ts"
 import { signatureProblem } from "./core/signature.ts"
 import { decide, parseVersionRecord, RETRY, VERSION_PATTERN, type Offer } from "./core/update.ts"
+import { fetchFollowing } from "./http.ts"
 import { say, warn } from "./log.ts"
 
 const run = promisify(execFile)
@@ -34,7 +35,7 @@ function pointCurrent(l: Layout, version: string): void {
 
 /** Downloads the offer's tarball into `dir/pkg.tgz`; returns the path once its sha256 matches. */
 async function download(origin: string, offer: Offer, dir: string, fetchFn: typeof fetch): Promise<string> {
-  const res = await fetchFn(`${origin}${offer.url}`, { redirect: "error", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
+  const res = await fetchFollowing(fetchFn, `${origin}${offer.url}`, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS))
   if (!res.ok) throw new Error(`${origin}${offer.url}: HTTP ${res.status}`)
   const body = Buffer.from(await res.arrayBuffer())
   if (body.length > MAX_TARBALL_BYTES) throw new Error(`the download is ${body.length} bytes: too large for a daemon`)
@@ -78,7 +79,7 @@ function prune(l: Layout, keep: Set<string>): void {
 
 export interface UpdaterOptions {
   layout: Layout
-  /** The server origin the tarball is fetched from. */
+  /** The releases page the tarball is fetched from (see releaseBase). */
   server: string
   /** The version this process runs. */
   running: string

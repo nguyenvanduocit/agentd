@@ -30,11 +30,13 @@ export const offerOf = (v: Version, o: Partial<{ sha256: string; signature: stri
   return { version: v.version, url: tarballPath(v.version), sha256, signature: o.signature ?? testSign(v.version, sha256) }
 }
 
-/** Publishes `v` as the latest release in a release server's dist directory: the tarball and latest.json. */
+/** Publishes `v` as the latest release in a release server's dist directory: the tarball, latest.json and the latest pointer. */
 export function writeRelease(dist: string, v: Version, o: Parameters<typeof offerOf>[1] = {}): void {
-  mkdirSync(join(dist, "releases"), { recursive: true })
-  copyFileSync(v.tgz, join(dist, "releases", `agentd-${v.version}.tgz`))
-  writeFileSync(join(dist, "releases", "latest.json"), JSON.stringify(offerOf(v, o)))
+  const dir = join(dist, "download", `v${v.version}`)
+  mkdirSync(dir, { recursive: true })
+  copyFileSync(v.tgz, join(dir, `agentd-${v.version}.tgz`))
+  writeFileSync(join(dir, "latest.json"), JSON.stringify(offerOf(v, o)))
+  writeFileSync(join(dist, "latest"), `${v.version}\n`)
 }
 
 /**
@@ -57,7 +59,7 @@ export class ReleaseStub {
       hostname: "127.0.0.1",
       fetch: async (req) => {
         const path = new URL(req.url).pathname
-        if (path === "/releases/latest.json") {
+        if (path === "/latest/download/latest.json") {
           this.latestHits++
           return this.latest === undefined ? new Response("no release", { status: 503 }) : Response.json(this.latest)
         }

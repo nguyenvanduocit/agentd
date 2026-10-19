@@ -4,13 +4,14 @@ What a web page uses to find the agentd daemon on the user's computer, ask it to
 
 ## Install
 
-The package is the [agentd-client](https://github.com/nguyenvanduocit/agentd-client) repository on GitHub; each version is a tag.
+The package is a file of agentd's GitHub release, `agentd-client-<version>.tgz`; install it by its URL:
 
 ```
-bun add github:nguyenvanduocit/agentd-client#v0.2.1       # npm: npm install github:nguyenvanduocit/agentd-client#v0.2.1
+bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.2.0/agentd-client-0.2.1.tgz       # npm: npm install <the same URL>
 ```
 
-Your lockfile pins the commit of the tag. A tag is never moved: a fix is a new version.
+`v0.2.0` is the release it was published with, `0.2.1` the SDK's own version. Your lockfile records the file's sha512, and a
+published file never changes: a fix is a new version in a new release.
 
 ## Use
 
@@ -43,6 +44,5 @@ Call `detect` when the user shows interest (a settings tab, a "connect" step), n
 
 ```
 bun install && bun test && bun run typecheck
-scripts/build-sdk.sh <dir>       # from the repo root: the package as an app installs it, in <dir>
-scripts/release-sdk.sh <path of the agentd-client checkout>   # commits and tags v<version> there (pushing is yours)
+scripts/build-sdk.sh <dir>       # from the repo root: <dir>/agentd-client-<version>.tgz, the file a release carries (same sources, same bytes)
 ```

@@ -1,8 +1,9 @@
 import { latestUrl, parseLatest, type Offer } from "./core/update.ts"
+import { fetchFollowing } from "./http.ts"
 import { warn } from "./log.ts"
 
 export interface ReleaseWatcherOptions {
-  /** The release server's origin. */
+  /** The releases page the offer is read from (see releaseBase). */
   base: string
   /** How often to ask again after the first time, in ms. */
   intervalMs: number
@@ -14,8 +15,8 @@ export interface ReleaseWatcherOptions {
 const DEFAULT_TIMEOUT_MS = 15_000
 
 /**
- * Asks the release server for latest.json at start and every interval, and hands each answer to `onOffer`. An answer
- * that cannot be had (the server is down, refuses, redirects, sends something that is not an offer, or does not answer)
+ * Asks the releases page for latest.json at start and every interval, and hands each answer to `onOffer`. An answer
+ * that cannot be had (the host is down, refuses, redirects where it must not, sends something that is not an offer, or does not answer)
  * changes nothing: it is asked again at the next interval, and said once per distinct reason in the log.
  */
 export class ReleaseWatcher {
@@ -38,7 +39,7 @@ export class ReleaseWatcher {
 
   private async check(): Promise<void> {
     try {
-      const res = await (this.o.fetchFn ?? fetch)(latestUrl(this.o.base), { redirect: "error", signal: AbortSignal.timeout(this.o.timeoutMs ?? DEFAULT_TIMEOUT_MS) })
+      const res = await fetchFollowing(this.o.fetchFn ?? fetch, latestUrl(this.o.base), AbortSignal.timeout(this.o.timeoutMs ?? DEFAULT_TIMEOUT_MS))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const offer = parseLatest(await res.text())
       if (offer === undefined) throw new Error("latest.json is not an offer")

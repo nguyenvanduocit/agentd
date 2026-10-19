@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# agentd installer, served by {{.Origin}} for daemon {{.Version}}.
+# agentd installer for daemon @VERSION@, a file of its GitHub release.
 #
-#   curl -fsSL {{.Origin}}/install.sh | bash -s -- --app <origin> --code <code>
+#   curl -fsSL @INSTALL_URL@ | bash -s -- --app <origin> --code <code>
 #
 # <origin> is the app that gave you the command (https://host[:port]) and <code> its one-time pairing code.
 #
 # It, in order: picks a Node.js (the machine's when it is >= 20 with npm, else a pinned LTS under
-# ~/.agentd/node), downloads the daemon from this server and checks its sha256, unpacks it into
+# ~/.agentd/node), downloads the daemon from the release and checks its sha256, unpacks it into
 # ~/.agentd/daemon/<version> and points ~/.agentd/daemon/current at it, puts the launcher
 # ~/.agentd/bin/agentd in place, pairs this machine with the app when --code is given, and installs the daemon as a
 # service of your user (launchd on macOS, systemd --user on Linux) that starts at login and restarts when it dies.
@@ -22,11 +22,13 @@
 # All logic is in main, called on the last line: a download that stops half way runs nothing.
 set -euo pipefail
 
-ORIGIN='{{.Origin}}'
-VERSION='{{.Version}}'
-TARBALL_URL='{{.TarballURL}}'
-SHA256='{{.SHA256}}'
-NODE_VERSION='{{.NodeVersion}}'
+# The values scripts/build-daemon.sh puts in this release's copy of the script. NODE_VERSION is the Node.js LTS
+# downloaded (from nodejs.org/dist, checked against that release's SHASUMS256.txt) when the machine has no Node >= 20
+# with npm; moving to a newer LTS is this one line.
+VERSION='@VERSION@'
+TARBALL_URL='@TARBALL_URL@'
+SHA256='@SHA256@'
+NODE_VERSION='24.21.0'
 NODE_MIN_MAJOR=20
 # Where Node.js comes from: the official release server. Tests point it at a local mirror.
 NODE_DIST="${AGENTD_NODE_DIST:-https://nodejs.org/dist}"
@@ -170,7 +172,7 @@ install_daemon() {
   if [ -f "$dest/daemon.js" ]; then
     say "daemon $VERSION is already installed"
   else
-    say "downloading daemon $VERSION from $ORIGIN"
+    say "downloading daemon $VERSION from $TARBALL_URL"
     fetch "$TARBALL_URL" "$TMP/daemon.tgz"
     actual="$(sha256_of "$TMP/daemon.tgz")"
     [ "$actual" = "$SHA256" ] || die "the daemon download is corrupt or was changed on the way (sha256 $actual, expected $SHA256). Nothing was installed"

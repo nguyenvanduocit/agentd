@@ -1,6 +1,6 @@
 # agentd: the daemon as its own product (design of this repository)
 
-The daemon, its tray, its protocol, its release server and an SDK for apps live in this repository. MindChains is one app that uses the hub library and the SDK.
+The daemon, its tray, its protocol, its releases and an SDK for apps live in this repository. MindChains is one app that uses the hub library and the SDK.
 
 ## Why
 
@@ -8,7 +8,7 @@ The daemon is no longer MindChains-specific (see `2026-10-19-daemon-multi-app-de
 
 ## Goals
 
-- `agentd` is a self-contained product: daemon, tray, protocol, release server, Go hub library, page SDK, docs, CI.
+- `agentd` is a self-contained product: daemon, tray, protocol, releases, Go hub library, page SDK, docs, CI.
 - A second app can be written against the SDK alone (proved by `examples/minimal-app`).
 - MindChains stops building, signing and serving the daemon. It depends on `agentd` for the hub library and the page SDK.
 - The page SDK is the `agentd-client` GitHub repository that apps install from.
@@ -44,24 +44,24 @@ agentd/
 
 ### 1. Protocol (`contract/`)
 
-`define.acp.ts` keeps `frame`, `hello`, `agents`, `mcp`, `open`, `write`, `close`, `restart`, `stop`, `mcpOut`. `HelloReply` carries only `protocol` (a number, 1): the update offer leaves the protocol because the release server owns updates. The socket namespace is `/agentd` and the pairing endpoint `POST /agentd/pair`, both mounted by the hub on the app.
+`define.acp.ts` keeps `frame`, `hello`, `agents`, `mcp`, `open`, `write`, `close`, `restart`, `stop`, `mcpOut`. `HelloReply` carries only `protocol` (a number, 1): the update offer leaves the protocol because the GitHub release owns updates. The socket namespace is `/agentd` and the pairing endpoint `POST /agentd/pair`, both mounted by the hub on the app.
 
-### 2. Release server (`server/`, Go)
+### 2. Releases (GitHub Releases; `server/` is a local stand-in)
 
-One binary, reusing `internal/daemonhub/{install,download}.go` and the Ed25519 signing code.
+A release is a GitHub release `v<version>` of this repository, made by `scripts/release.sh`, with four files:
 
-| Route | What |
-|-------|------|
-| `GET /install.sh` | The installer, rendered with the server's own public URL baked in (never the request's Host). Usage: `curl -fsSL <agentd>/install.sh \| bash -s -- --app <app origin> --code <code>`. |
-| `GET /releases/latest.json` | `{version, url, sha256, signature}`, the signature over `"agentd\n<version>\n<sha256>\n"`. |
-| `GET /releases/agentd-<version>.tgz` | The daemon tarball (with `tray/<os>-<arch>/`). |
-| `GET /healthz` | Liveness. |
+| File | What |
+|------|------|
+| `install.sh` | The installer of that release (`daemon/install.sh.in` with the version, tarball URL and sha256 filled in at build time). Usage: `curl -fsSL https://github.com/nguyenvanduocit/agentd/releases/latest/download/install.sh \| bash -s -- --app <app origin> --code <code>`. |
+| `latest.json` | `{version, url, sha256, signature}`, the signature over `"agentd\n<version>\n<sha256>\n"`. |
+| `agentd-<version>.tgz` | The daemon tarball (with `tray/<os>-<arch>/`). |
+| `agentd-client-<sdk version>.tgz` | The page SDK, installed by its URL. |
 
-Reads a directory of published artifacts (`AGENTD_DIST`); publishing is a build step, not an API. Read-only: no uploads.
+`cmd/agentd-server` serves a directory of such files under the same URLs (`/latest/download/<file>` redirecting to `/download/v<version>/<file>`), for development and the end-to-end tests; nothing in a release depends on it.
 
 ### 3. Daemon (`daemon/`)
 
-- Updates come from the release server: at start and every 6 h the daemon fetches `latest.json` from `AGENTD_RELEASE_URL` (baked in at build, overridable by env) and runs the existing verify, stage, idle, restart and rollback logic. `AppHub`'s update-source plumbing is deleted.
+- Updates come from the GitHub release: at start and every 6 h the daemon fetches `<releases>/latest/download/latest.json` (the releases page is `AGENTD_RELEASE_URL`, baked in at build, overridable by env; GitHub's redirects are followed over https) and runs the existing verify, stage, idle, restart and rollback logic. `AppHub`'s update-source plumbing is deleted.
 - `agentd pair --app <origin> --code <code>` (was `--server`). `agentd apps`, `agentd service ...`, `agentd version` as today.
 - Per-app MCP wrapper `bin/<n>/agentd-mcp`.
 - The release key (`release.pub`) is the current key: the private half moves as a git-ignored file, never committed.
@@ -85,7 +85,7 @@ h.For(userID).StartPairing() / List() / Rename() / Revoke() / Restart() / Stop()
 - Neutral types replace MindChains' `rpc.DaemonList`: `hub.List{Daemons []hub.Daemon, Pairing hub.Pairing}` with the same fields. MindChains converts with a small adapter into its own `rpc` types.
 - `hub.Conn` is the interface MindChains' `agent.Conn` is today; MindChains adapts the two (return types of interface methods must match exactly).
 - `hub.TokenStore` holds `hub.Daemon` records (id, userID, name, token hash, timestamps); MindChains' store implements it over `store.Daemon`.
-- `DownloadDir`, `PublicURL`'s install role and the `HelloReply` offer are gone: install and updates are the release server's.
+- `DownloadDir`, `PublicURL`'s install role and the `HelloReply` offer are gone: install and updates are the GitHub release's.
 - `PublicURL` stays only where pairing needs the app's origin.
 
 ### 5. Page SDK (`sdk/client/`, npm `@agentd/client`)
@@ -95,7 +95,7 @@ Framework-agnostic TypeScript, no dependencies, ESM with `.d.ts`.
 ```ts
 detect(opts?): Promise<Detected>
 connectServer(d, {code}) / connectBrowser(d) / disconnect(d) / openSession(d, agent) / reasonText(reason)
-installCommand({ app, code, agentd? }): string          // the curl line, with the release server's origin as default
+installCommand({ app, code, agentd? }): string          // the curl line, with agentd's GitHub releases page as default
 createLocalDaemon({ startPairing, cancelPairing, client? })   // observable controller: state, subscribe, detect, connect
 ```
 
@@ -135,7 +135,7 @@ Daemons installed as `mindchains-daemon` use the old names, the old namespace `/
 
 1. Skeleton and moves with renames; daemon tests green in the new repo.
 2. Release server (install.sh, latest.json, tarballs) with tests.
-3. Daemon: update from the release server, `--app`, `agentd-mcp`, `HelloReply` reduced.
+3. Daemon: update from the GitHub release, `--app`, `agentd-mcp`, `HelloReply` reduced.
 4. Hub library: copy `internal/daemonhub`, cut its MindChains imports, port its tests.
 5. Page SDK: `installCommand`, vanilla controller, build and pack; served by the server.
 6. `examples/minimal-app` end to end through a real browser.
@@ -148,4 +148,4 @@ Daemons installed as `mindchains-daemon` use the old names, the old namespace `/
 2. `bun add github:nguyenvanduocit/agentd-client#v<version>` installs the SDK that `scripts/build-sdk.sh` builds.
 3. The install command from the SDK installs, pairs and runs a daemon against the example app and against MindChains.
 4. MindChains builds, lints and passes its Go, frontend and e2e (`daemon`, `daemon-local`) suites with none of the moved code left in its tree (`rg` finds no reference to the deleted paths).
-5. An update offered by the release server updates a running daemon; a wrong signature does not.
+5. An update offered by the releases page updates a running daemon; a wrong signature does not.

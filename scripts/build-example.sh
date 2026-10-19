@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the example app: the Go server and its page. The page installs @agentd/client the way an app does, except that
-# the package comes from this working tree (scripts/build-sdk.sh) instead of the agentd-client repository on GitHub.
+# the package is the tarball of this working tree (scripts/build-sdk.sh) instead of the one on the GitHub release.
 #
 #   scripts/build-example.sh <outdir>
 #
@@ -17,7 +17,7 @@ cp "$ROOT/examples/minimal-app/page/"{index.html,main.ts,package.json} "$STAGE/"
 "$ROOT/scripts/build-sdk.sh" "$STAGE/sdk"
 (cd "$STAGE" && node -e '
   const p = require("./package.json")
-  p.dependencies["@agentd/client"] = "file:./sdk"
+  p.dependencies["@agentd/client"] = "file:./sdk/" + require("fs").readdirSync("./sdk").find((f) => f.endsWith(".tgz"))
   require("fs").writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n")
 ')
 # A cache of its own: a file: dependency is copied, and a shared cache would hand back an older copy of the same version.

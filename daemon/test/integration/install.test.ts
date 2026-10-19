@@ -94,7 +94,7 @@ interface RunOptions {
 
 function runInstall(s: Rig, o: RunOptions = {}): Run & { home: string } {
   const home = o.home ?? tmp("mc-install-home-")
-  const script = `set -o pipefail; curl -fsSL "$0/install.sh" | bash -s -- "$@"`
+  const script = `set -o pipefail; curl -fsSL "$0/latest/download/install.sh" | bash -s -- "$@"`
   // A command with a code names the app that gave it, as the app's web UI writes it.
   const args = o.args ?? []
   const withApp = args.includes("--code") && !args.includes("--app") ? ["--app", s.origin, ...args] : args
@@ -199,7 +199,7 @@ describe("install.sh --foreground", () => {
     // latest.json (and so the script) carries bad.sha256; the tarball served under that name is the one of `one`
     const dist = tmp("mc-bad-")
     writeRelease(dist, bad)
-    writeFileSync(join(dist, "releases", `agentd-${VERSION}.tgz`), readFileSync(one.tgz))
+    writeFileSync(join(dist, "download", `v${VERSION}`, `agentd-${VERSION}.tgz`), readFileSync(one.tgz))
     const s = (rig = await Rig.over(dist))
     const r = runInstall(s, { args: ["--foreground", "--code", "TESTCODE"] })
     expect(await r.exited).not.toBe(0)

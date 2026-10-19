@@ -3,10 +3,14 @@
 #
 #   scripts/build-daemon.sh <outdir>
 #
-# Writes <outdir>/releases/agentd-<version>.tgz and <outdir>/releases/latest.json ({version, url, sha256, signature}), the layout the
-# release server (cmd/agentd-server) serves. The version is
+# Writes the files of a GitHub release into <outdir>/download/v<version>/: agentd-<version>.tgz, latest.json ({version, url,
+# sha256, signature}) and install.sh (daemon/install.sh.in with this release's values). <outdir>/latest holds the version, which
+# cmd/agentd-server (the local stand-in for GitHub Releases) serves as the latest release. The version is
 # $VERSION (RELEASE=1: required, x.y.z, and an existing tarball of it is never overwritten), or 0.0.0-g<git describe> (a semver prerelease; the "g" keeps an all-digit hash from reading as a numeric
 # identifier with leading zeros, which semver forbids), or 0.0.0-dev when there is no git history. Run the result with: npx -y <tgz> version
+#
+# RELEASE_URL is the releases page the daemon takes updates from and install.sh downloads from, baked in:
+# https://github.com/<owner>/<repo>/releases (the default of a RELEASE=1 build), or the local stand-in's origin in development.
 #
 # Every build is signed (scripts/sign-daemon.ts): `signature` is the Ed25519 signature of the version and the tarball's
 # sha256, and the bundle bakes in the public key a daemon checks every update against. The private key is the file
@@ -62,28 +66,29 @@ if [ "${RELEASE:-}" = 1 ] && ! cmp -s <(printf '%s\n' "$PUB") "$ROOT/daemon/rele
 fi
 RELEASE_KEY="$("${SIGN[@]}" public-b64 "$KEY")"
 
-# The release server the daemon takes updates from, baked into the bundle (AGENTD_RELEASE_URL overrides it at run time).
-# A release must say it: a daemon that points at a development server would never update.
+# The releases page the daemon takes updates from, baked into the bundle (AGENTD_RELEASE_URL overrides it at run time).
+# A release says it: a daemon that points at a development server would never update.
 if [ -z "${RELEASE_URL:-}" ]; then
   if [ "${RELEASE:-}" = 1 ]; then
-    echo "RELEASE=1 needs RELEASE_URL, the https origin of the release server" >&2
-    exit 1
+    RELEASE_URL="https://github.com/nguyenvanduocit/agentd/releases"
+  else
+    RELEASE_URL="http://127.0.0.1:7100"
   fi
-  RELEASE_URL="http://127.0.0.1:7100"
 fi
-origin_pattern='^https?://[][A-Za-z0-9.:-]+$'
-if ! [[ "$RELEASE_URL" =~ $origin_pattern ]] || { [ "${RELEASE:-}" = 1 ] && ! [[ "$RELEASE_URL" =~ ^https:// ]]; }; then
-  echo "RELEASE_URL \"$RELEASE_URL\" is not an origin (https://host[:port], no path; a release needs https)" >&2
+releases_pattern='^https?://[][A-Za-z0-9.:-]+(/[A-Za-z0-9._-]+)*$'
+if ! [[ "$RELEASE_URL" =~ $releases_pattern ]] || [[ "$RELEASE_URL" =~ /\.\.?(/|$) ]] || { [ "${RELEASE:-}" = 1 ] && ! [[ "$RELEASE_URL" =~ ^https:// ]]; }; then
+  echo "RELEASE_URL \"$RELEASE_URL\" is not a releases page (https://host[:port][/path], no query; a release needs https)" >&2
   exit 1
 fi
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 TARBALL="agentd-$VERSION.tgz"
-mkdir -p "$OUT/releases"
+RELEASE_DIR="$OUT/download/v$VERSION"
+mkdir -p "$RELEASE_DIR"
 # A published version keeps its bytes: daemons record its sha256, and a second build never packs the same bytes.
-if [ "${RELEASE:-}" = 1 ] && [ -e "$OUT/releases/$TARBALL" ]; then
-  echo "RELEASE=1: $OUT/releases/$TARBALL already exists; a released version is never rebuilt, bump VERSION" >&2
+if [ "${RELEASE:-}" = 1 ] && [ -e "$RELEASE_DIR/$TARBALL" ]; then
+  echo "RELEASE=1: $RELEASE_DIR/$TARBALL already exists; a released version is never rebuilt, bump VERSION" >&2
   exit 1
 fi
 
@@ -130,9 +135,14 @@ else
 fi
 
 # npm's layout: one top-level package/ directory. gzip -n leaves the timestamp out of the header.
-tar -cf - -C "$STAGE" package | gzip -n >"$OUT/releases/$TARBALL"
+tar -cf - -C "$STAGE" package | gzip -n >"$RELEASE_DIR/$TARBALL"
 
-if command -v sha256sum >/dev/null; then SHA="$(sha256sum "$OUT/releases/$TARBALL" | cut -d' ' -f1)"; else SHA="$(shasum -a 256 "$OUT/releases/$TARBALL" | cut -d' ' -f1)"; fi
+if command -v sha256sum >/dev/null; then SHA="$(sha256sum "$RELEASE_DIR/$TARBALL" | cut -d' ' -f1)"; else SHA="$(shasum -a 256 "$RELEASE_DIR/$TARBALL" | cut -d' ' -f1)"; fi
 SIGNATURE="$("${SIGN[@]}" sign "$KEY" "$VERSION" "$SHA")"
-printf '{"version":"%s","url":"/releases/%s","sha256":"%s","signature":"%s"}\n' "$VERSION" "$TARBALL" "$SHA" "$SIGNATURE" >"$OUT/releases/latest.json"
-echo "built $OUT/releases/$TARBALL ($(wc -c <"$OUT/releases/$TARBALL" | tr -d ' ') bytes)"
+printf '{"version":"%s","url":"/download/v%s/%s","sha256":"%s","signature":"%s"}\n' "$VERSION" "$VERSION" "$TARBALL" "$SHA" "$SIGNATURE" >"$RELEASE_DIR/latest.json"
+# install.sh: the values are checked above (version, URL) or computed (sha256); none holds a quote, `|`, `&` or a backslash.
+sed -e "s|@VERSION@|$VERSION|g" -e "s|@SHA256@|$SHA|g" -e "s|@TARBALL_URL@|$RELEASE_URL/download/v$VERSION/$TARBALL|g" \
+  -e "s|@INSTALL_URL@|$RELEASE_URL/latest/download/install.sh|g" "$ROOT/daemon/install.sh.in" >"$RELEASE_DIR/install.sh"
+chmod 755 "$RELEASE_DIR/install.sh"
+printf '%s\n' "$VERSION" >"$OUT/latest"
+echo "built $RELEASE_DIR/$TARBALL ($(wc -c <"$RELEASE_DIR/$TARBALL" | tr -d ' ') bytes)"

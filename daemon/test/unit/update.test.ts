@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { decide, latestUrl, parseLatest, parseVersionRecord, releaseBase, tarballPath, type Offer, type UpdateState } from "../../src/core/update.ts"
+import { decide, latestUrl, parseLatest, parseVersionRecord, redirectTarget, releaseBase, tarballPath, type Offer, type UpdateState } from "../../src/core/update.ts"
 
 const SHA = "a".repeat(64)
 const SIG = Buffer.alloc(64, 7).toString("base64")
@@ -88,10 +88,11 @@ describe("parseVersionRecord", () => {
   })
 })
 
-describe("the release server", () => {
-  test("a tarball is under /releases and the offer under /releases/latest.json", () => {
-    expect(tarballPath("1.2.3")).toBe("/releases/agentd-1.2.3.tgz")
-    expect(latestUrl("https://agentd.example.com")).toBe("https://agentd.example.com/releases/latest.json")
+describe("the releases", () => {
+  test("the layout is GitHub Releases': a tarball under download/v<version>, the offer under latest/download", () => {
+    expect(tarballPath("1.2.3")).toBe("/download/v1.2.3/agentd-1.2.3.tgz")
+    expect(latestUrl("https://github.com/o/r/releases")).toBe("https://github.com/o/r/releases/latest/download/latest.json")
+    expect(latestUrl("http://127.0.0.1:7100")).toBe("http://127.0.0.1:7100/latest/download/latest.json")
   })
 
   test("parseLatest reads the four fields of latest.json", () => {
@@ -111,9 +112,33 @@ describe("the release server", () => {
     expect(releaseBase({}, undefined)).toBeUndefined()
   })
 
+  test("releaseBase keeps the path of the releases page, without a trailing slash, query or fragment", () => {
+    expect(releaseBase({}, "https://github.com/nguyenvanduocit/agentd/releases")).toBe("https://github.com/nguyenvanduocit/agentd/releases")
+    expect(releaseBase({}, "https://github.com/o/r/releases/?x=1#y")).toBe("https://github.com/o/r/releases")
+    expect(() => releaseBase({}, "https://github.com/o/../r")).toThrow("path")
+    expect(() => releaseBase({}, "https://github.com/o/r s")).toThrow()
+  })
+
   test("releaseBase accepts https anywhere and http only on loopback: an update must not travel in the clear", () => {
     expect(releaseBase({ AGENTD_RELEASE_URL: "http://127.0.0.1:7100" }, undefined)).toBe("http://127.0.0.1:7100")
     expect(() => releaseBase({ AGENTD_RELEASE_URL: "http://agentd.example.com" }, undefined)).toThrow("https")
     expect(() => releaseBase({ AGENTD_RELEASE_URL: "nonsense" }, undefined)).toThrow("not a URL")
+  })
+})
+
+describe("redirectTarget", () => {
+  test("a redirect to https goes on, whichever host: the signature, not the host, is what is trusted", () => {
+    expect(redirectTarget("https://github.com/o/r/releases/latest/download/latest.json", "https://release-assets.githubusercontent.com/x?y=1")).toBe("https://release-assets.githubusercontent.com/x?y=1")
+    expect(redirectTarget("https://github.com/a/b", "/c/d")).toBe("https://github.com/c/d")
+  })
+
+  test("plain http goes on only inside the same origin (a development server), never to another host or port", () => {
+    expect(redirectTarget("http://127.0.0.1:7100/latest/download/latest.json", "/download/v1.0.0/latest.json")).toBe("http://127.0.0.1:7100/download/v1.0.0/latest.json")
+    expect(() => redirectTarget("http://127.0.0.1:7100/a", "http://127.0.0.1:7101/a")).toThrow("redirect")
+    expect(() => redirectTarget("https://github.com/a", "http://evil.example/a")).toThrow("redirect")
+  })
+
+  test("a redirect without a usable Location, or to another scheme, is refused", () => {
+    for (const bad of [null, "", "ftp://x.example/a", "file:///etc/passwd", "javascript:alert(1)"]) expect(() => redirectTarget("https://github.com/a", bad)).toThrow("redirect")
   })
 })

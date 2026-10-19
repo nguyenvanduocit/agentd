@@ -31,14 +31,17 @@ function isOlder(offered: string, running: string): boolean {
 /** A failed update is retried from 30 s, doubling, up to 30 min. */
 export const RETRY: BackoffOptions = { baseMs: 30_000, maxMs: 30 * 60_000, jitter: 0.2 }
 
-/** The path of a version's tarball on the release server, as scripts/build-daemon.sh names it. */
+/**
+ * The path of a version's tarball under the releases base, as GitHub Releases lays it out
+ * (https://github.com/<owner>/<repo>/releases/download/v<version>/agentd-<version>.tgz) and scripts/build-daemon.sh names it.
+ */
 export function tarballPath(version: string): string {
-  return `/releases/agentd-${version}.tgz`
+  return `/download/v${version}/agentd-${version}.tgz`
 }
 
-/** Where the release server publishes the offer a daemon checks. */
+/** Where the offer a daemon checks is published: the latest release's latest.json asset. */
 export function latestUrl(base: string): string {
-  return `${base}/releases/latest.json`
+  return `${base}/latest/download/latest.json`
 }
 
 /** latest.json as an offer, or undefined when it is not four strings. Whether the values are sound is `decide`'s to say. */
@@ -56,12 +59,40 @@ export function parseLatest(text: string): Offer | undefined {
 }
 
 /**
- * The origin of the release server: $AGENTD_RELEASE_URL when it is set (empty switches updates off), else the one baked
- * into the bundle at build time. Anything but https, or http on a loopback host, is refused.
+ * The releases page the daemon takes updates from: $AGENTD_RELEASE_URL when it is set (empty switches updates off), else
+ * the one baked into the bundle at build time. The scheme rule is the server address's (https, or http on a loopback
+ * host); the path of the page stays (https://github.com/<owner>/<repo>/releases), a query and a fragment are dropped,
+ * and a path segment that is not a plain name is refused.
  */
 export function releaseBase(env: Readonly<Record<string, string | undefined>>, baked: string | undefined): string | undefined {
   const raw = env.AGENTD_RELEASE_URL ?? baked
-  return raw === undefined || raw === "" ? undefined : serverOrigin(raw)
+  if (raw === undefined || raw === "") return undefined
+  const origin = serverOrigin(raw)
+  // The raw path: URL parsing would resolve a ".." before it could be refused.
+  const rawPath = (raw.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/, "").split(/[?#]/)[0] ?? "").replace(/%2e/gi, ".")
+  const segments = rawPath.split("/").filter((x) => x !== "")
+  if (!segments.every((x) => /^[A-Za-z0-9._-]+$/.test(x) && x !== "." && x !== "..")) throw new Error(`"${raw}": the path of the releases page has a segment that is not a plain name`)
+  return segments.length === 0 ? origin : `${origin}/${segments.join("/")}`
+}
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+export const isRedirect = (status: number): boolean => REDIRECT_STATUSES.has(status)
+
+/**
+ * Where a redirect from `from` goes, or a thrown error when the daemon must not follow it. GitHub sends a release asset
+ * to another host (an https URL), so any https target is followed: what the daemon installs is checked against the signed
+ * sha256, not against the host. Plain http is followed only inside the same origin (a development server).
+ */
+export function redirectTarget(from: string, location: string | null): string {
+  if (location === null || location === "") throw new Error("the redirect has no Location")
+  let to: URL
+  try {
+    to = new URL(location, from)
+  } catch {
+    throw new Error(`the redirect goes to "${location}", which is not a URL`)
+  }
+  if (to.protocol === "https:" || (to.protocol === "http:" && to.origin === new URL(from).origin)) return to.href
+  throw new Error(`the redirect goes to ${to.protocol}//${to.host}, which is not https`)
 }
 
 export interface UpdateState {
