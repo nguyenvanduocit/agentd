@@ -1,13 +1,29 @@
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { userInfo } from "node:os"
 import { dirname, join } from "node:path"
-import { appCandidates, appEnv, appPlace, desktopEntry, infoPlist, isOurDesktopEntry, isOurPlist, macAppScript } from "./core/appentry.ts"
+import { appCandidates, appEnv, appPlace, desktopEntry, entryLauncher, infoPlist, isOurDesktopEntry, isOurPlist, macAppScript } from "./core/appentry.ts"
 import type { Layout } from "./core/layout.ts"
 import type { Host } from "./core/paths.ts"
+
+/** The account's own home, from the user database: HOME may be a test's. */
+function accountHome(): string {
+  return userInfo().homedir
+}
 
 function writable(dir: string): boolean {
   try {
     accessSync(dir, constants.W_OK)
     return true
+  } catch {
+    return false
+  }
+}
+
+/** Whether two paths name one file (macOS reaches /var by /private/var too); a path to nothing names no file. */
+function sameFile(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false
+  try {
+    return realpathSync(a) === realpathSync(b)
   } catch {
     return false
   }
@@ -25,17 +41,18 @@ function put(file: string, data: string | Buffer, mode = 0o644): void {
 /**
  * Makes the app that starts agentd again (core/appentry.ts) for the daemon installed in `l`, at `version`, and returns
  * where it is, or undefined when this install makes none. `install` (service install) writes all of it: its script
- * names the service it starts. `refresh` (a daemon that a service runs, at start) only makes an app that is missing (an
- * install from before the app existed) and keeps the icon and version of one that is there: a daemon does not see the
- * name of its own service, so it never rewrites a script. The icons come from the installed version (app/).
+ * names the service it starts. `refresh` (a daemon that a service runs, at start) keeps the icon and version current and
+ * writes the script only when it is missing (an install from before the app existed) or starts another launcher (a
+ * test's, gone): a daemon does not see the name of its own service, so it leaves a script of its own install alone.
+ * The icons come from the installed version (app/).
  */
 export function writeApp(l: Layout, h: Host, version: string, how: "install" | "refresh"): string | undefined {
-  const place = appPlace(h.platform, h.home, h.env, writable)
+  const place = appPlace(h.platform, h.home, accountHome(), h.env, writable)
   if (place === undefined) return undefined
   const env = appEnv(h.env)
   const icons = join(l.currentLink, "app")
   const script = place.kind === "linux" ? place.file : join(place.file, "Contents", "MacOS", "agentd")
-  const writeScript = how === "install" || !existsSync(script)
+  const writeScript = how === "install" || !sameFile(entryLauncher(existsSync(script) ? readFileSync(script, "utf8") : ""), l.launcher)
   if (place.kind === "linux") {
     if (writeScript) put(place.file, desktopEntry(l.launcher, env, join(icons, "agentd.png")))
     return place.file
@@ -50,7 +67,7 @@ export function writeApp(l: Layout, h: Host, version: string, how: "install" | "
 /** Removes every app writeApp made: only agentd's own (its bundle id, its desktop entry's mark). Returns what it removed. */
 export function removeApps(h: Host): string[] {
   const removed: string[] = []
-  for (const file of appCandidates(h.platform, h.home, h.env)) {
+  for (const file of appCandidates(h.platform, h.home, accountHome(), h.env)) {
     const mac = file.endsWith(".app")
     let text: string
     try {

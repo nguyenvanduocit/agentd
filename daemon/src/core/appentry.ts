@@ -16,11 +16,14 @@ export interface AppPlace {
   file: string
 }
 
-/** The directory AGENTD_APPS_DIR names, or "" when it names none; undefined when no app may be made at all. */
-function appsDir(env: Env): string | undefined {
+/**
+ * The directory AGENTD_APPS_DIR names, or "" when it names none; undefined when no app may be made at all. An agentd
+ * whose home was moved (AGENTD_HOME, or a HOME that is not the account's own: tests, the e2e suite, a trial copy) is not
+ * the user's install: Applications belongs to the whole account, so such an agentd makes no app on its own.
+ */
+function appsDir(home: string, accountHome: string, env: Env): string | undefined {
   const dir = env.AGENTD_APPS_DIR ?? ""
-  // An agentd whose home was moved (tests, a trial copy) is not the user's install: it makes no app on its own.
-  if (dir === "" && (env.AGENTD_HOME ?? "") !== "") return undefined
+  if (dir === "" && ((env.AGENTD_HOME ?? "") !== "" || home !== accountHome)) return undefined
   return dir
 }
 
@@ -33,8 +36,8 @@ function linuxApps(home: string, env: Env): string {
  * Where the app goes, or undefined for none. macOS: /Applications when this user may write it (an admin may, without
  * sudo), else ~/Applications; both show in Spotlight and Launchpad. Linux: the user's desktop entries.
  */
-export function appPlace(platform: NodeJS.Platform, home: string, env: Env, writable: (dir: string) => boolean): AppPlace | undefined {
-  const dir = appsDir(env)
+export function appPlace(platform: NodeJS.Platform, home: string, accountHome: string, env: Env, writable: (dir: string) => boolean): AppPlace | undefined {
+  const dir = appsDir(home, accountHome, env)
   if (dir === undefined) return undefined
   if (platform === "darwin") {
     const parent = dir || (writable("/Applications") ? "/Applications" : posix.join(home, "Applications"))
@@ -45,8 +48,8 @@ export function appPlace(platform: NodeJS.Platform, home: string, env: Env, writ
 }
 
 /** Every place an app may have been made: uninstall removes the ones that are agentd's. */
-export function appCandidates(platform: NodeJS.Platform, home: string, env: Env): string[] {
-  const dir = appsDir(env)
+export function appCandidates(platform: NodeJS.Platform, home: string, accountHome: string, env: Env): string[] {
+  const dir = appsDir(home, accountHome, env)
   if (dir === undefined) return []
   if (platform === "darwin") return dir ? [posix.join(dir, "agentd.app")] : ["/Applications/agentd.app", posix.join(home, "Applications", "agentd.app")]
   if (platform === "linux") return [posix.join(dir || linuxApps(home, env), "agentd.desktop")]
@@ -147,4 +150,15 @@ export function desktopEntry(launcher: string, env: Readonly<Record<string, stri
 
 export function isOurDesktopEntry(text: string): boolean {
   return text.split("\n").includes("X-Agentd=1")
+}
+
+/**
+ * The launcher an app's script (`L='…'`) or desktop entry (`"…" service start`) starts, or undefined when it names
+ * none: a daemon replaces an app that starts another install's launcher, such as a test's that is gone.
+ */
+export function entryLauncher(text: string): string | undefined {
+  const sh = /^L='((?:[^']|'\\'')*)'$/m.exec(text)
+  if (sh?.[1] !== undefined) return sh[1].replaceAll(QUOTE_IN_QUOTES, "'")
+  const exec = /^Exec=.* "((?:[^"\\]|\\.)*)" service start$/m.exec(text)
+  return exec?.[1]?.replace(/\\(.)/g, "$1")
 }

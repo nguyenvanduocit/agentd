@@ -1,38 +1,44 @@
 import { describe, expect, test } from "bun:test"
-import { appCandidates, appEnv, appPlace, BUNDLE_ID, desktopEntry, infoPlist, isOurDesktopEntry, isOurPlist, macAppScript } from "../../src/core/appentry.ts"
+import { appCandidates, appEnv, appPlace, BUNDLE_ID, desktopEntry, entryLauncher, infoPlist, isOurDesktopEntry, isOurPlist, macAppScript } from "../../src/core/appentry.ts"
 
 const HOME = "/Users/ann"
 const writable = (dirs: string[]) => (dir: string) => dirs.includes(dir)
 
 describe("appPlace", () => {
   test("macOS: /Applications when this user may write it, else ~/Applications", () => {
-    expect(appPlace("darwin", HOME, {}, writable(["/Applications"]))).toEqual({ kind: "mac", file: "/Applications/agentd.app" })
-    expect(appPlace("darwin", HOME, {}, writable([]))).toEqual({ kind: "mac", file: "/Users/ann/Applications/agentd.app" })
+    expect(appPlace("darwin", HOME, HOME, {}, writable(["/Applications"]))).toEqual({ kind: "mac", file: "/Applications/agentd.app" })
+    expect(appPlace("darwin", HOME, HOME, {}, writable([]))).toEqual({ kind: "mac", file: "/Users/ann/Applications/agentd.app" })
   })
 
   test("Linux: a desktop entry in $XDG_DATA_HOME/applications, else ~/.local/share/applications", () => {
-    expect(appPlace("linux", HOME, {}, writable([]))).toEqual({ kind: "linux", file: "/Users/ann/.local/share/applications/agentd.desktop" })
-    expect(appPlace("linux", HOME, { XDG_DATA_HOME: "/d" }, writable([]))).toEqual({ kind: "linux", file: "/d/applications/agentd.desktop" })
+    expect(appPlace("linux", HOME, HOME, {}, writable([]))).toEqual({ kind: "linux", file: "/Users/ann/.local/share/applications/agentd.desktop" })
+    expect(appPlace("linux", HOME, HOME, { XDG_DATA_HOME: "/d" }, writable([]))).toEqual({ kind: "linux", file: "/d/applications/agentd.desktop" })
   })
 
   test("an agentd whose home was moved makes no app, unless AGENTD_APPS_DIR says where", () => {
-    expect(appPlace("darwin", HOME, { AGENTD_HOME: "/tmp/x" }, writable(["/Applications"]))).toBeUndefined()
-    expect(appPlace("darwin", HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" }, writable([]))).toEqual({ kind: "mac", file: "/tmp/apps/agentd.app" })
-    expect(appPlace("linux", HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" }, writable([]))).toEqual({ kind: "linux", file: "/tmp/apps/agentd.desktop" })
-    expect(appPlace("darwin", HOME, { AGENTD_HOME: "" }, writable(["/Applications"]))?.file).toBe("/Applications/agentd.app")
+    expect(appPlace("darwin", HOME, HOME, { AGENTD_HOME: "/tmp/x" }, writable(["/Applications"]))).toBeUndefined()
+    expect(appPlace("darwin", HOME, HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" }, writable([]))).toEqual({ kind: "mac", file: "/tmp/apps/agentd.app" })
+    expect(appPlace("linux", HOME, HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" }, writable([]))).toEqual({ kind: "linux", file: "/tmp/apps/agentd.desktop" })
+    expect(appPlace("darwin", HOME, HOME, { AGENTD_HOME: "" }, writable(["/Applications"]))?.file).toBe("/Applications/agentd.app")
+  })
+
+  test("a home that is not the account's own (a test's HOME) makes no app either, unless AGENTD_APPS_DIR says where", () => {
+    expect(appPlace("darwin", "/tmp/e2e/machine", HOME, {}, writable(["/Applications"]))).toBeUndefined()
+    expect(appCandidates("darwin", "/tmp/e2e/machine", HOME, {})).toEqual([])
+    expect(appPlace("darwin", "/tmp/e2e/machine", HOME, { AGENTD_APPS_DIR: "/tmp/apps" }, writable([]))?.file).toBe("/tmp/apps/agentd.app")
   })
 
   test("no app on a platform without one", () => {
-    expect(appPlace("win32", HOME, {}, writable([]))).toBeUndefined()
+    expect(appPlace("win32", HOME, HOME, {}, writable([]))).toBeUndefined()
   })
 })
 
 describe("appCandidates", () => {
   test("uninstall looks in every place an app may have been made, and nowhere for a moved home", () => {
-    expect(appCandidates("darwin", HOME, {})).toEqual(["/Applications/agentd.app", "/Users/ann/Applications/agentd.app"])
-    expect(appCandidates("linux", HOME, {})).toEqual(["/Users/ann/.local/share/applications/agentd.desktop"])
-    expect(appCandidates("darwin", HOME, { AGENTD_HOME: "/tmp/x" })).toEqual([])
-    expect(appCandidates("darwin", HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" })).toEqual(["/tmp/apps/agentd.app"])
+    expect(appCandidates("darwin", HOME, HOME, {})).toEqual(["/Applications/agentd.app", "/Users/ann/Applications/agentd.app"])
+    expect(appCandidates("linux", HOME, HOME, {})).toEqual(["/Users/ann/.local/share/applications/agentd.desktop"])
+    expect(appCandidates("darwin", HOME, HOME, { AGENTD_HOME: "/tmp/x" })).toEqual([])
+    expect(appCandidates("darwin", HOME, HOME, { AGENTD_HOME: "/tmp/x", AGENTD_APPS_DIR: "/tmp/apps" })).toEqual(["/tmp/apps/agentd.app"])
   })
 })
 
@@ -77,6 +83,16 @@ describe("the macOS app", () => {
   test("a quote in a path cannot end the shell string", () => {
     expect(macAppScript("/Users/o'neil/.agentd/bin/agentd", { PATH: "/bin" })).toContain("L='/Users/o'\\''neil/.agentd/bin/agentd'")
     expect(macAppScript("/l", { PATH: "/bin", "BAD-NAME": "x" })).not.toContain("BAD-NAME")
+  })
+})
+
+describe("entryLauncher", () => {
+  test("reads back the launcher a script or a desktop entry starts, quotes and all", () => {
+    for (const l of ["/Users/ann/.agentd/bin/agentd", "/Users/o'neil/.agentd/bin/agentd", '/home/a"b/$x/agentd']) {
+      expect(entryLauncher(macAppScript(l, { PATH: "/bin" }))).toBe(l)
+      expect(entryLauncher(desktopEntry(l, { PATH: "/bin" }, "/i.png"))).toBe(l)
+    }
+    expect(entryLauncher("#!/bin/sh\necho hi\n")).toBeUndefined()
   })
 })
 
