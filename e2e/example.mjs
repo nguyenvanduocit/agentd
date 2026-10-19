@@ -18,6 +18,9 @@ const refocus = () => page.evaluate(() => window.dispatchEvent(new Event("focus"
 await page.goto("__APP_URL__/");
 await page.waitForSelector(q("daemons"), { state: "attached" });
 check("with no daemon anywhere the page offers the install command and no local connection", (await visible("install-start")) && !(await visible("local")));
+const href = (id) => page.evaluate((i) => document.querySelector(`[data-testid=${i}]`)?.href ?? "", id);
+const dmgs = [await href("download-arm64"), await href("download-amd64")];
+check("and agentd.app for both Macs, from the release", (await visible("download")) && dmgs[0] === "__AGENTD_URL__/latest/download/agentd-darwin-arm64.dmg" && dmgs[1] === "__AGENTD_URL__/latest/download/agentd-darwin-amd64.dmg", dmgs.join(" "));
 
 // --- A: a daemon already runs on this computer, unpaired: the page offers to connect it, the user answers its dialog
 const tarball = _fs.readdirSync("__DIST__/download/v0.0.1").find((f) => f.endsWith(".tgz"));

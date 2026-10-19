@@ -38,7 +38,7 @@ func TestSummary(t *testing.T) {
 }
 
 func TestBuildMenuWithoutApps(t *testing.T) {
-	got := labels(BuildMenu(State{Version: "1.2.3", Managed: true, Log: true}))
+	got := labels(BuildMenu(State{Version: "1.2.3", Managed: true, Log: true}, Host{}))
 	want := []string{"agentd 1.2.3", "Nothing connected", "---", "Settings…", "Open log", "Restart", "Stop daemon"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -46,7 +46,7 @@ func TestBuildMenuWithoutApps(t *testing.T) {
 }
 
 func TestBuildMenuListsEachAppAndPageWithItsOwnDisconnect(t *testing.T) {
-	m := BuildMenu(State{Version: "1", Managed: true, Apps: []string{"https://a"}, Pages: []string{"https://p"}})
+	m := BuildMenu(State{Version: "1", Managed: true, Apps: []string{"https://a"}, Pages: []string{"https://p"}}, Host{})
 	var ids []string
 	for _, e := range m {
 		for _, c := range e.Children {
@@ -63,19 +63,19 @@ func TestBuildMenuListsEachAppAndPageWithItsOwnDisconnect(t *testing.T) {
 }
 
 func TestStopSaysWhatItEnds(t *testing.T) {
-	m := BuildMenu(State{Version: "1", Managed: true, Sessions: 2})
+	m := BuildMenu(State{Version: "1", Managed: true, Sessions: 2}, Host{})
 	last := m[len(m)-1]
 	if last.ID != "stop" || last.Label != "Stop daemon (ends 2 agents)" {
 		t.Fatalf("got %+v", last)
 	}
-	one := BuildMenu(State{Version: "1", Sessions: 1})
+	one := BuildMenu(State{Version: "1", Sessions: 1}, Host{})
 	if got := one[len(one)-1].Label; got != "Stop daemon (ends 1 agent)" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestRestartIsDisabledWhenNothingRestartsTheDaemon(t *testing.T) {
-	for _, e := range BuildMenu(State{Version: "1", Managed: false}) {
+	for _, e := range BuildMenu(State{Version: "1", Managed: false}, Host{}) {
 		if e.ID == "restart" {
 			if !e.Disabled || e.Label != "Restart (not managed)" {
 				t.Fatalf("got %+v", e)
@@ -105,7 +105,7 @@ func TestActionLineIsOneJSONObject(t *testing.T) {
 }
 
 func TestSettingsOpensTheWindowAndIsNotReported(t *testing.T) {
-	for _, e := range BuildMenu(State{Version: "1"}) {
+	for _, e := range BuildMenu(State{Version: "1"}, Host{}) {
 		if e.Label == "Settings…" {
 			if e.ID != SettingsID {
 				t.Fatalf("got %+v", e)
@@ -117,7 +117,7 @@ func TestSettingsOpensTheWindowAndIsNotReported(t *testing.T) {
 }
 
 func TestOpenLogIsDisabledWhenTheDaemonWritesToATerminal(t *testing.T) {
-	for _, e := range BuildMenu(State{Version: "1", Log: false}) {
+	for _, e := range BuildMenu(State{Version: "1", Log: false}, Host{}) {
 		if e.ID == "logs" {
 			if !e.Disabled || e.Label != "Open log (in the terminal)" {
 				t.Fatalf("got %+v", e)
@@ -126,4 +126,32 @@ func TestOpenLogIsDisabledWhenTheDaemonWritesToATerminal(t *testing.T) {
 		}
 	}
 	t.Fatal("no log entry")
+}
+
+func TestTheAppsMenuQuitsAgentdAndHandlesTheLogItself(t *testing.T) {
+	s := State{Version: "1.2.3", Apps: []string{"https://a"}, Sessions: 2}
+	got := BuildMenu(s, Host{App: true, Running: true})
+	last := got[len(got)-1]
+	if last.ID != QuitID || last.Label != "Quit agentd (ends 2 agents)" {
+		t.Fatalf("last entry %+v", last)
+	}
+	if !reflect.DeepEqual(labels(got)[len(got)-5:], []string{"Settings…", "Check for Updates…", "Open log", "Restart", "Quit agentd (ends 2 agents)"}) {
+		t.Fatalf("controls %q", labels(got))
+	}
+	for _, e := range got {
+		if (e.ID == "logs" || e.ID == "restart") && e.Disabled {
+			t.Errorf("%s is off in the app, which keeps the log and restarts the engine", e.ID)
+		}
+	}
+}
+
+func TestTheAppsMenuOffersStartWhenTheEngineStopped(t *testing.T) {
+	got := BuildMenu(State{}, Host{App: true, Note: "agentd was stopped"})
+	want := []string{"agentd", "agentd was stopped", "---", "Start agentd", "Settings…", "Check for Updates…", "Open log", "Quit agentd"}
+	if !reflect.DeepEqual(labels(got), want) {
+		t.Fatalf("got %q, want %q", labels(got), want)
+	}
+	if got[3].ID != StartID {
+		t.Fatalf("Start is %+v", got[3])
+	}
 }

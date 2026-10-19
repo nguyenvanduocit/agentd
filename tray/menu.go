@@ -33,8 +33,28 @@ type Agent struct {
 	Reason string `json:"reason"`
 }
 
-// SettingsID is the entry that opens the settings window: the tray handles it and does not report it.
-const SettingsID = "settings"
+// The entries the app handles itself and does not report: the settings window, and in agentd.app Start, Quit and the
+// login switch (the app owns the engine, its log and its login item).
+const (
+	SettingsID = "settings"
+	StartID    = "start"
+	QuitID     = "quit"
+	LoginOnID  = "login:on"
+	LoginOffID = "login:off"
+	// CheckUpdatesID checks for a newer agentd.app now (the app updates itself, engine included).
+	CheckUpdatesID = "check-updates"
+)
+
+// Host is what shows the menu and the window: a tray the daemon started (the zero Host), or agentd.app, which starts
+// the engine itself, keeps its log, and ends it on Quit.
+type Host struct {
+	App bool
+	// Running: the app's engine runs; Note says why it does not.
+	Running bool
+	Note    string
+	// OpenAtLogin: the app is a login item.
+	OpenAtLogin bool
+}
 
 // Entry is one line of the tray menu. A non-empty ID is reported to the daemon when the entry is chosen.
 type Entry struct {
@@ -92,8 +112,20 @@ func Summary(s State) string {
 }
 
 // BuildMenu is the whole menu for a state: the title and status, what is connected (each with its own Disconnect),
-// and the controls.
-func BuildMenu(s State) []Entry {
+// and the controls. In agentd.app, Quit ends agentd, and an engine that does not run offers Start.
+func BuildMenu(s State, h Host) []Entry {
+	if h.App && !h.Running {
+		return []Entry{
+			{Label: "agentd", Disabled: true},
+			{Label: h.Note, Disabled: true},
+			{Separator: true},
+			{ID: StartID, Label: "Start agentd"},
+			{ID: SettingsID, Label: "Settings…"},
+			{ID: CheckUpdatesID, Label: "Check for Updates…"},
+			{ID: "logs", Label: "Open log"},
+			{ID: QuitID, Label: "Quit agentd"},
+		}
+	}
 	menu := []Entry{
 		{Label: "agentd " + s.Version, Disabled: true},
 		{Label: Summary(s), Disabled: true},
@@ -109,6 +141,9 @@ func BuildMenu(s State) []Entry {
 		menu = append(menu, Entry{Separator: true})
 	}
 	menu = append(menu, Entry{ID: SettingsID, Label: "Settings…"})
+	if h.App {
+		return append(menu, Entry{ID: CheckUpdatesID, Label: "Check for Updates…"}, Entry{ID: "logs", Label: "Open log"}, Entry{ID: "restart", Label: "Restart"}, Entry{ID: QuitID, Label: QuitLabel(s)})
+	}
 	if s.Log {
 		menu = append(menu, Entry{ID: "logs", Label: "Open log"})
 	} else {
@@ -120,6 +155,14 @@ func BuildMenu(s State) []Entry {
 		menu = append(menu, Entry{ID: "restart", Label: "Restart (not managed)", Disabled: true})
 	}
 	return append(menu, Entry{ID: "stop", Label: StopLabel(s)})
+}
+
+// QuitLabel names Quit in agentd.app and the agents it ends.
+func QuitLabel(s State) string {
+	if s.Sessions == 0 {
+		return "Quit agentd"
+	}
+	return "Quit agentd (ends " + plural(s.Sessions, "agent", "agents") + ")"
 }
 
 // StopLabel names Stop and the agents it ends.

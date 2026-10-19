@@ -4,8 +4,7 @@ import { dirname } from "node:path"
 import type { Hello } from "../../contract/define.acp.ts"
 import { loadRegistry } from "./config.ts"
 import { EXIT_STOPPED } from "./core/exit.ts"
-import { openCommand, trayBinary, trayState, type TrayAction } from "./core/tray.ts"
-import { Tray } from "./tray.ts"
+import { openCommand, trayBinary, trayState, type TrayAction, type TrayState } from "./core/tray.ts"
 import { say, warn } from "./log.ts"
 
 const REFRESH_MS = 2000
@@ -23,8 +22,16 @@ export function trayFile(env: Readonly<Record<string, string | undefined>>): str
   }
 }
 
+/** What shows the daemon's state and hands back the user's choices: the tray program it starts, or the app that started it. */
+export interface TrayLink {
+  start(): void
+  update(state: TrayState): void
+  stop(): void
+}
+
 export interface TrayMenuDeps {
-  file: string
+  /** Opens the link, which calls `onAction` with each choice of the user. */
+  open: (onAction: (action: TrayAction) => void) => TrayLink
   registryFile: string
   hello: () => Hello
   /** Whether the daemon is linked to the app at `server` now. */
@@ -79,7 +86,7 @@ function act(d: TrayMenuDeps, action: TrayAction, refresh: () => void): void {
   }
 }
 
-/** Starts the tray and keeps it showing what the daemon serves. Returns what ends it. */
+/** Starts the tray, or the link to the app, and keeps it showing what the daemon serves. Returns what ends it. */
 export function startTrayMenu(d: TrayMenuDeps): () => void {
   const push = (): void => {
     loadRegistry(d.registryFile).then(
@@ -103,7 +110,7 @@ export function startTrayMenu(d: TrayMenuDeps): () => void {
       () => undefined,
     )
   }
-  const tray = new Tray(d.file, (action) => act(d, action, push))
+  const tray = d.open((action) => act(d, action, push))
   tray.start()
   push()
   const timer = setInterval(push, REFRESH_MS)

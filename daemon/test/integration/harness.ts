@@ -7,6 +7,7 @@ import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterAll, setDefaultTimeout } from "bun:test"
+import type { Duplex } from "node:stream"
 import { promisify } from "node:util"
 import type { AgentInfo, Hello } from "../../../contract/define.acp.ts"
 import { publicKeyBase64, publicKeyPem, signRelease } from "../../../scripts/sign-daemon.ts"
@@ -252,6 +253,14 @@ export class TestDaemon {
     const proc = spawn(NODE, [b.bundle, ...args], { cwd, env: box.env(env), detached: true, stdio: ["ignore", "pipe", "pipe"] })
     leftovers.set(proc, true)
     return new TestDaemon(proc)
+  }
+
+  /** A daemon started the way agentd.app starts it: its UI channel is fd 3, whose other end `app` is the test's. */
+  static async startWithApp(box: Sandbox, env: Record<string, string> = {}): Promise<{ daemon: TestDaemon; app: Duplex }> {
+    const b = await build()
+    const proc = spawn(NODE, [b.bundle, "run"], { cwd: box.work, env: box.env({ AGENTD_UI_FD: "3", ...env }), detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] })
+    leftovers.set(proc, true)
+    return { daemon: new TestDaemon(proc), app: proc.stdio[3] as Duplex }
   }
 
   /** SIGTERM and wait; a daemon that ignores it is killed with its group. */

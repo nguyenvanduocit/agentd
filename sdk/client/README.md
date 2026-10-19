@@ -20,7 +20,7 @@ Two ways to use the daemon: **server mode**, where the daemon connects to your a
 ### Server mode
 
 ```ts
-import { createLocalDaemon, installCommand } from "@agentd/client"
+import { createLocalDaemon, desktopDownloads, installCommand } from "@agentd/client"
 
 // 1. The daemon on this computer: is it there, and can the user connect it to this app?
 const local = createLocalDaemon({
@@ -31,7 +31,9 @@ local.subscribe((s) => render(s)) // { found, connecting, error, canConnect }
 await local.detect()              // when the settings tab opens, and when the window gets focus
 if (local.state.canConnect) await local.connect() // the dialog opens on the user's computer
 
-// 2. No daemon here: the one command that installs it, pairs it with this app and starts it.
+// 2. No daemon here: agentd.app for the user's Mac. Once it is open, detect() finds it and connect() pairs it.
+const downloads = desktopDownloads() // { appleSilicon, intel }: the disk images of the latest release
+// Or, on Linux or from a terminal, the one command that installs it, pairs it with this app and starts it.
 const command = installCommand({ agentd: "https://<your agentd server>", app: location.origin, code })
 ```
 
@@ -103,8 +105,9 @@ Any MCP server whose transport reads and writes JSON-RPC messages works in place
 - `createLocalDaemon(deps)` is a small observable, not tied to a framework: wrap `state` and `subscribe` in your framework's reactivity (a Vue `ref`, a React store). `deps` is `{ startPairing, cancelPairing }` (server mode, the default) or `{ mode: "browser" }`; both take an optional `client` to replace the calls to the daemon. `detect()` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). `connect()` puts the reason of a refusal in `state.error` in plain words. `disconnect()` takes back what this page was allowed and looks again.
 - `openSession(d, agent)` gives an `AgentSession`: `readable` (stdout, each line ending in `\n`; it ends when the agent exits or the socket closes), `writable` (stdin; each complete line is sent, a partial one waits for its newline), and the line-level `write(line)`, `onFrame(cb)`, `onClose(cb)`, `close()`, `pid`, `cwd`. `readable` starts the first time it is taken and keeps no line from before: take it right after the session opens. `mcp` (`{ readable, writable }`) and `mcpServer(name)` (`{ name, command, args, env: [{ name, value }] }`, ACP's stdio MCP server) are for tools from the page.
 - `AgentInfo` is `{ name, title, ready, reason }`; `title` is the name to show, the agent's `name` when the daemon is older than the title.
+- `desktopDownloads({ agentd })` is `{ appleSilicon, intel }`, the links of agentd.app's disk images in the latest release, or `undefined` while the releases page is not a plain http(s) URL.
 - `installCommand({ agentd, app, code })` is the curl line, or `undefined` while an origin or the code is not safe to paste into a shell.
-- `AGENTD_COMMANDS` are what the user runs on their machine: `status`, `logs`, `start`.
+- `AGENTD_COMMANDS` are what the user of an install from the terminal runs on their machine: `status`, `logs`, `start`.
 - Lower level: `detect()`, `connectServer(d, { code })`, `connectBrowser(d)`, `disconnect(d)`, `reasonText(reason)`.
 
 The app connected is the one at **your page's own origin**: the daemon refuses a request that names another server. An app whose API lives on another origin cannot use this yet.

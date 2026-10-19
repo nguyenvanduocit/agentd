@@ -1,10 +1,9 @@
 import { spawn } from "node:child_process"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
-import { removeApps, writeApp } from "./appentry.ts"
 import type { Command } from "./core/cli.ts"
 import { layoutOf } from "./core/layout.ts"
-import { agentdHome, type Host } from "./core/paths.ts"
+import { agentdHome } from "./core/paths.ts"
 import { serviceFile, serviceName, stateText, type ManagerName, type Running } from "./core/service.ts"
 import { currentHost } from "./host.ts"
 import { launchd } from "./launchd.ts"
@@ -167,20 +166,6 @@ async function status(manager: ManagerName, c: ServiceCtx, m: Manager): Promise<
   return now?.running ? 0 : 1
 }
 
-function hostOf(c: ServiceCtx): Host {
-  return { platform: process.platform, env: c.env, home: c.home }
-}
-
-/** The app that starts the service again after a Stop from the menu (appentry.ts); a failure to make it is only said. */
-function makeApp(c: ServiceCtx): void {
-  try {
-    const app = writeApp(c.layout, hostOf(c), installedVersion(c), "install")
-    if (app !== undefined) say(`${app}: open it to start agentd again after a Stop from its menu`)
-  } catch (e) {
-    warn(`no app to start agentd again: ${e instanceof Error ? e.message : String(e)}`)
-  }
-}
-
 /** `agentd service install|uninstall|start|restart|status|logs`; resolves to the exit code. */
 export async function runService(cmd: ServiceCommand): Promise<number> {
   const manager = await detect()
@@ -190,7 +175,6 @@ export async function runService(cmd: ServiceCommand): Promise<number> {
     case "install":
       launcherReady(c)
       for (const line of await m.install(c)) say(line)
-      makeApp(c)
       await show(manager, c, m)
       return 0
     case "start":
@@ -201,7 +185,6 @@ export async function runService(cmd: ServiceCommand): Promise<number> {
       return 0
     case "uninstall":
       await m.uninstall(c)
-      for (const app of removeApps(hostOf(c))) say(`removed ${app}`)
       say(`removed the ${manager} service ${c.name}; ${c.layout.home} stays (rm -rf it to remove the rest)`)
       return 0
     case "status":

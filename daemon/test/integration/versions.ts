@@ -121,8 +121,6 @@ export async function buildVersion(version: string, o: BuildOptions = {}, dir = 
     chmodSync(bundle, 0o755)
     copyFileSync(LAUNCHER, join(pkg, "launcher.sh"))
     chmodSync(join(pkg, "launcher.sh"), 0o755)
-    mkdirSync(join(pkg, "app"))
-    for (const icon of ["agentd.icns", "agentd.png"]) copyFileSync(join(ROOT, "daemon", "app", icon), join(pkg, "app", icon))
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "agentd", version, bin: { "agentd": "daemon.js" } }))
     const tgz = join(dir, `agentd-${version}.tgz`)
     await run("sh", ["-c", `tar -cf - -C "$1" package | gzip -n > "$2"`, "sh", stage, tgz])

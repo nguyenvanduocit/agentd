@@ -22,13 +22,20 @@
       <p id="local-error" class="error" data-testid="local-error"></p>
     </section>
 
+    <section id="download" data-testid="download" hidden>
+      <h2>Get agentd</h2>
+      <p>Download agentd for your Mac, open it, and come back to this page to connect it.</p>
+      <a id="download-arm64" data-testid="download-arm64">agentd for Apple silicon</a> ·
+      <a id="download-amd64" data-testid="download-amd64">agentd for Intel</a>
+    </section>
+
     <section id="install" data-testid="install" hidden>
       <h2>Install the daemon</h2>
       <p>Run this in a terminal on the computer that will run your agents:</p>
       <pre id="install-command" data-testid="install-command"></pre>
       <p id="install-wait" data-testid="install-wait">Waiting for the daemon…</p>
     </section>
-    <button id="install-start" data-testid="install-start" hidden>Show the install command</button>
+    <button id="install-start" data-testid="install-start" hidden>Install from a terminal instead</button>
 
     <section>
       <h2>Your daemons</h2>

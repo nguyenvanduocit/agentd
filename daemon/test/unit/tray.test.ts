@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { openCommand, parseTrayLine, trayBinary, trayState } from "../../src/core/tray.ts"
+import { openCommand, parseTrayLine, trayBinary, trayState, uiFd } from "../../src/core/tray.ts"
 
 const claude = { name: "claude", title: "Claude Code", ready: true, reason: "" }
 const facts = { version: "1", apps: [], browsers: [], sessions: 0, managed: false, gatewayPort: 47615, logFile: undefined, agents: [], updates: true, updatable: true }
@@ -72,5 +72,18 @@ describe("openCommand", () => {
     expect(openCommand("darwin", "/l/daemon.log")).toEqual({ file: "open", args: ["/l/daemon.log"] })
     expect(openCommand("linux", "/l/daemon.log")).toEqual({ file: "xdg-open", args: ["/l/daemon.log"] })
     expect(openCommand("win32", "C:\\l\\daemon.log")).toEqual({ file: "cmd", args: ["/c", "start", "", "C:\\l\\daemon.log"] })
+  })
+})
+
+describe("uiFd", () => {
+  test("is the descriptor an app that started the daemon talks to it on: none without AGENTD_UI_FD", () => {
+    expect(uiFd({})).toBeUndefined()
+    expect(uiFd({ AGENTD_UI_FD: "" })).toBeUndefined()
+    expect(uiFd({ AGENTD_UI_FD: "3" })).toBe(3)
+    expect(uiFd({ AGENTD_UI_FD: "7" })).toBe(7)
+  })
+
+  test("refuses what is not a descriptor of its own: the standard streams are the daemon's log and nothing", () => {
+    for (const bad of ["0", "1", "2", "-3", "3.5", "x"]) expect(() => uiFd({ AGENTD_UI_FD: bad })).toThrow("AGENTD_UI_FD")
   })
 })

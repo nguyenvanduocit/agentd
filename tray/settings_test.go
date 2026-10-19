@@ -129,3 +129,44 @@ func TestOpenLogDoesNothingAndSaysWhereTheLogIsWhenThereIsNoFile(t *testing.T) {
 		t.Fatalf("texts %q", tt.Texts())
 	}
 }
+
+func openApp(s State, h Host) (*ui.Tester, *[]string) {
+	var sent []string
+	w := &Settings{State: s, Host: h, send: func(id string) { sent = append(sent, id) }}
+	return ui.NewTester(w.View, 440, 640), &sent
+}
+
+func TestTheAppsWindowOpensAtLoginAndQuits(t *testing.T) {
+	tt, sent := openApp(full(), Host{App: true, Running: true, OpenAtLogin: true})
+	for _, want := range []string{"Open at login", "Check for Updates…", "Quit agentd (ends 2 agents)"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in %q", want, tt.Texts())
+		}
+	}
+	if tt.HasText("Install updates automatically") {
+		t.Error("the app's updates are not the engine's switch")
+	}
+	tt.Click("Quit agentd (ends 2 agents)")
+	if !reflect.DeepEqual(*sent, []string{QuitID}) {
+		t.Fatalf("sent %q", *sent)
+	}
+}
+
+func TestTheAppsWindowSaysWhyAgentdStoppedAndStartsIt(t *testing.T) {
+	tt, sent := openApp(State{}, Host{App: true, Note: "agentd crashed 5 times in a row: see the log"})
+	if !tt.HasText("agentd crashed 5 times in a row: see the log") {
+		t.Fatalf("no note in %q", tt.Texts())
+	}
+	tt.Click("Start agentd")
+	if !reflect.DeepEqual(*sent, []string{StartID}) {
+		t.Fatalf("sent %q", *sent)
+	}
+}
+
+func TestTheAppsWindowChecksForUpdates(t *testing.T) {
+	tt, sent := openApp(full(), Host{App: true, Running: true})
+	tt.Click("Check for Updates…")
+	if !reflect.DeepEqual(*sent, []string{CheckUpdatesID}) {
+		t.Fatalf("sent %q", *sent)
+	}
+}

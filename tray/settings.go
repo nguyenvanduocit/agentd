@@ -6,20 +6,73 @@ import "github.com/egoist/mygo/ui"
 // what the user chooses through send, in the ids the menu reports.
 type Settings struct {
 	State State
+	Host  Host
 	send  func(id string)
 }
 
-// View builds the window from the state, for every frame.
+// View builds the window from the state, for every frame. In agentd.app it also says why an engine that does not run
+// stopped, offers Start, and has the login switch.
 func (w *Settings) View(c *ui.Context) {
 	ui.Scroll(c).Fill().Padding(20).Gap(20).Children(func() {
+		if w.Host.App && !w.Host.Running {
+			w.stopped(c)
+			return
+		}
 		ui.Column(c).Gap(4).Children(func() {
 			ui.Text(c, "agentd "+w.State.Version).FontSize(20).Bold()
 			ui.Text(c, Summary(w.State)).TextColor(c.Theme().TextMuted)
 		})
 		w.connected(c)
 		w.agents(c)
-		w.updates(c)
+		if w.Host.App {
+			w.login(c)
+		} else {
+			w.updates(c)
+		}
 		w.controls(c)
+	})
+}
+
+// stopped is the app's window while its engine does not run: why, and Start.
+func (w *Settings) stopped(c *ui.Context) {
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Text(c, "agentd").FontSize(20).Bold()
+		ui.Text(c, w.Host.Note).TextColor(c.Theme().TextMuted)
+	})
+	ui.Row(c).Gap(8).Children(func() {
+		if ui.PrimaryButton(c, "Start agentd").Clicked() {
+			w.send(StartID)
+		}
+		ui.Spacer(c)
+		if ui.Button(c, "Open log").Clicked() {
+			w.send("logs")
+		}
+		if ui.Button(c, "Quit agentd").Clicked() {
+			w.send(QuitID)
+		}
+	})
+	w.login(c)
+}
+
+// login is the app's switch "Open at login": a login item starts agentd with the session, with no window. Updates of
+// the app (engine included) are checked in the background; the button checks now.
+func (w *Settings) login(c *ui.Context) {
+	ui.Column(c).Gap(8).Children(func() {
+		heading(c, "Start and updates")
+		on := w.Host.OpenAtLogin
+		ui.Field(c, "Open at login", func() {
+			if ui.Switch(c, &on).Changed() {
+				w.Host.OpenAtLogin = on
+				if on {
+					w.send(LoginOnID)
+				} else {
+					w.send(LoginOffID)
+				}
+			}
+		}).Description("agentd starts when you log in, in the menu bar, so your apps find it.")
+		if ui.Button(c, "Check for Updates…").Clicked() {
+			w.send(CheckUpdatesID)
+		}
 	})
 }
 
@@ -98,8 +151,23 @@ func (w *Settings) updates(c *ui.Context) {
 }
 
 // controls are the menu's: the log (only when it is in a file), Restart (only when a service starts the daemon again)
-// and Stop.
+// and Stop; in agentd.app the log, Restart and Quit.
 func (w *Settings) controls(c *ui.Context) {
+	if w.Host.App {
+		ui.Row(c).Gap(8).Children(func() {
+			if ui.Button(c, "Open log").Clicked() {
+				w.send("logs")
+			}
+			ui.Spacer(c)
+			if ui.Button(c, "Restart").Clicked() {
+				w.send("restart")
+			}
+			if ui.Button(c, QuitLabel(w.State)).Clicked() {
+				w.send(QuitID)
+			}
+		})
+		return
+	}
 	ui.Column(c).Gap(8).Children(func() {
 		ui.Row(c).Gap(8).Children(func() {
 			if ui.Button(c, "Open log").Disabled(!w.State.Log).Clicked() {

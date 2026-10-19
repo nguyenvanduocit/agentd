@@ -28,7 +28,7 @@ export function controlOutcome(control: Control, managed: boolean): ControlOutco
   return managed ? { kind: "exit", code: EXIT_RESTART } : { kind: "ignore", why: "not managed: restart ignored" }
 }
 
-/** AGENTD_MANAGED=1 is set by the service definitions and by the launcher's restart loop. */
+/** AGENTD_MANAGED=1 is set by the service definitions, by the launcher's restart loop and by agentd.app. */
 export function isManaged(env: Readonly<Record<string, string | undefined>>): boolean {
   return env.AGENTD_MANAGED === "1"
 }

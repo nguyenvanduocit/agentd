@@ -1,21 +1,28 @@
 #!/bin/bash
-# Builds a release of agentd and, with --publish, publishes it as a GitHub release (tag v<version>) with four files:
-# the daemon tarball, its latest.json and install.sh, and the SDK tarball (@agentd/client).
+# Builds a release of agentd and, with --publish, publishes it as a GitHub release (tag v<version>). It carries:
+# agentd.app, the desktop app for macOS (agentd-darwin-<arch>.dmg, and the signed update installed apps take:
+# agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json); the daemon tarball, its latest.json and
+# install.sh (the install from a terminal); and the SDK tarball (@agentd/client). The latest release serves them all.
 #
-#   DAEMON_SIGNING_KEY=.release-signing/daemon-signing.key scripts/release.sh <x.y.z> [--publish]
+#   DAEMON_SIGNING_KEY=.release-signing/daemon-signing.key APP_UPDATE_KEY=.release-signing/mygo-update.key \
+#     scripts/release.sh <x.y.z> [--publish]
 #
 # Without --publish it builds and checks everything in a temporary directory and prints what it would upload. The private
-# key signs the daemon on this machine; it never leaves it. Publishing needs `gh` logged in, a clean work tree, and HEAD
-# pushed: the tag marks the commit the files were built from (and is the Go module version of github.com/.../agentd).
+# keys sign the daemon and the app's update on this machine; they never leave it. tray/mygo.json carries the version of
+# the app: make it <x.y.z> in the release's commit. Publishing needs `gh` logged in, a clean work tree, and HEAD pushed:
+# the tag marks the commit the files were built from (and is the Go module version of github.com/.../agentd).
 # A tag is final: a fix is the next version.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-VERSION="${1:?usage: DAEMON_SIGNING_KEY=<key> scripts/release.sh <x.y.z> [--publish]}"
+VERSION="${1:?usage: DAEMON_SIGNING_KEY=<key> APP_UPDATE_KEY=<key> scripts/release.sh <x.y.z> [--publish]}"
 PUBLISH=0
 [ "${2:-}" = "--publish" ] && PUBLISH=1
 [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "version \"$VERSION\" is not x.y.z" >&2; exit 1; }
 : "${DAEMON_SIGNING_KEY:?DAEMON_SIGNING_KEY is the path of the release private key}"
+: "${APP_UPDATE_KEY:?APP_UPDATE_KEY is the path of the private key that signs the app updates (mygo keygen)}"
+APP_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' tray/mygo.json)"
+[ "$APP_VERSION" = "$VERSION" ] || { echo "tray/mygo.json is version $APP_VERSION: make it $VERSION and commit it first" >&2; exit 1; }
 
 REPO="nguyenvanduocit/agentd"
 DIST="$(mktemp -d)"
@@ -23,6 +30,7 @@ trap 'rm -rf "$DIST"' EXIT
 
 RELEASE=1 VERSION="$VERSION" ./scripts/build-daemon.sh "$DIST"
 ./scripts/build-sdk.sh "$DIST"
+MYGO_UPDATER_PRIVATE_KEY="$(cat "$APP_UPDATE_KEY")" DESKTOP_ARCHES="arm64 amd64" ./scripts/build-desktop.sh
 DIR="$DIST/download/v$VERSION"
 SDK_FILE="$(cd "$DIST" && ls agentd-client-*.tgz)"
 FILES=("$DIR/agentd-$VERSION.tgz" "$DIR/latest.json" "$DIR/install.sh" "$DIST/$SDK_FILE")
@@ -32,6 +40,25 @@ SHA="$(shasum -a 256 "$DIR/agentd-$VERSION.tgz" | cut -d' ' -f1)"
 grep -q "\"sha256\":\"$SHA\"" "$DIR/latest.json" || { echo "latest.json does not carry the tarball's sha256" >&2; exit 1; }
 grep -q "^SHA256='$SHA'" "$DIR/install.sh" || { echo "install.sh does not carry the tarball's sha256" >&2; exit 1; }
 grep -q "releases/download/v$VERSION/agentd-$VERSION.tgz'" "$DIR/install.sh" || { echo "install.sh does not point at this release's tarball" >&2; exit 1; }
+
+# The app of each processor: its disk image under a name that stays from release to release (the SDK's download links),
+# and its signed update, whose manifest names this version and this release's archive, as installed apps read it from
+# the latest release.
+for arch in arm64 amd64; do
+  out="tray/build/darwin-$arch"
+  manifest="$out/update-darwin-$arch.json"
+  archive="agentd-$VERSION-darwin-$arch.tar.gz"
+  grep -q "\"version\": \"$VERSION\"" "$manifest" || { echo "$manifest is not version $VERSION" >&2; exit 1; }
+  grep -q "\"url\": \"https://github.com/$REPO/releases/download/v$VERSION/$archive\"" "$manifest" || { echo "$manifest does not point at this release's $archive" >&2; exit 1; }
+  grep -q '"signature": "[A-Za-z0-9+/=]\{40,\}"' "$manifest" || { echo "$manifest carries no signature" >&2; exit 1; }
+  LC_ALL=C grep -aqF "https://github.com/$REPO/releases/latest/download/update-darwin-$arch.json" "$out/agentd.app/Contents/MacOS/agentd" ||
+    { echo "the $arch app does not read its updates from the latest release" >&2; exit 1; }
+  cp "$out/agentd $VERSION $arch.dmg" "$DIST/agentd-darwin-$arch.dmg"
+  FILES+=("$DIST/agentd-darwin-$arch.dmg" "$out/$archive")
+  for delta in "$out"/*.delta; do [ -e "$delta" ] && FILES+=("$delta"); done
+  FILES+=("$manifest")
+done
+
 echo "release v$VERSION of $REPO:" >&2
 for f in "${FILES[@]}"; do printf '  %s  %s bytes\n' "$(basename "$f")" "$(wc -c <"$f" | tr -d ' ')" >&2; done
 echo "  sha256 of the daemon tarball: $SHA" >&2

@@ -4,8 +4,28 @@ const SAFE_ORIGIN = /^https?:\/\/([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:\d{1,5})?$/
 const SAFE_RELEASES = /^https?:\/\/([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:\d{1,5})?(\/[A-Za-z0-9._-]+)*$/
 const SAFE_CODE = /^[A-Za-z0-9-]{4,32}$/
 
-/** Where agentd publishes its releases: the installer, the daemon and the SDK are files of the latest one. */
+/** Where agentd publishes its releases: the desktop app, the installer, the daemon and the SDK are files of the latest one. */
 export const AGENTD_RELEASES = "https://github.com/nguyenvanduocit/agentd/releases"
+
+/** The disk images of agentd.app, the desktop app for macOS: one per processor. */
+export interface DesktopDownloads {
+  appleSilicon: string
+  intel: string
+}
+
+/**
+ * Where the user downloads agentd.app from the latest release (default: agentd's on GitHub; a fork or a development
+ * server names its own). Opened, it runs agentd, and the page finds it and connects it as it finds an installed one.
+ * Undefined while the releases page is not a safe http(s) URL.
+ */
+export function desktopDownloads(o: { agentd?: string } = {}): DesktopDownloads | undefined {
+  const releases = o.agentd ?? AGENTD_RELEASES
+  if (!SAFE_RELEASES.test(releases) || releases.split("/").includes("..")) return undefined
+  return {
+    appleSilicon: `${releases}/latest/download/agentd-darwin-arm64.dmg`,
+    intel: `${releases}/latest/download/agentd-darwin-amd64.dmg`,
+  }
+}
 
 export interface InstallOptions {
   /** The releases page the installer comes from (default: agentd's on GitHub; a fork or a development server names its own). */

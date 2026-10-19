@@ -31,7 +31,8 @@ export class Tray {
 
   start(): void {
     const began = Date.now()
-    const child = spawn(this.file, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+    // `child`: the tray program is also agentd.app, which runs on its own when started without it.
+    const child = spawn(this.file, ["child"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
     this.child = child
     child.stdin.on("error", () => undefined) // EPIPE: it ended; the exit handler says so
     child.on("error", (e) => warn(`tray: cannot start ${this.file}: ${e.message}`))

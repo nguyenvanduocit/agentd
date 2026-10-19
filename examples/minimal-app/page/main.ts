@@ -1,4 +1,4 @@
-import { createLocalDaemon, installCommand } from "@agentd/client"
+import { createLocalDaemon, desktopDownloads, installCommand } from "@agentd/client"
 
 interface DaemonInfo {
   id: string
@@ -17,6 +17,11 @@ const post = async (path: string, method = "POST"): Promise<unknown> => (await f
 
 const config = (await (await fetch("/api/config")).json()) as { agentdUrl: string }
 let list: List = { daemons: [], pairing: { code: "" } }
+const downloads = desktopDownloads({ agentd: config.agentdUrl })
+if (downloads !== undefined) {
+  $<HTMLAnchorElement>("download-arm64").href = downloads.appleSilicon
+  $<HTMLAnchorElement>("download-amd64").href = downloads.intel
+}
 
 // The app's own calls, handed to the SDK: a one-time code from this app's server.
 const local = createLocalDaemon({
@@ -33,6 +38,7 @@ function render(): void {
   $("local-note").textContent = s.connecting ? "Answer the dialog that opened on this computer." : "The daemon asks you to confirm before it connects."
   $("install").hidden = list.pairing.code === ""
   $("install-start").hidden = s.canConnect || list.pairing.code !== "" || online.length > 0
+  $("download").hidden = $("install-start").hidden || downloads === undefined
   const command = list.pairing.code === "" ? undefined : installCommand({ agentd: config.agentdUrl, app: location.origin, code: list.pairing.code })
   $("install-command").textContent = command ?? ""
   $("daemons").replaceChildren(

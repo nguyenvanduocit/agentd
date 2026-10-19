@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { AGENTD_COMMANDS, AGENTD_RELEASES, installCommand } from "./install.ts"
+import { AGENTD_COMMANDS, AGENTD_RELEASES, desktopDownloads, installCommand } from "./install.ts"
 
 const AGENTD = "https://agentd.example.com/releases"
 
@@ -43,6 +43,25 @@ describe("installCommand", () => {
       { ...ok, code: "" },
     ]) {
       expect(installCommand(bad)).toBeUndefined()
+    }
+  })
+})
+
+describe("desktopDownloads", () => {
+  test("are the disk images of agentd.app in agentd's latest GitHub release, one per processor", () => {
+    expect(desktopDownloads()).toEqual({
+      appleSilicon: "https://github.com/nguyenvanduocit/agentd/releases/latest/download/agentd-darwin-arm64.dmg",
+      intel: "https://github.com/nguyenvanduocit/agentd/releases/latest/download/agentd-darwin-amd64.dmg",
+    })
+  })
+
+  test("come from the releases page of another build instead", () => {
+    expect(desktopDownloads({ agentd: "http://127.0.0.1:7100" })?.intel).toBe("http://127.0.0.1:7100/latest/download/agentd-darwin-amd64.dmg")
+  })
+
+  test("are undefined for a releases page that is not a plain http(s) URL", () => {
+    for (const agentd of ["javascript:alert(1)", "https://agentd.example.com/a/../b", "https://agentd.example.com/a?x=1", ""]) {
+      expect(desktopDownloads({ agentd })).toBeUndefined()
     }
   })
 })

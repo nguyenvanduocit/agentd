@@ -19,11 +19,13 @@ import { gatewayPort } from "./core/local.ts"
 import { startGateway, type GatewayDeps } from "./local.ts"
 import { McpRelay } from "./page-mcp.ts"
 import { BrowserSessions, type BrowserSessionOptions } from "./session-ws.ts"
-import { startTrayMenu, trayFile } from "./tray-menu.ts"
+import { startTrayMenu, trayFile, type TrayMenuDeps } from "./tray-menu.ts"
+import { Tray } from "./tray.ts"
+import { AppLink } from "./applink.ts"
+import { uiFd } from "./core/tray.ts"
 import { pair } from "./pair.ts"
 import { currentHost, findProgram } from "./host.ts"
 import { refreshLauncher } from "./launcher.ts"
-import { writeApp } from "./appentry.ts"
 import { rotateLog, say, stampLines, stdoutIs, warn } from "./log.ts"
 import { SessionState } from "./state.ts"
 import { SettingsStore } from "./settings.ts"
@@ -54,19 +56,9 @@ function installedLayout(): Layout | undefined {
       return undefined
     }
     refreshLauncher(dirname(script), l)
-    if (isManaged(process.env)) refreshApp(l)
     return l
   } catch {
     return undefined
-  }
-}
-
-/** A daemon a service runs makes the app that starts it again after a Stop when it is missing, and keeps its icon current. */
-function refreshApp(l: Layout): void {
-  try {
-    writeApp(l, currentHost(), VERSION, "refresh")
-  } catch (e) {
-    warn(`no app to start agentd again: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
@@ -316,11 +308,28 @@ interface TrayContext {
 }
 
 /** The icon in the menu bar and its settings window, when this platform has one; returns what ends it. */
-function beginTray(c: TrayContext, updates: Updates): () => void {
+/**
+ * How the daemon shows its state: to the app that started it (agentd.app hands over a descriptor, AGENTD_UI_FD; the
+ * daemon ends when the app goes), else in a tray program of its own, else not at all.
+ */
+function trayLink(stop: (code: number) => void): TrayMenuDeps["open"] | undefined {
+  const fd = uiFd(process.env)
+  if (fd !== undefined) {
+    return (onAction) =>
+      new AppLink(fd, onAction, () => {
+        say("agentd.app closed its channel: stopping")
+        stop(EXIT_STOPPED)
+      })
+  }
   const trayProgram = trayFile(process.env)
-  if (trayProgram === undefined) return () => undefined
+  return trayProgram === undefined ? undefined : (onAction) => new Tray(trayProgram, onAction)
+}
+
+function beginTray(c: TrayContext, updates: Updates): () => void {
+  const open = trayLink(c.stop)
+  if (open === undefined) return () => undefined
   return startTrayMenu({
-    file: trayProgram,
+    open,
     registryFile: c.file,
     hello: c.hello,
     linked: (server) => c.hub.has(server),

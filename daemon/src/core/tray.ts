@@ -86,3 +86,15 @@ export function openCommand(platform: NodeJS.Platform, file: string): { file: st
   if (platform === "win32") return { file: "cmd", args: ["/c", "start", "", file] }
   return { file: "xdg-open", args: [file] }
 }
+
+/**
+ * The descriptor on which the app that started the daemon (agentd.app) talks to it: $AGENTD_UI_FD, or undefined when a
+ * tray program of the daemon's own shows its state instead. The standard streams are not one: they are the daemon's log.
+ */
+export function uiFd(env: Readonly<Record<string, string | undefined>>): number | undefined {
+  const raw = env.AGENTD_UI_FD
+  if (raw === undefined || raw === "") return undefined
+  const fd = Number(raw)
+  if (!Number.isInteger(fd) || fd < 3) throw new Error(`AGENTD_UI_FD "${raw}" is not a descriptor of 3 or more`)
+  return fd
+}
