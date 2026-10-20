@@ -15,7 +15,7 @@ For the page that lets a user connect their computer, see [`sdk/web`](../web/REA
 ## Install
 
 ```sh
-go get github.com/nguyenvanduocit/agentd@v0.7.0
+go get github.com/nguyenvanduocit/agentd@v0.8.0
 ```
 
 The package is `sdk/goserver` from v0.7.0. Releases up to v0.6.0 carry the same library as `github.com/nguyenvanduocit/agentd/hub`, without the names marked "Since 0.7.0" below.

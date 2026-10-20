@@ -7,7 +7,7 @@ What a web page uses to find the agentd daemon on the user's computer, ask it to
 The package is a file of agentd's GitHub release, `agentd-client-<version>.tgz`; install it by its URL:
 
 ```
-bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.7.0/agentd-client-0.6.0.tgz       # npm: npm install <the same URL>
+bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.8.0/agentd-client-0.6.0.tgz       # npm: npm install <the same URL>
 ```
 
 The release in the URL is the one that carries the file, and the number in the file's name is the SDK's own version. Your lockfile records the file's sha512, and a published file never changes: a change of the SDK is a new version in a new release (`scripts/release.sh` refuses a release whose SDK sources changed under the old version).

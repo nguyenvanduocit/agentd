@@ -12,7 +12,7 @@ A page has an origin the browser puts in every request; a Go program has none, s
 go get github.com/nguyenvanduocit/agentd@latest
 ```
 
-The package is part of agentd's Go module and exists from **v0.7.0** (the next release): the tags v0.6.0 and earlier do not contain it, and `go get` answers `found (v0.6.0), but does not contain package`. Pin the version you tested (`@v0.7.0`): `go.sum` records its hash, and a published tag never changes.
+The package is part of agentd's Go module and exists from **v0.7.0** (the next release): the tags v0.6.0 and earlier do not contain it, and `go get` answers `found (v0.6.0), but does not contain package`. Pin the version you tested (`@v0.8.0`): `go.sum` records its hash, and a published tag never changes.
 
 New in 0.7.0 is marked *since 0.7.0* below.
 
