@@ -9,7 +9,8 @@ name: Release
 # The signing material is the secrets of the `release` environment, which only main can use: the Developer ID certificate
 # and the notary API key (scripts/signing-keychain.sh makes the keychain `mygo build` reads from them), and the two
 # private keys release.sh signs the updates with (DAEMON_SIGNING_KEY, APP_UPDATE_KEY). Nothing else runs with them: the
-# CI workflow has no access to the environment, and pull requests never start this one.
+# CI workflow has no access to the environment, and pull requests never start this one. The actions below are pinned
+# by commit SHA, since this is the job that holds the keys.
 
 on:
   workflow_dispatch:
@@ -41,14 +42,14 @@ jobs:
     permissions:
       contents: write # gh release create
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # check-release.sh compares the SDK's sources with the previous release tag
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
