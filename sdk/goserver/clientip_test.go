@@ -40,7 +40,7 @@ func TestClientIPPrefersTheProxyHeaderOnlyWhenItHoldsAnAddress(t *testing.T) {
 
 func TestAgedOutClientsLeaveTheFailureMap(t *testing.T) {
 	now := time.Now()
-	h := New(Options{Now: func() time.Time { return now }})
+	h := New(Options{Tokens: NewMemoryTokens(), Now: func() time.Time { return now }})
 	for i := range 5 {
 		if _, err := h.takeCode("NOPE0-NOPE0", fmt.Sprintf("203.0.113.%d", i)); !errors.Is(err, errBadCode) {
 			t.Fatalf("takeCode = %v, want a bad code", err)

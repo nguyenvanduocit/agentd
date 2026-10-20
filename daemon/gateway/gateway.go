@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
-	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
@@ -85,18 +84,37 @@ type out struct {
 	body   any
 }
 
+// refusal is the body of a refusal. Reason is the one every page SDK knows; Code, when there is one, is the specific
+// Reason it refines (see Reason). RetryAfter is the whole seconds until asking again can work, for the refusals that
+// are a wait.
 type refusal struct {
-	Granted bool   `json:"granted"`
-	Reason  string `json:"reason"`
-	Message string `json:"message,omitempty"`
+	Granted    bool   `json:"granted"`
+	Reason     string `json:"reason"`
+	Code       string `json:"code,omitempty"`
+	Message    string `json:"message,omitempty"`
+	RetryAfter int    `json:"retryAfter,omitempty"`
 }
 
-func refuse(status int, reason string) out {
-	return out{status, refusal{Reason: reason}}
+func refusalOf(r Reason, message string) refusal {
+	if legacy, refines := legacyOf[r]; refines {
+		return refusal{Reason: string(legacy), Code: string(r), Message: message}
+	}
+	return refusal{Reason: string(r), Message: message}
 }
 
-func refuseWith(status int, reason string, err error) out {
-	return out{status, refusal{Reason: reason, Message: err.Error()}}
+func refuse(status int, r Reason) out {
+	return out{status, refusalOf(r, "")}
+}
+
+func refuseWith(status int, r Reason, err error) out {
+	return out{status, refusalOf(r, err.Error())}
+}
+
+// refuseAfter is a refusal that is a wait: wait rounded up to whole seconds, at least one.
+func refuseAfter(status int, r Reason, wait time.Duration) out {
+	body := refusalOf(r, "")
+	body.RetryAfter = max(int((wait+time.Second-1)/time.Second), 1)
+	return out{status, body}
 }
 
 type statusGranted struct {
@@ -104,11 +122,15 @@ type statusGranted struct {
 	Browser bool `json:"browser"`
 }
 
+// PageProtocol is the version of the page protocol, the requests and messages of this gateway: a page SDK compares it
+// with the ones it speaks. It is bumped only when the page protocol changes incompatibly, and is not the protocol an
+// app's server speaks to the daemon (home.Protocol).
+const PageProtocol = 1
+
 type statusBody struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
-	// Protocol is the version of the daemon contract this daemon speaks (home.Protocol): a page reads it to know whether
-	// its SDK can talk to this daemon.
+	// Protocol is PageProtocol: a page reads it to know whether its SDK can talk to this daemon.
 	Protocol int                    `json:"protocol"`
 	Granted  statusGranted          `json:"granted"`
 	Agents   *[]pagetools.AgentInfo `json:"agents,omitempty"`
@@ -140,7 +162,7 @@ func (r *routes) status(origin string) out {
 		return failure(err)
 	}
 	granted := statusGranted{Server: reg.HasApp(origin) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin, r.now())}
-	body := statusBody{Name: "agentd", Version: r.deps.Version, Protocol: home.Protocol, Granted: granted}
+	body := statusBody{Name: "agentd", Version: r.deps.Version, Protocol: PageProtocol, Granted: granted}
 	if granted.Server || granted.Browser {
 		agents := append([]pagetools.AgentInfo{}, r.deps.Agents()...)
 		body.Agents = &agents
@@ -151,7 +173,7 @@ func (r *routes) status(origin string) out {
 func (r *routes) connect(origin string, req *http.Request) out {
 	want, ok := ParseConnect(readBody(req))
 	if !ok {
-		return refuse(http.StatusBadRequest, "malformed")
+		return refuse(http.StatusBadRequest, ReasonMalformed)
 	}
 	if want.Mode == consent.ModeBrowser {
 		reg, err := r.deps.Registry()
@@ -180,13 +202,19 @@ func (r *routes) begin(origin string) bool {
 	return true
 }
 
+// refusedBeforeDialog says why begin was false. A lockout is the stricter wait and is named first; either way the
+// origin is told to wait for the longer of the two, so that asking again after it works.
 func (r *routes) refusedBeforeDialog(origin string) out {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cooldown.Blocked(origin) || r.lockout.Locked() {
-		return refuse(http.StatusTooManyRequests, "cooldown")
+	locked, own := r.lockout.Wait(), r.cooldown.Wait(origin)
+	switch {
+	case locked > 0:
+		return refuseAfter(http.StatusTooManyRequests, ReasonLocked, max(locked, own))
+	case own > 0:
+		return refuseAfter(http.StatusTooManyRequests, ReasonCooldown, own)
 	}
-	return refuse(http.StatusConflict, "busy")
+	return refuse(http.StatusConflict, ReasonBusy)
 }
 
 func (r *routes) end() {
@@ -210,7 +238,7 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 	decision := r.deps.Ask(q)
 	answer := decision.Answer
 	if answer == consent.AnswerUnavailable {
-		return refuse(http.StatusServiceUnavailable, "no-dialog")
+		return refuse(http.StatusServiceUnavailable, ReasonNoDialog)
 	}
 	if answer != consent.AnswerAllow {
 		r.mu.Lock()
@@ -218,26 +246,29 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 		r.lockout.Strike()
 		r.mu.Unlock()
 		if answer == consent.AnswerTimeout {
-			return refuse(http.StatusForbidden, "timeout")
+			return refuse(http.StatusForbidden, ReasonTimeout)
 		}
-		return refuse(http.StatusForbidden, "denied")
+		return refuse(http.StatusForbidden, ReasonDenied)
 	}
 	if len(decision.Folders) == 0 {
 		// An Allow without a folder gives nothing to start agents in. The dialogs never produce one (a picker that
-		// returns none is a Deny), so the machine's way of asking is broken: nothing is granted.
-		return refuse(http.StatusServiceUnavailable, "no-dialog")
+		// returns none is a Deny), so the machine's way of asking is broken: nothing is granted. A page that does
+		// not know no-folder reads it as no-dialog, which it always did.
+		return refuse(http.StatusServiceUnavailable, ReasonNoFolder)
 	}
 	r.mu.Lock()
 	r.lockout.Reset()
 	r.mu.Unlock()
 	var err error
+	failed := ReasonPairing // the app refused the code, or could not be reached
 	if want.Mode == consent.ModeServer {
 		err = r.deps.ConnectServer(origin, want.Code, decision.Folders)
 	} else {
 		err = r.deps.GrantBrowser(origin, decision.Folders)
+		failed = ReasonNotSaved
 	}
 	if err != nil {
-		return refuseWith(http.StatusBadGateway, "pairing", err)
+		return refuseWith(http.StatusBadGateway, failed, err)
 	}
 	return out{http.StatusOK, grantedBody{true}}
 }
@@ -250,7 +281,7 @@ func (r *routes) disconnect(origin string) out {
 }
 
 func failure(err error) out {
-	return refuseWith(http.StatusInternalServerError, "error", err)
+	return refuseWith(http.StatusInternalServerError, ReasonError, err)
 }
 
 // readBody is the body of a request up to maxBody bytes; a longer one reads as nothing (malformed).
@@ -287,6 +318,12 @@ func send(w http.ResponseWriter, o out, cors map[string]string) {
 	for k, v := range cors {
 		h.Set(k, v)
 	}
+	if wait, ok := o.body.(refusal); ok && wait.RetryAfter > 0 {
+		h.Set("Retry-After", strconv.Itoa(wait.RetryAfter))
+		if cors != nil {
+			h.Set("Access-Control-Expose-Headers", "Retry-After") // a page reads only the safelisted headers otherwise
+		}
+	}
 	w.WriteHeader(o.status)
 	_, _ = w.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
@@ -309,7 +346,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if upgrading {
 			drop(w)
 		} else {
-			send(w, refuse(http.StatusForbidden, "peer"), nil)
+			send(w, refuse(http.StatusForbidden, ReasonPeer), nil)
 		}
 		return
 	}
@@ -322,12 +359,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (s *server) handle(w http.ResponseWriter, req *http.Request) {
 	if !HostAllowed(req.Host, s.port) {
-		send(w, refuse(http.StatusMisdirectedRequest, "host"), nil)
+		send(w, refuse(http.StatusMisdirectedRequest, ReasonHost), nil)
 		return
 	}
 	origin, ok := OriginOf(req.Header.Get("Origin"))
 	if !ok {
-		send(w, refuse(http.StatusForbidden, "origin"), nil)
+		send(w, refuse(http.StatusForbidden, ReasonOrigin), nil)
 		return
 	}
 	cors := CORSHeaders(origin, req.Header)
@@ -340,7 +377,7 @@ func (s *server) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	o, found := s.routes.route(origin, req)
 	if !found {
-		o = refuse(http.StatusNotFound, "not-found")
+		o = refuse(http.StatusNotFound, ReasonNotFound)
 	}
 	send(w, o, cors)
 }

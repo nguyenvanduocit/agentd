@@ -1,6 +1,6 @@
-// Command minimal-app is the smallest app that uses agentd: a Go server on the Server library and a page on the
-// @agentd/client SDK. It has one user, keeps its pairings in memory, and does one thing with the daemon on the user's
-// computer: opens an agent and reads its answer to `initialize`.
+// Command minimal-app is the smallest app that uses agentd: a Go server on sdk/goserver and a page on the
+// @agentd/client SDK. It has one user, keeps its pairings in memory, and does one thing with the computer the user
+// pairs: opens an agent and shows its answer to `initialize`. README.md says how to run it against a daemon of your own.
 //
 //	minimal-app -addr 127.0.0.1:8090 -static ./static -agentd-url http://127.0.0.1:7100
 package main
@@ -19,18 +19,18 @@ import (
 	"syscall"
 	"time"
 
-	socket "github.com/zishang520/socket.io/servers/socket/v3"
-
 	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
-// user is the only user this example has; a real app has accounts and passes the signed-in user's id.
+// user is the only user this example has. A real app has accounts: pass the signed-in user's id wherever this is used.
 const user = "demo"
 
 const askTimeout = 15 * time.Second
 
 type app struct {
-	server    *goserver.Server
+	server *goserver.Server
+	// agentdURL is where the page tells the user to install agentd from. It is for development and the end-to-end
+	// test, which serve their own releases; a real app drops it (and /api/config), and the page SDK points at GitHub.
 	agentdURL string
 }
 
@@ -42,32 +42,45 @@ func reply(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func fail(w http.ResponseWriter, status int, err error) {
-	reply(w, status, map[string]string{"error": err.Error()})
+// statusOf is the HTTP status for what goserver returned. Each of its errors is a value to test with errors.Is or
+// errors.As (the godoc of the method says which it can return), and most of their texts are sentences for the user,
+// so the page shows err.Error() as it is. fallback is the status for an error that is not one of them.
+func statusOf(err error, fallback int) int {
+	var (
+		offline  goserver.OfflineError
+		incompat goserver.IncompatibleError
+		notReady *goserver.AgentNotReadyError
+	)
+	switch {
+	case errors.Is(err, goserver.ErrUnknownDaemon), errors.Is(err, goserver.ErrNoDaemon):
+		return http.StatusNotFound
+	case errors.As(err, &offline), errors.As(err, &incompat), errors.Is(err, goserver.ErrNoOnlineDaemon):
+		return http.StatusConflict
+	case errors.Is(err, goserver.ErrBadName), errors.Is(err, goserver.ErrNameTaken), errors.As(err, &notReady):
+		return http.StatusUnprocessableEntity
+	}
+	return fallback
 }
 
-// listOr answers with the user's daemons, or the error.
+// listOr answers with the user's daemons, or the error of the call that made the list.
 func listOr(w http.ResponseWriter, list goserver.List, err error) {
 	if err != nil {
-		fail(w, http.StatusInternalServerError, err)
+		reply(w, statusOf(err, http.StatusInternalServerError), map[string]string{"error": err.Error()})
 		return
 	}
 	reply(w, http.StatusOK, list)
 }
 
-// ping opens an agent on the user's most recently connected daemon, sends it `initialize` and returns its first answer line.
+// ping opens an agent on the user's newest online computer, sends it `initialize` and returns its first answer line.
 func (a *app) ping(ctx context.Context) (string, error) {
-	online := a.server.Online(user)
-	if len(online) == 0 {
-		return "", goserver.ErrNoDaemon
-	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
-	conn, err := a.server.Open(ctx, user, online[0].ID, "claude")
+	conn, err := a.server.OpenLatest(ctx, user, "claude")
 	if err != nil {
-		return "", fmt.Errorf("open an agent: %w", err)
+		return "", err
 	}
 	defer conn.Close()
+	// conn is a raw ACP stream; a real app runs an ACP client over it (github.com/coder/acp-go-sdk).
 	if _, err := fmt.Fprintln(conn, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`); err != nil {
 		return "", fmt.Errorf("write to the agent: %w", err)
 	}
@@ -101,14 +114,20 @@ func (a *app) routes(mux *http.ServeMux) {
 		list, err := me.CancelPairing()
 		listOr(w, list, err)
 	})
-	mux.HandleFunc("DELETE /api/daemons/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/daemons/{id}", func(w http.ResponseWriter, r *http.Request) { // curl -X DELETE .../api/daemons/<id>
 		list, err := me.Revoke(r.PathValue("id"))
+		listOr(w, list, err)
+	})
+	mux.HandleFunc("PUT /api/daemons/{id}/name", func(w http.ResponseWriter, r *http.Request) { // curl -X PUT -d '{"name":"mac"}' .../name
+		var name struct{ Name string }
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&name)
+		list, err := me.Rename(r.PathValue("id"), name.Name)
 		listOr(w, list, err)
 	})
 	mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		line, err := a.ping(r.Context())
 		if err != nil {
-			fail(w, http.StatusBadGateway, err)
+			reply(w, statusOf(err, http.StatusBadGateway), map[string]string{"error": err.Error()})
 			return
 		}
 		reply(w, http.StatusOK, map[string]string{"line": line})
@@ -118,20 +137,14 @@ func (a *app) routes(mux *http.ServeMux) {
 func run() error {
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	static := flag.String("static", "static", "directory of the page (index.html, app.js)")
-	agentd := flag.String("agentd-url", "http://127.0.0.1:7100", "the agentd release server the page tells the user to install from")
+	agentd := flag.String("agentd-url", "http://127.0.0.1:7100", "development and tests only: the releases the page tells the user to install from")
 	flag.Parse()
 
-	h := goserver.New(goserver.Options{
-		Tokens: goserver.NewMemoryTokens(),
-	})
-	opts := socket.DefaultServerOptions()
-	opts.SetMaxHttpBufferSize(goserver.MaxMessageBytes)
-	io := socket.NewServer(nil, opts)
-	defer io.Close(nil)
-
+	// MemoryTokens forgets every pairing when the process ends. A real app keeps them in its database by implementing
+	// goserver.Tokens (ByHash, ByID, List, Add, Rename, Delete, Seen); the godoc says what each owes the user condition.
+	h := goserver.New(goserver.Options{Tokens: goserver.NewMemoryTokens()})
 	mux := http.NewServeMux()
-	h.Mount(io, mux)
-	mux.Handle("/socket.io/", io.ServeHandler(nil))
+	defer h.Attach(mux)() // /socket.io/, the /agentd namespace and POST /agentd/pair, with the message size daemons need
 	(&app{server: h, agentdURL: *agentd}).routes(mux)
 	mux.Handle("/", http.FileServer(http.Dir(*static)))
 

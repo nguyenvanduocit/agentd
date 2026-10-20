@@ -107,7 +107,8 @@ func TestDesktopDownloadsAreRefusedForAReleasesPageThatIsNotAPlainHTTPURL(t *tes
 }
 
 func TestAgentdCommandsAreWhatAUserRunsOnTheMachineThatHasTheDaemon(t *testing.T) {
-	want := goclient.Commands{Status: "agentd service status", Logs: "~/.agentd/bin/agentd service logs", Start: "agentd service start"}
+	// The installer puts the launcher at ~/.agentd/bin/agentd and nothing on PATH: a bare `agentd` is "command not found".
+	want := goclient.Commands{Status: "~/.agentd/bin/agentd service status", Logs: "~/.agentd/bin/agentd service logs", Start: "~/.agentd/bin/agentd service start"}
 	if got := goclient.AgentdCommands(); got != want {
 		t.Fatalf("commands = %+v", got)
 	}

@@ -21,7 +21,10 @@ cp "$ROOT/examples/minimal-app/page/"{index.html,main.ts,package.json} "$STAGE/"
   require("fs").writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n")
 ')
 # A cache of its own: a file: dependency is copied, and a shared cache would hand back an older copy of the same version.
-(cd "$STAGE" && BUN_INSTALL_CACHE_DIR="$STAGE/.cache" bun install >&2 && bun build main.ts --target=browser --outfile "$OUT/static/app.js" >&2)
+(cd "$STAGE" && BUN_INSTALL_CACHE_DIR="$STAGE/.cache" bun install >&2)
+# The page is typechecked, strictly, against the SDK it is built with (the tarball above): what the example calls must exist there.
+(cd "$STAGE" && "$ROOT/sdk/web/node_modules/.bin/tsc" --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom --skipLibCheck main.ts >&2)
+(cd "$STAGE" && bun build main.ts --target=browser --outfile "$OUT/static/app.js" >&2)
 cp "$STAGE/index.html" "$OUT/static/index.html"
 (cd "$ROOT" && go build -o "$OUT/minimal-app" ./examples/minimal-app)
 echo "built the example app in $OUT" >&2

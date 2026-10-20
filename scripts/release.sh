@@ -9,7 +9,8 @@
 #
 # Without --publish it builds and checks everything in a temporary directory and prints what it would upload. The private
 # keys sign the daemon and the app's update on this machine; they never leave it. app/mygo.json carries the version of
-# the app: make it <x.y.z> in the release's commit. Publishing needs `gh` logged in, a clean work tree, and HEAD pushed:
+# the app: make it <x.y.z> in the release's commit, and run scripts/pins.sh <x.y.z> so that the docs and the example pin
+# this release. Publishing needs `gh` logged in, a clean work tree, and HEAD pushed:
 # the tag marks the commit the files were built from (and is the Go module version of github.com/.../agentd).
 # A tag is final: a fix is the next version.
 set -euo pipefail
@@ -23,6 +24,10 @@ PUBLISH=0
 : "${APP_UPDATE_KEY:?APP_UPDATE_KEY is the path of the private key that signs the app updates (mygo keygen)}"
 APP_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' app/mygo.json)"
 [ "$APP_VERSION" = "$VERSION" ] || { echo "app/mygo.json is version $APP_VERSION: make it $VERSION and commit it first" >&2; exit 1; }
+# The SDK file of a release never changes: its version moved if its sources did, and the pins in the docs and the example
+# name this release (scripts/pins.sh moves them). Both are checked before anything is built.
+./scripts/check-release.sh sdk
+./scripts/check-release.sh pins "$VERSION"
 
 REPO="nguyenvanduocit/agentd"
 DIST="$(mktemp -d)"

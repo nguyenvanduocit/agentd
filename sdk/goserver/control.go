@@ -12,9 +12,9 @@ func (h *Server) control(userID, id, ending string, call func(*peer, context.Con
 	var offline OfflineError
 	switch {
 	case errors.Is(err, ErrUnknownDaemon):
-		return List{}, ErrNoSuchDaemon
+		return List{}, ErrUnknownDaemon
 	case errors.As(err, &offline):
-		return List{}, fmt.Errorf("%s is offline", offline.Name)
+		return List{}, offlineCall{offline}
 	case err != nil:
 		return List{}, err
 	}
@@ -37,6 +37,10 @@ func (h *Server) control(userID, id, ending string, call func(*peer, context.Con
 
 // Restart tells the user's daemon id to exit so that its service starts it again. The daemon closes its own socket;
 // the list changes when that happens. A daemon that runs without a service has nothing to start it again.
+//
+// Errors: ErrUnknownDaemon when id is not one of the user's daemons; an error that errors.As finds an OfflineError in
+// when it is paired but not connected (its text is "<name> is offline"); IncompatibleError when it is connected but
+// incompatible; a plain error when the daemon runs without a service (Info.Managed is false) or did not answer.
 func (h *Server) Restart(userID, id string) (List, error) {
 	return h.control(userID, id, "the daemon was restarted",
 		func(p *peer, ctx context.Context) error { return p.client.CallRestart(ctx) },
@@ -51,7 +55,8 @@ func (h *Server) Restart(userID, id string) (List, error) {
 		})
 }
 
-// Stop tells the user's daemon id to exit and stay stopped. It cannot be started again from the web.
+// Stop tells the user's daemon id to exit and stay stopped. It cannot be started again from the web. It answers the
+// errors of Restart, except the one about a missing service.
 func (h *Server) Stop(userID, id string) (List, error) {
 	return h.control(userID, id, "the daemon was stopped",
 		func(p *peer, ctx context.Context) error { return p.client.CallStop(ctx) },

@@ -1,4 +1,4 @@
-// The whole product, through a real browser: an app built only on the hub library and the page SDK (examples/minimal-app),
+// The whole product, through a real browser: an app built only on sdk/goserver and the page SDK (examples/minimal-app),
 // the SDK built from this tree, a daemon installed by the install.sh of the (local stand-in for the) GitHub release,
 // paired with the app, answering an agent, and updated from the release server. Nothing is mocked except the agent (a fake
 // ACP agent that answers `initialize`) and the native dialog (a program that exits 0, MINDCHAINS_CONSENT's counterpart).
@@ -45,7 +45,7 @@ check("the dialog named this app's origin", _fs.existsSync(_path.join(a.home, "a
 check("the daemon is no longer offered as a connection", !(await visible("local")));
 await page.click(q("ping"));
 await page.waitForFunction(() => document.querySelector("[data-testid=ping-result]")?.textContent.includes("protocolVersion"), undefined, { timeout: 20000 });
-check("the app opened an agent through the hub and read its answer", (await text("ping-result")).includes('"protocolVersion":1'), await text("ping-result"));
+check("the app opened an agent through sdk/goserver and read its answer", (await text("ping-result")).includes('"protocolVersion":1'), await text("ping-result"));
 await a.destroy();
 await waitRow((t) => /: offline/.test(t), "the daemon offline after it stopped");
 check("a daemon that stopped shows offline", (await rows()).length === 1);

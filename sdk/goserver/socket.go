@@ -24,8 +24,14 @@ const (
 	roleBridge = "mcp"
 )
 
-// Mount puts the Server on the web server: the /agentd Socket.IO namespace with its own handshake check (the default
-// namespace keeps its cookie check), and the pairing and install endpoints.
+// Mount puts the Server on a Socket.IO server the app already runs: the /agentd namespace with its own handshake check
+// (the default namespace keeps its cookie check), and POST /agentd/pair on mux, where a daemon trades a pairing code
+// for its token.
+//
+// Mount does not serve /socket.io/: the app must route it to srv itself (mux.Handle("/socket.io/", srv.ServeHandler(nil))),
+// and srv must have been made with SocketOptions, whose message size lets a large tool result through. Without the
+// route a daemon cannot connect: it retries on the user's machine ("bad handshake") while the app shows it offline.
+// An app with no Socket.IO server of its own calls Attach instead, which does all of it.
 func (h *Server) Mount(srv *socket.Server, mux *http.ServeMux) {
 	ns := srv.Of(Namespace, nil)
 	ns.Use(h.authenticate)

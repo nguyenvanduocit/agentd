@@ -3,13 +3,16 @@ package goserver
 import (
 	"log"
 	"reflect"
+	"sync"
 )
 
 // watcher is one browser tab following its user's daemons. Every list is a whole snapshot, so a tab that is slow
 // only ever needs the latest: the channel holds one.
 type watcher struct{ ch chan List }
 
-// Watch returns the user's list of daemons as it changes, starting with the current one. Call cancel when the tab goes.
+// Watch returns the user's list of daemons as it changes, starting with the current one. A reader that is slow only
+// ever gets the latest list. Call cancel when the tab goes: it closes the channel, so `for list := range ch` ends, and
+// calling it again does nothing.
 func (h *Server) Watch(userID string) (<-chan List, func()) {
 	w := &watcher{ch: make(chan List, 1)}
 	h.pubMu.Lock()
@@ -26,16 +29,20 @@ func (h *Server) Watch(userID string) (<-chan List, func()) {
 		w.ch <- list
 		h.sent[userID] = list
 	}
+	var once sync.Once
 	return w.ch, func() {
-		h.pubMu.Lock()
-		defer h.pubMu.Unlock()
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		delete(h.watchers[userID], w)
-		if len(h.watchers[userID]) == 0 {
-			delete(h.watchers, userID)
-			delete(h.sent, userID)
-		}
+		once.Do(func() {
+			h.pubMu.Lock()
+			defer h.pubMu.Unlock()
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			delete(h.watchers[userID], w)
+			if len(h.watchers[userID]) == 0 {
+				delete(h.watchers, userID)
+				delete(h.sent, userID)
+			}
+			close(w.ch) // publish sends only under pubMu, which is held: no send can follow
+		})
 	}
 }
 

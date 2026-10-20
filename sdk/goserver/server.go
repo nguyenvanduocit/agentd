@@ -1,7 +1,3 @@
-// Package goserver connects an app's server to the agentd daemons on users' machines. A daemon dials out over Socket.IO
-// (namespace /agentd), proves whose it is with a token it got by pairing, and then starts agents on the server's
-// behalf and relays their ACP streams. A user pairs any number of daemons. The Server makes each of them look like a
-// place agents can be opened, and tells the user's browser tabs which are there.
 package goserver
 
 import (
@@ -26,23 +22,30 @@ import (
 	"github.com/nguyenvanduocit/agentd/contract"
 )
 
-// Daemon states of Info.
+// The values of Info.State.
 const (
-	stateOnline  = "online"
-	stateOffline = "offline"
+	// StateOnline is a paired daemon that is connected and speaks a protocol this app does: agents can be opened on it.
+	StateOnline = "online"
+	// StateOffline is every other paired daemon: not connected, or connected but incompatible (Info.Incompatible says
+	// why in that case).
+	StateOffline = "offline"
 )
 
 // MaxMessageBytes is the largest Socket.IO message the server accepts. The default of 1 MB ends the daemon's
-// session on a large tool result; the ACP SDK allows 10 MiB per line.
+// session on a large tool result; the ACP SDK allows 10 MiB per line. SocketOptions and Attach set it.
 const MaxMessageBytes = 64 << 20
 
 // ackTimeout bounds one call to the daemon that waits for an answer; `open` may have to fetch an adapter first.
 const ackTimeout = 90 * time.Second
 
-// Tools serves the graph tools of one agent session to a bridge.
+// Tools serves an app's MCP tools to the agents it starts: the agent reaches them through the bridge that BridgeCommand
+// names, and the Server hands each bridge to Serve.
 type Tools interface {
-	// Owns reports whether grantID was opened by userID on daemonID.
+	// Owns reports whether grantID is a tool session the app opened for userID on daemonID. A bridge whose session
+	// Owns refuses is turned away.
 	Owns(userID, daemonID, grantID string) bool
+	// Serve runs the MCP server of the session grantID of userID over t until ctx ends (the session or the bridge
+	// ended). The agent's MCP client is at the other end of t.
 	Serve(ctx context.Context, userID, grantID string, t mcp.Transport) error
 }
 
@@ -53,7 +56,10 @@ func BridgeCommand(grantID string) (command string, args []string) {
 	return "agentd-mcp", []string{"--session", grantID}
 }
 
+// Options configure a Server. Only Tokens is required.
 type Options struct {
+	// Tokens is where paired daemons are kept. Required: New panics without it. MemoryTokens keeps them in memory,
+	// which suits tests and examples; an app keeps them in its own database by implementing Tokens.
 	Tokens Tokens
 	// Tools serves the MCP tools of an agent session to the bridge the daemon starts for it. Nil: bridges are refused.
 	Tools Tools
@@ -109,7 +115,12 @@ type Server struct {
 	sent  map[string]List // by user: the list their tabs hold; guarded by pubMu
 }
 
+// New is a Server. It panics when opts.Tokens is nil, so that a missing store shows when the app starts and not at the
+// first request.
 func New(opts Options) *Server {
+	if opts.Tokens == nil {
+		panic("goserver: Options.Tokens is required: pass goserver.NewMemoryTokens() to try it out, or your own Tokens store")
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -135,13 +146,9 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Errors the browser sees.
-var (
-	// ErrNoSuchDaemon is the answer for a daemon id the user does not have, whether it never existed, was
-	// disconnected, or belongs to someone else.
-	ErrNoSuchDaemon = errors.New("no such daemon")
-	errBadName      = errors.New("a daemon's name is 1 to 64 characters, without control characters")
-)
+// ErrBadName is what Rename answers for a name that is empty, longer than 64 characters, or holds a control or invisible
+// formatting character. Test with errors.Is; the text says the rule. Since 0.7.0.
+var ErrBadName = errors.New("a daemon's name is 1 to 64 characters, without control characters")
 
 // maxNameRunes bounds a daemon's name.
 const maxNameRunes = 64
@@ -152,7 +159,7 @@ func cleanName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	n := utf8.RuneCountInString(name)
 	if n < 1 || n > maxNameRunes || strings.ContainsFunc(name, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
-		return "", errBadName
+		return "", ErrBadName
 	}
 	return name, nil
 }
@@ -196,7 +203,8 @@ func (h *Server) connected(userID, daemonID string) (*peer, error) {
 	return nil, OfflineError{Name: name}
 }
 
-// Online lists the user's connected daemons, the one that came online last first.
+// Online lists the user's connected daemons that are ready for agents, the one that came online last first. It returns
+// no error: a user without daemons gets an empty list.
 func (h *Server) Online(userID string) []Ref {
 	h.mu.Lock()
 	var ps []*peer
@@ -214,7 +222,7 @@ func (h *Server) Online(userID string) []Ref {
 	return out
 }
 
-// Name is the name of the user's paired daemon, online or not.
+// Name is the name of the user's paired daemon, online or not; false when the user has no daemon with that id.
 func (h *Server) Name(userID, daemonID string) (string, bool) {
 	rec, err := h.opts.Tokens.ByID(userID, daemonID)
 	if err != nil {
@@ -226,7 +234,11 @@ func (h *Server) Name(userID, daemonID string) (string, bool) {
 	return rec.Name, true
 }
 
-// Ready names the agents the user's daemon can start now.
+// Ready names the agents the user's daemon can start now ("claude", "codex"...).
+//
+// Errors: ErrUnknownDaemon when daemonID is not one of the user's daemons; OfflineError when it is paired but not
+// connected; IncompatibleError when it connected but this app and it speak protocols that do not meet. Test with
+// errors.Is and errors.As.
 func (h *Server) Ready(userID, daemonID string) ([]string, error) {
 	p, err := h.connected(userID, daemonID)
 	if err != nil {
@@ -243,8 +255,18 @@ func (h *Server) Ready(userID, daemonID string) ([]string, error) {
 	return names, nil
 }
 
-// Open starts the named agent on the user's daemon.
-func (h *Server) Open(ctx context.Context, userID, daemonID, agentName string) (Conn, error) { //nolint:ireturn // implements agent.Daemon
+// Open starts the named agent ("claude", "codex", "grok") on the user's daemon daemonID and returns the ACP stream of
+// its process; the caller closes the Conn when done. ctx bounds the start, which may have to wait for the daemon to
+// fetch the agent's adapter.
+//
+// Errors, all to test with errors.Is or errors.As:
+//   - ErrUnknownDaemon: daemonID is not one of the user's daemons (it never existed, was disconnected, or is someone
+//     else's). An empty daemonID is one too; OpenLatest picks a daemon for you.
+//   - OfflineError: the daemon is paired but not connected.
+//   - IncompatibleError: it is connected but this app and it speak protocols that do not meet.
+//   - *AgentNotReadyError: the daemon does not have the agent, or says it is not ready.
+//   - any other error: the daemon refused or did not answer; the text starts "your daemon:" and carries its message.
+func (h *Server) Open(ctx context.Context, userID, daemonID, agentName string) (Conn, error) { //nolint:ireturn // Conn is the contract; the session is internal
 	p, err := h.connected(userID, daemonID)
 	if err != nil {
 		return nil, err
@@ -269,17 +291,35 @@ func (h *Server) Open(ctx context.Context, userID, daemonID, agentName string) (
 	return s, nil
 }
 
+// OpenLatest is Open on the user's daemon that came online last, for an app that does not ask the user to pick one. The
+// errors of Open apply, with these in place of the ones about a chosen daemon: ErrNoDaemon when the user has no paired
+// daemon (point them at pairing), and ErrNoOnlineDaemon when they have some and none is online (ask them to start one).
+//
+// Since 0.7.0.
+func (h *Server) OpenLatest(ctx context.Context, userID, agentName string) (Conn, error) { //nolint:ireturn // Conn is the contract; the session is internal
+	online := h.Online(userID)
+	if len(online) == 0 {
+		recs, err := h.opts.Tokens.List(userID)
+		if err != nil {
+			return nil, fmt.Errorf("list daemons: %w", err)
+		}
+		if len(recs) == 0 {
+			return nil, ErrNoDaemon
+		}
+		return nil, ErrNoOnlineDaemon
+	}
+	return h.Open(ctx, userID, online[0].ID, agentName)
+}
+
 // checkReady refuses an agent the daemon said it cannot start, naming the agent and the daemon and giving the reason
 // the daemon gave. It reads what the daemon reported, so nothing is started to find out.
 func (h *Server) checkReady(agents []contract.AgentInfo, daemonName, agentName string) error {
 	i := slices.IndexFunc(agents, func(a contract.AgentInfo) bool { return a.Name == agentName })
 	switch {
 	case i < 0:
-		return fmt.Errorf("%s does not offer %s", daemonName, agentName)
-	case !agents[i].Ready && agents[i].Reason != "":
-		return fmt.Errorf("%s is not ready on %s: %s", title(agents[i]), daemonName, agents[i].Reason)
+		return &AgentNotReadyError{Daemon: daemonName, Agent: agentName, Title: agentName}
 	case !agents[i].Ready:
-		return fmt.Errorf("%s is not ready on %s", title(agents[i]), daemonName)
+		return &AgentNotReadyError{Daemon: daemonName, Agent: agentName, Title: title(agents[i]), Reason: agents[i].Reason, Offered: true}
 	}
 	return nil
 }
@@ -379,7 +419,8 @@ func (h *Server) hello(p *peer, info contract.Hello) {
 }
 
 // OnAgentsChanged registers fn, called with the user and the daemon whenever what a daemon can run may have changed:
-// it said hello, or reported a new list of agents. The chat runtime uses it to drop what it cached about that daemon.
+// it said hello, or reported a new list of agents. An app uses it to drop what it cached about that daemon. A Server
+// has one such function: registering another replaces the first, and nil removes it.
 func (h *Server) OnAgentsChanged(fn func(userID, daemonID string)) {
 	h.mu.Lock()
 	h.agentsChanged = fn
@@ -466,11 +507,13 @@ func (h *Server) removeBridge(b *bridge) {
 }
 
 // Revoke disconnects the user's daemon id: its record is removed, so its token stops working, and its connection
-// and the MCP bridges of its token are closed at once.
+// and the MCP bridges of its token are closed at once. It returns the user's list afterwards.
+//
+// Errors: ErrUnknownDaemon when id is not one of the user's daemons; otherwise the error of the Tokens store, wrapped.
 func (h *Server) Revoke(userID, id string) (List, error) {
 	if err := h.opts.Tokens.Delete(userID, id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return List{}, ErrNoSuchDaemon
+			return List{}, ErrUnknownDaemon
 		}
 		return List{}, fmt.Errorf("disconnect the daemon: %w", err)
 	}
@@ -505,7 +548,10 @@ func (h *Server) Revoke(userID, id string) (List, error) {
 	return h.List(userID)
 }
 
-// Rename gives the user's daemon id a new name.
+// Rename gives the user's daemon id a new name and returns the user's list afterwards.
+//
+// Errors: ErrBadName when name breaks the rule (1 to 64 characters, no control characters); ErrUnknownDaemon when id is
+// not one of the user's daemons; ErrNameTaken when another daemon of the user has the name.
 func (h *Server) Rename(userID, id, name string) (List, error) {
 	name, err := cleanName(name)
 	if err != nil {
@@ -513,7 +559,7 @@ func (h *Server) Rename(userID, id, name string) (List, error) {
 	}
 	if _, err := h.opts.Tokens.Rename(userID, id, name); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return List{}, ErrNoSuchDaemon
+			return List{}, ErrUnknownDaemon
 		}
 		return List{}, err
 	}
@@ -546,7 +592,8 @@ func (h *Server) latestVersion() string {
 	return h.opts.LatestVersion()
 }
 
-// List is the user's daemons as the browser shows them, with the pending pairing code, if any.
+// List is the user's daemons as the browser shows them, with the pending pairing code, if any. The only error is the
+// Tokens store failing.
 func (h *Server) List(userID string) (List, error) {
 	recs, err := h.opts.Tokens.List(userID)
 	if err != nil {
@@ -563,11 +610,11 @@ func (h *Server) List(userID string) (List, error) {
 	list := List{Daemons: make([]Info, 0, len(recs)), LatestVersion: h.latestVersion()}
 	for _, rec := range recs {
 		info := Info{
-			ID: rec.ID, Name: rec.Name, Hostname: rec.Hostname, State: stateOffline, OS: rec.OS, Agents: []Agent{},
+			ID: rec.ID, Name: rec.Name, Hostname: rec.Hostname, State: StateOffline, OS: rec.OS, Agents: []Agent{},
 			LastSeen: rec.LastSeen,
 		}
 		if p := h.peers[rec.ID]; p != nil && p.ready {
-			info.State, info.Hostname, info.Version, info.OS = stateOnline, p.info.Hostname, p.info.Version, p.info.Os
+			info.State, info.Hostname, info.Version, info.OS = StateOnline, p.info.Hostname, p.info.Version, p.info.Os
 			info.Agents, info.Managed, info.Sessions = agentsOf(p.info.Agents), p.info.Managed, sessions[p]
 		} else if r, ok := h.refused[rec.ID]; ok {
 			info.Incompatible, info.Hostname, info.Version, info.OS = r.reason, r.hostname, r.version, r.os
@@ -580,7 +627,8 @@ func (h *Server) List(userID string) (List, error) {
 	return list, nil
 }
 
-// UserDaemons is the Server as one user sees their own daemons: an app hands it to its UI layer.
+// UserDaemons is the Server as one user sees their own daemons: an app hands it to its UI layer, so that no call can
+// name another user. Every method is the Server's with the user filled in, and answers the same errors.
 type UserDaemons struct {
 	server *Server
 	userID string
@@ -589,15 +637,25 @@ type UserDaemons struct {
 // For is the Server seen from userID's side.
 func (h *Server) For(userID string) UserDaemons { return UserDaemons{server: h, userID: userID} }
 
-func (u UserDaemons) List() (List, error)          { return u.server.List(u.userID) }
-func (u UserDaemons) StartPairing() (List, error)  { return u.server.StartPairing(u.userID) }
+// List is Server.List for this user.
+func (u UserDaemons) List() (List, error) { return u.server.List(u.userID) }
+
+// StartPairing is Server.StartPairing for this user: a new code, replacing the one they had.
+func (u UserDaemons) StartPairing() (List, error) { return u.server.StartPairing(u.userID) }
+
+// CancelPairing is Server.CancelPairing for this user.
 func (u UserDaemons) CancelPairing() (List, error) { return u.server.CancelPairing(u.userID) }
 
+// Rename is Server.Rename for this user.
 func (u UserDaemons) Rename(id, name string) (List, error) {
 	return u.server.Rename(u.userID, id, name)
 }
 
+// Revoke is Server.Revoke for this user.
 func (u UserDaemons) Revoke(id string) (List, error) { return u.server.Revoke(u.userID, id) }
 
+// Restart is Server.Restart for this user.
 func (u UserDaemons) Restart(id string) (List, error) { return u.server.Restart(u.userID, id) }
-func (u UserDaemons) Stop(id string) (List, error)    { return u.server.Stop(u.userID, id) }
+
+// Stop is Server.Stop for this user.
+func (u UserDaemons) Stop(id string) (List, error) { return u.server.Stop(u.userID, id) }

@@ -5,14 +5,20 @@
 //	latest := release.Watch(ctx, http.DefaultClient, release.Releases, time.Hour)
 //	h := goserver.New(goserver.Options{Tokens: tokens, LatestVersion: latest.Version})
 //	// a daemon of List(user) is behind when release.Older(daemon.Version, list.LatestVersion)
+//
+// An offer counts only when a release key signed it, the same keys daemons check updates against: the release key and,
+// once the owner has made one, the backup key kept offline (the *.pub files of keys/, which a test keeps the same as
+// daemon/release*.pub).
 package release
 
 import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -28,9 +34,40 @@ import (
 // Releases is agentd's releases page on GitHub; the latest release's latest.json is at latest/download/latest.json.
 const Releases = "https://github.com/nguyenvanduocit/agentd/releases"
 
-// releaseKey is the release key's public half, base64 of its SPKI DER: daemon/release.pub, the key every daemon checks
-// an update against (a test keeps the two the same).
-const releaseKey = "MCowBQYDK2VwAyEACRLf/5ptlco5rJjDDSKjgxflq8DahAPzA4i71jE1Q30="
+// keyFiles are the public halves of the release keys, as PEM files: keys/release.pub is daemon/release.pub, and a
+// keys/release-backup.pub that appears with daemon/release-backup.pub is taken without a change of code.
+//
+//go:embed keys/*.pub
+var keyFiles embed.FS
+
+// releaseKeys reads every embedded release key.
+func releaseKeys() ([]ed25519.PublicKey, error) {
+	files, err := keyFiles.ReadDir("keys")
+	if err != nil {
+		return nil, fmt.Errorf("release: the release keys: %w", err)
+	}
+	var keys []ed25519.PublicKey
+	for _, f := range files {
+		text, err := keyFiles.ReadFile("keys/" + f.Name())
+		if err != nil {
+			return nil, fmt.Errorf("release: the release key %s: %w", f.Name(), err)
+		}
+		block, _ := pem.Decode(text)
+		if block == nil {
+			return nil, fmt.Errorf("release: the release key %s is not PEM", f.Name())
+		}
+		k, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("release: the release key %s: %w", f.Name(), err)
+		}
+		pub, ok := k.(ed25519.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("release: the release key %s is not an Ed25519 key", f.Name())
+		}
+		keys = append(keys, pub)
+	}
+	return keys, nil
+}
 
 // maxOffer bounds what Fetch reads: latest.json is a few hundred bytes.
 const maxOffer = 64 << 10
@@ -43,15 +80,32 @@ var (
 // Offer is latest.json: the newest release's version, where its tarball is, the tarball's sha256, and the release
 // key's signature of the version and the sha256.
 type Offer struct {
-	Version   string `json:"version"`
-	URL       string `json:"url"`
-	SHA256    string `json:"sha256"`
+	// Version is the release's version ("0.7.0").
+	Version string `json:"version"`
+	// URL is where the tarball is, relative to the releases page.
+	URL string `json:"url"`
+	// SHA256 is the hex SHA-256 of the tarball.
+	SHA256 string `json:"sha256"`
+	// Signature is a release key's Ed25519 signature of the version and the SHA-256, in base64.
 	Signature string `json:"signature"`
 }
 
 // Fetch reads the latest release's latest.json under releases (Releases, or a stand-in with the same layout) and
-// returns it once the release key's signature verifies: a version daemons would refuse is not one they update to.
+// returns it once a release key's signature verifies: a version daemons would refuse is not one they update to. A nil
+// client is http.DefaultClient.
 func Fetch(ctx context.Context, client *http.Client, releases string) (Offer, error) {
+	keys, err := releaseKeys()
+	if err != nil {
+		return Offer{}, err
+	}
+	return fetch(ctx, client, releases, keys)
+}
+
+// fetch is Fetch against the keys it is given.
+func fetch(ctx context.Context, client *http.Client, releases string, keys []ed25519.PublicKey) (Offer, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	url := strings.TrimSuffix(releases, "/") + "/latest/download/latest.json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
@@ -76,35 +130,15 @@ func Fetch(ctx context.Context, client *http.Client, releases string) (Offer, er
 	if err := json.Unmarshal(body, &o); err != nil {
 		return Offer{}, fmt.Errorf("release: %s is not an offer: %w", url, err)
 	}
-	k, err := publicKey()
-	if err != nil {
-		return Offer{}, err
-	}
-	if err := check(o, k); err != nil {
+	if err := check(o, keys); err != nil {
 		return Offer{}, fmt.Errorf("release: %s: %w", url, err)
 	}
 	return o, nil
 }
 
-func publicKey() (ed25519.PublicKey, error) {
-	der, err := base64.StdEncoding.DecodeString(releaseKey)
-	if err != nil {
-		return nil, fmt.Errorf("release: the release key: %w", err)
-	}
-	k, err := x509.ParsePKIXPublicKey(der)
-	if err != nil {
-		return nil, fmt.Errorf("release: the release key: %w", err)
-	}
-	pub, ok := k.(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("release: the release key is not an Ed25519 key")
-	}
-	return pub, nil
-}
-
-// check is nil when key signed o's version and sha256, as cmd/sign-daemon signs them (and as the daemon
-// checks them, daemon/update/signature.go).
-func check(o Offer, key ed25519.PublicKey) error {
+// check is nil when one of keys signed o's version and sha256, as cmd/sign-daemon signs them (and as the daemon
+// checks them, daemon/update/signature.go). With no key it refuses everything.
+func check(o Offer, keys []ed25519.PublicKey) error {
 	if !versionPattern.MatchString(o.Version) {
 		return fmt.Errorf("version %q is not a plain version", o.Version)
 	}
@@ -112,10 +146,16 @@ func check(o Offer, key ed25519.PublicKey) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return errors.New("the signature is not 64 bytes of base64")
 	}
-	if !ed25519.Verify(key, []byte("agentd\n"+o.Version+"\n"+o.SHA256+"\n"), sig) {
-		return fmt.Errorf("the signature of %s does not match the release key", o.Version)
+	message := []byte("agentd\n" + o.Version + "\n" + o.SHA256 + "\n")
+	for _, key := range keys {
+		if ed25519.Verify(key, message, sig) {
+			return nil
+		}
 	}
-	return nil
+	if len(keys) > 1 {
+		return fmt.Errorf("the signature of %s does not match any of the release keys", o.Version)
+	}
+	return fmt.Errorf("the signature of %s does not match the release key", o.Version)
 }
 
 // Older is true when both are plain x.y.z releases and version is the lower one. Anything else (a dev build, an empty
@@ -150,8 +190,12 @@ func (l *Latest) Version() string {
 }
 
 // Watch reads the latest release in the background, at once and then every `every`, until ctx ends. A read that fails
-// is logged and keeps the version read before.
+// is logged and keeps the version read before. An interval of zero or less is one hour, and a nil client is
+// http.DefaultClient.
 func Watch(ctx context.Context, client *http.Client, releases string, every time.Duration) *Latest {
+	if every <= 0 {
+		every = time.Hour
+	}
 	l := &Latest{}
 	go func() {
 		t := time.NewTicker(every)

@@ -87,7 +87,10 @@ type Commands struct {
 	Start string
 }
 
-// AgentdCommands are what a user of an install from the terminal runs on their machine.
+// AgentdCommands are what a user of an install from the terminal (install.sh) runs on their machine. The installer
+// puts the launcher at ~/.agentd/bin/agentd and nothing on PATH, so each command names it. The desktop app has no
+// command line: its user opens the app. Since 0.7.0 all three use the full path.
 func AgentdCommands() Commands {
-	return Commands{Status: "agentd service status", Logs: "~/.agentd/bin/agentd service logs", Start: "agentd service start"}
+	const agentd = "~/.agentd/bin/agentd"
+	return Commands{Status: agentd + " service status", Logs: agentd + " service logs", Start: agentd + " service start"}
 }

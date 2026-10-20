@@ -1,11 +1,15 @@
 package goclient_test
 
 // The examples of README.md, compiled with the package: they are not run (they need a daemon on this computer).
+// readme_test.go checks that every line of a Go block of the README is a line of this file or of
+// examples/askagent/main.go, so a README that names something that is gone does not pass.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,7 +37,7 @@ func Example_serverMode() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	stop := local.Subscribe(func(s goclient.LocalState) { fmt.Println(s.Found.Found, s.Connecting, s.Error, s.CanConnect) })
+	stop := local.Subscribe(func(s goclient.LocalState) { fmt.Println(s.Phase, s.Error) })
 	defer stop()
 	local.Detect(ctx) // when the settings screen opens, and when the app gets focus
 	if local.State().CanConnect {
@@ -71,18 +75,14 @@ func Example_browserMode() {
 
 	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: origin, Mode: goclient.ModeBrowser})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(err) // an origin the gateway would refuse is an *OriginError that says what to write instead
 	}
 	local.Detect(ctx)
 	if local.State().CanConnect { // a daemon is here and this origin has no grant yet
 		local.Connect(ctx) // the dialog opens on the user's computer
 	}
-	found := local.State().Found
-	if !found.Found || !found.Granted.Browser {
-		log.Fatal(local.State().Error)
-	}
 
-	session, err := goclient.OpenSession(ctx, goclient.Daemon{Port: found.Port}, origin, "claude") // found.Agents lists them
+	session, err := local.OpenSession(ctx, "claude") // local.State().Found.Agents lists them: Name, Title, Ready, Reason
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -101,6 +101,107 @@ func Example_browserMode() {
 	}
 
 	local.Disconnect(ctx) // takes this origin's grant back; open sessions end
+}
+
+func Example_phases() {
+	ctx := context.Background()
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	if err != nil {
+		log.Fatal(err)
+	}
+	render := func(s goclient.LocalState) {
+		switch s.Phase {
+		case goclient.PhaseDetecting:
+			fmt.Println("Looking for agentd on this computer...")
+		case goclient.PhaseAbsent:
+			// Not installed, not running, or something between blocked the call: the program cannot tell which.
+			fmt.Println("agentd is not here. To start it from a terminal install:", goclient.AgentdCommands().Start)
+		case goclient.PhaseAvailable:
+			fmt.Println("agentd is here. Connect asks the user to allow this app.") // s.CanConnect
+		case goclient.PhaseConnecting:
+			fmt.Println("Answer the dialog on this computer.")
+		case goclient.PhaseConnected:
+			fmt.Println("Connected:", len(s.Found.Agents), "agents")
+		case goclient.PhaseRefused:
+			// s.Error is a sentence for a person; s.Reason is the code; s.RetryAt is when to ask again, if the daemon says.
+			fmt.Println(s.Error)
+		}
+	}
+	stopListening := local.Subscribe(render)
+	defer stopListening()
+	stopWatching := local.Watch(ctx, 3*time.Second) // looks now and every 3 s: an install or a restart shows up by itself
+	defer stopWatching()
+}
+
+func Example_errors() {
+	ctx := context.Background()
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	if err != nil {
+		log.Fatal(err)
+	}
+	session, err := local.OpenSession(ctx, "claude")
+	var refused *goclient.SessionError
+	switch {
+	case errors.Is(err, goclient.ErrNoDaemon):
+		fmt.Println("agentd is not running on this computer")
+	case errors.Is(err, goclient.ErrNotAllowed):
+		fmt.Println("the user has not allowed this app: ask with local.Connect(ctx)")
+	case errors.As(err, &refused):
+		fmt.Println(refused.Message) // the daemon's own sentence: the agent is unknown, still setting up, or not installed
+	case err != nil:
+		log.Fatal(err)
+	default:
+		defer func() { _ = session.Close() }()
+	}
+}
+
+func Example_agentEnded() {
+	ctx := context.Background()
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	if err != nil {
+		log.Fatal(err)
+	}
+	session, err := local.OpenSession(ctx, "claude")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+
+	session.OnFrame(func(f goclient.Frame) { // out: a stdout line, err: stderr text, exit: the agent ended
+		fmt.Println(f.Kind, f.Data)
+	})
+	if err := session.WriteLine(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`); err != nil {
+		log.Fatal(err)
+	}
+	code, err := session.Wait() // blocks until the agent exits; an error if the socket ended first
+	fmt.Println("the agent exited with", code, err)
+}
+
+func Example_cancelConnect() {
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	if err != nil {
+		log.Fatal(err)
+	}
+	local.Detect(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if !local.Connect(ctx) && local.State().Reason == goclient.ReasonCancelled {
+		// The dialog may still be open on the user's computer. If they allow it there, the next Detect finds the grant.
+		fmt.Println(local.State().Error)
+	}
+}
+
+func Example_testWithoutClicking() {
+	// A test daemon on port 47661 (AGENTD_LOCAL_PORT=47661, see "Test without clicking" in the README).
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{
+		Origin:  "http://localhost:5173",
+		Mode:    goclient.ModeBrowser,
+		Options: []goclient.Option{goclient.WithPorts(47661)},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	local.Detect(context.Background())
 }
 
 func Example_toolsFromTheApp() {

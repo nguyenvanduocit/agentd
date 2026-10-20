@@ -123,7 +123,7 @@ var bg = context.Background()
 
 func TestStartsWithNothingFound(t *testing.T) {
 	local, _ := setup(t, setupOptions{})
-	if got := local.State(); !reflect.DeepEqual(got, goclient.LocalState{}) {
+	if got := local.State(); !reflect.DeepEqual(got, goclient.LocalState{Phase: goclient.PhaseDetecting}) {
 		t.Fatalf("state = %+v", got)
 	}
 }
@@ -498,8 +498,7 @@ func TestListenersAreToldEachStateInOrder(t *testing.T) {
 	want := []string{
 		"connecting=false found=true", // the look
 		"connecting=true found=true",  // the dialog is open
-		"connecting=false found=true", // the answer
-		"connecting=false found=true", // the look after it
+		"connecting=false found=true", // the answer and the look after it, in one step: no state offers Connect again
 	}
 	if !slices.Equal(seen, want) {
 		t.Fatalf("seen = %v", seen)

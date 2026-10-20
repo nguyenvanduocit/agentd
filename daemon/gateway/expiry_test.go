@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -15,10 +14,15 @@ var grantedOn = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
 func clockAt(at time.Time) func() time.Time { return func() time.Time { return at } }
 
-func TestStatusNamesTheProtocolThisDaemonSpeaks(t *testing.T) {
+// The protocol a page reads is the page protocol, not the one an app's server speaks to the daemon: they change for
+// different reasons and must be free to differ.
+func TestStatusNamesThePageProtocol(t *testing.T) {
 	g := startGateway(t, newWorld().deps(), nil)
-	if got, _ := status(t, g.Port, page).body["protocol"].(float64); got != float64(home.Protocol) {
-		t.Fatalf("protocol = %v, want %d", got, home.Protocol)
+	if got, _ := status(t, g.Port, page).body["protocol"].(float64); got != float64(PageProtocol) {
+		t.Fatalf("protocol = %v, want %d", got, PageProtocol)
+	}
+	if PageProtocol != 1 {
+		t.Fatalf("PageProtocol = %d: it is bumped only when the page protocol changes incompatibly, and the SDKs say which they speak", PageProtocol)
 	}
 }
 

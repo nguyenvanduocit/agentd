@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { ConnectResult, Daemon, Detected, Reason } from "./client.ts"
+import type { ConnectResult, Daemon, Detected, DisconnectResult, Reason } from "./client.ts"
 import { createLocalDaemon, type LocalClient, type LocalDaemonDeps, type LocalState } from "./local.ts"
 
 const NOT_FOUND: Detected = { found: false }
@@ -36,7 +36,7 @@ function setup(o: { detected?: Detected[]; connect?: ConnectResult; code?: strin
     },
     disconnect: (d: Daemon) => {
       calls.push(`disconnect ${d.port}`)
-      return Promise.resolve(o.disconnected)
+      return Promise.resolve(o.disconnected as DisconnectResult | undefined)
     },
   }
   if (o.mode === "browser") return { local: createLocalDaemon({ mode: "browser", client, ...(interval ? { interval } : {}) }), calls, timer }
@@ -280,13 +280,13 @@ describe("phase", () => {
     expect(t.local.state.error).toContain("brand-new")
   })
 
-  test("a refusal that is not the daemon's (the server gave no code) is refused with words and no reason", async () => {
+  test("a refusal that is not the daemon's (the server gave no code) is refused with words and the generic reason 'error'", async () => {
     const t = setup({ code: "" })
     await t.local.detect()
     await t.local.connect()
     expect(t.local.state.phase).toBe("refused")
     expect(t.local.state.error).not.toBe("")
-    expect("reason" in t.local.state).toBe(false)
+    expect(t.local.state.reason).toBe("error")
   })
 
   test("a failure of the app's own pairing call is refused with the error's words", async () => {
@@ -362,15 +362,19 @@ describe("watch", () => {
     expect(t.local.state.phase).toBe("available")
   })
 
-  test("looks no more while connected", async () => {
+  test("keeps looking while connected, and says nothing while nothing changes", async () => {
     const t = setup({ detected: [CONNECTED] })
+    const heard: string[] = []
     t.local.watch()
     await flush()
     expect(t.local.state.phase).toBe("connected")
-    t.timer.tick()
+    t.local.subscribe((s) => heard.push(s.phase))
     t.timer.tick()
     await flush()
-    expect(t.calls).toEqual(["detect"])
+    t.timer.tick()
+    await flush()
+    expect(t.calls).toEqual(["detect", "detect", "detect"])
+    expect(heard).toEqual([])
   })
 
   test("looks no more while a connection waits for the dialog", async () => {

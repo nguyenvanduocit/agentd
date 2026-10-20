@@ -1,0 +1,25 @@
+{
+  "about": "Why a page's request to the local gateway is refused, and the sentence a person reads. The gateway sends `reason` (a legacy value every SDK since 0.4 knows) and, for the cases a newer SDK can say better, `code` (the specific reason). A client shows the text of `code` when it knows it and of `reason` otherwise. daemon/gateway, sdk/web and sdk/goclient all test against this file; change the words here and in nothing else.",
+  "reasons": [
+    { "reason": "denied", "text": "You declined. The app stays disconnected from this computer." },
+    { "reason": "timeout", "text": "The dialog on this computer was not answered in time. Try again and answer it." },
+    { "reason": "cooldown", "text": "You declined a moment ago. Wait half a minute before asking again." },
+    { "reason": "locked", "legacy": "cooldown", "text": "Several connection requests were declined in a row, so agentd is not asking for a while. Try again in a few minutes." },
+    { "reason": "busy", "text": "Another connection request is waiting for an answer on this computer. Answer it first." },
+    { "reason": "no-dialog", "text": "This computer cannot show the confirmation dialog (no graphical session), so nothing was connected." },
+    { "reason": "no-folder", "legacy": "no-dialog", "text": "No folder was chosen, so nothing was connected. Choose at least one folder to allow." },
+    { "reason": "pairing", "text": "The app refused the pairing code. Start the connection again to get a fresh one." },
+    { "reason": "not-saved", "legacy": "pairing", "text": "agentd could not save the connection on this computer. Look at its log, then try again." },
+    { "reason": "origin", "text": "agentd does not accept requests from this address. Use the address the app is served from, without a path." },
+    { "reason": "host", "text": "agentd did not accept the address used to reach it. Open the page from its usual address." },
+    { "reason": "malformed", "text": "agentd did not understand the request. Update agentd and try again." },
+    { "reason": "not-found", "text": "This agentd does not know the request. Update agentd and try again." },
+    { "reason": "error", "text": "agentd could not carry out the request. Look at its log, then try again." },
+    { "reason": "peer", "text": "agentd runs as another user than this program, so it refuses the request." }
+  ],
+  "clientReasons": [
+    { "reason": "unreachable", "text": "agentd on this computer did not answer. Check that it is running." },
+    { "reason": "cancelled", "text": "You stopped waiting. The dialog may still be open: answering Allow there still connects." }
+  ],
+  "fallback": "agentd on this computer refused the request ({reason})."
+}

@@ -46,10 +46,15 @@ jobs:
         working-directory: sdk/web
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the last release tag is what the SDK's sources are compared with
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      # "A published file never changes": a changed SDK is a new version. The pins of the docs and the example are not
+      # checked here, because on main they name the last release by design; scripts/release.sh checks them (scripts/pins.sh).
+      - run: ../../scripts/check-release.sh sdk
       - run: ../../scripts/build-sdk.sh "$RUNNER_TEMP/dist"
 
   app:

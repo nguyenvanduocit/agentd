@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -19,6 +20,45 @@ import (
 
 // ErrClosed is the error of a write to a session that was closed, or whose socket ended.
 var ErrClosed = errors.New("goclient: the session is closed")
+
+// ErrNotAllowed is the error of opening a session for an origin the user has not allowed (ConnectBrowser): the daemon
+// turns the socket down. errors.Is finds it in what OpenSession returns; the fix is Connect. Since 0.7.0.
+var ErrNotAllowed = errors.New("goclient: the user has not allowed this app to run agents on this computer: ask with Connect")
+
+// ErrNoDaemon is the error of opening a session when no agentd answers on the port given, or none was found. Since
+// 0.7.0.
+var ErrNoDaemon = errors.New("goclient: no agentd answers on this computer")
+
+// SessionError is the daemon's refusal to open an agent: the agent is unknown, is not installed or still setting up, or
+// the folder is not one the user allowed. Message is the daemon's own sentence, which is also Error(). Since 0.7.0.
+type SessionError struct {
+	// Agent is the agent asked for.
+	Agent string
+	// Reason is ReasonError: the daemon states no finer reason for a refused open; Message has the details.
+	Reason  Reason
+	Message string
+}
+
+func (e *SessionError) Error() string { return e.Message }
+
+// classified is an error that is also one of this package's sentinels, with the message it had before they existed.
+type classified struct {
+	err  error
+	kind error
+}
+
+func (e *classified) Error() string   { return e.err.Error() }
+func (e *classified) Unwrap() []error { return []error{e.err, e.kind} }
+
+// dialRefused is whether a failed dial reached a daemon that turned the socket down (an answer that is not an
+// upgrade, a hang-up, a reset) as against nothing answering at all.
+func dialRefused(err error, res *http.Response) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return op.Op != "dial"
+	}
+	return res != nil || errors.Is(err, websocket.ErrBadHandshake) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
 
 // FrameKind says what a Frame carries.
 type FrameKind string
@@ -210,6 +250,10 @@ type Session struct {
 	closed atomic.Bool
 	done   chan struct{}
 
+	exited   chan struct{} // closed once the agent's exit frame has been told to the callbacks
+	exitOnce sync.Once
+	exitCode int // the agent's exit code, set before exited is closed
+
 	stdout, mcpIn *lineQueue
 	stdin         *lineWriter
 	mcpOut        *lineWriter
@@ -244,6 +288,10 @@ func (s *Session) Write(line string) error {
 	return s.send(toDaemon{T: "write", ID: s.id, Line: line})
 }
 
+// WriteLine is Write under the name a reader of the call expects: one line, without its newline, to the agent's stdin.
+// Since 0.7.0.
+func (s *Session) WriteLine(line string) error { return s.Write(line) }
+
 // Stdout is the agent's stdout, each line ending in "\n"; it ends (EOF) when the agent exits or the socket closes. It
 // starts the first time it is called and keeps no line from before: call it right after the session opens (an ACP agent
 // speaks only when asked). Every call answers the same reader.
@@ -264,8 +312,26 @@ func (s *Session) OnFrame(cb func(Frame)) {
 	s.mu.Unlock()
 }
 
-// Done is closed when the socket ended: the agent is gone with it.
+// Done is closed when the socket ended: the agent is gone with it. It does not close when the agent exits and the
+// socket stays: use Wait, or the exit Frame, to know that the agent ended.
 func (s *Session) Done() <-chan struct{} { return s.done }
+
+// Wait blocks until the agent exits and answers its exit code, as exec.Cmd.Wait does for a process. When the socket
+// ends first (Close, the daemon going away) the code is -1 and the error wraps ErrClosed. Every call answers the same.
+// The OnFrame callbacks have seen the exit frame by the time Wait returns. Since 0.7.0.
+func (s *Session) Wait() (code int, err error) {
+	select {
+	case <-s.exited:
+		return s.exitCode, nil
+	case <-s.done:
+		select {
+		case <-s.exited: // the exit frame was the last thing on the socket
+			return s.exitCode, nil
+		default:
+		}
+		return -1, fmt.Errorf("goclient: the socket ended before the agent exited: %w", ErrClosed)
+	}
+}
 
 // Mcp is the app's own MCP server's end of the bridge to the agent. Like Stdout it starts the first time it is
 // called and keeps no line from before: call it before session/new lists McpServer(name).
@@ -338,6 +404,12 @@ func (s *Session) run() {
 			for _, cb := range cbs {
 				cb(f)
 			}
+			if f.Kind == FrameExit {
+				s.exitOnce.Do(func() {
+					s.exitCode = f.Code
+					close(s.exited)
+				})
+			}
 		}
 	}
 }
@@ -370,7 +442,14 @@ func newID() string {
 // OpenSession opens agent on the daemon over a socket of its own, for the app at origin (which the user must have
 // allowed with ConnectBrowser); the app is the ACP client of the lines. ctx covers opening only: the session lives
 // until Close, the agent's exit or the socket's end.
+//
+// The errors tell what to do: errors.Is(err, ErrNotAllowed) is a daemon that turned the socket down (ask with
+// ConnectBrowser), errors.Is(err, ErrNoDaemon) nothing answering on the port, a *OriginError an origin the gateway
+// would refuse, and a *SessionError the daemon's refusal of the agent.
 func OpenSession(ctx context.Context, d Daemon, origin, agent string, opts ...Option) (*Session, error) {
+	if err := ValidateOrigin(origin); err != nil {
+		return nil, err
+	}
 	o := newOptions(opts)
 	header := http.Header{}
 	header.Set("Origin", origin)
@@ -379,7 +458,10 @@ func OpenSession(ctx context.Context, d Daemon, origin, agent string, opts ...Op
 		_ = res.Body.Close()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("cannot open a session: the daemon refused the connection (is this origin allowed?): %w", err)
+		if dialRefused(err, res) {
+			return nil, &classified{fmt.Errorf("cannot open a session: the daemon refused the connection (is this origin allowed?): %w", err), ErrNotAllowed}
+		}
+		return nil, &classified{fmt.Errorf("cannot open a session: no agentd answers on port %d (is it running?): %w", d.Port, err), ErrNoDaemon}
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	s, err := handshake(conn, newID(), agent)
@@ -397,7 +479,7 @@ func OpenSession(ctx context.Context, d Daemon, origin, agent string, opts ...Op
 
 // handshake waits for `hello`, asks to open the agent, and waits for `opened` or the daemon's refusal.
 func handshake(conn *websocket.Conn, id, agent string) (*Session, error) {
-	s := &Session{id: id, conn: conn, version: "(unknown version)", done: make(chan struct{}), stdout: newLineQueue(), mcpIn: newLineQueue()}
+	s := &Session{id: id, conn: conn, version: "(unknown version)", done: make(chan struct{}), exited: make(chan struct{}), stdout: newLineQueue(), mcpIn: newLineQueue()}
 	s.stdin = &lineWriter{send: s.Write}
 	s.mcpOut = &lineWriter{send: func(line string) error { return s.send(toDaemon{T: "mcp", ID: id, Line: line}) }}
 	hello := false
@@ -417,7 +499,7 @@ func handshake(conn *websocket.Conn, id, agent string) (*Session, error) {
 			}
 		case m.ID != id:
 		case m.T == "error":
-			return nil, errors.New(m.Message)
+			return nil, &SessionError{Agent: agent, Reason: ReasonError, Message: m.Message}
 		case m.T == "opened":
 			s.Pid = -1
 			if m.Pid != nil {

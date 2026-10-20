@@ -112,7 +112,14 @@ func (h *Server) expire(key string, c *pairCode) {
 }
 
 // Machine is what a daemon says about itself when it pairs.
-type Machine struct{ Hostname, OS, Arch string }
+type Machine struct {
+	// Hostname is the machine's name; it becomes the daemon's name until the user renames it.
+	Hostname string
+	// OS is the operating system ("darwin", "linux").
+	OS string
+	// Arch is the processor architecture ("arm64", "amd64").
+	Arch string
+}
 
 // Pair exchanges a pairing code for a token. The token is shown once: only its hash is kept. Every pairing adds a
 // daemon, named after the machine's hostname; a machine that pairs twice appears twice until the user disconnects

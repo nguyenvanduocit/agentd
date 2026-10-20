@@ -24,6 +24,16 @@ describe("installCommand", () => {
     expect(installCommand({ agentd: AGENTD, app: "http://[::1]:3000", code: "ABCD-1234" })).toContain("--app http://[::1]:3000")
   })
 
+  test("without an app and a code it only installs and starts: a page in browser mode pairs with nothing", () => {
+    expect(installCommand({})).toBe("curl -fsSL https://github.com/nguyenvanduocit/agentd/releases/latest/download/install.sh | bash")
+    expect(installCommand({ agentd: AGENTD })).toBe("curl -fsSL https://agentd.example.com/releases/latest/download/install.sh | bash")
+  })
+
+  test("an app without its code, or a code without its app, is not a command: the installer refuses either", () => {
+    expect(installCommand({ app: "https://mind.example.com" })).toBeUndefined()
+    expect(installCommand({ code: "K7QX-29PD" })).toBeUndefined()
+  })
+
   test("is undefined when anything would not be safe to paste into a shell", () => {
     const ok = { agentd: AGENTD, app: "https://mind.example.com", code: "K7QX-29PD" }
     for (const bad of [
@@ -114,9 +124,13 @@ describe("recommendInstall", () => {
 describe("AGENTD_COMMANDS", () => {
   test("are what a user runs on the machine that has the daemon", () => {
     expect(AGENTD_COMMANDS).toEqual({
-      status: "agentd service status",
+      status: "~/.agentd/bin/agentd service status",
       logs: "~/.agentd/bin/agentd service logs",
-      start: "agentd service start",
+      start: "~/.agentd/bin/agentd service start",
     })
+  })
+
+  test("name the launcher the installer writes, because neither install puts agentd on PATH", () => {
+    for (const command of Object.values(AGENTD_COMMANDS)) expect(command.startsWith("~/.agentd/bin/agentd ")).toBe(true)
   })
 })

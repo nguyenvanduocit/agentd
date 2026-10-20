@@ -145,12 +145,12 @@ describe("connect", () => {
 
 describe("reasonText", () => {
   test("every reason has a sentence a person can act on", () => {
-    const all: Reason[] = ["denied", "timeout", "cooldown", "busy", "no-dialog", "pairing", "origin", "malformed", "unreachable", "peer", "host", "not-found", "error"]
+    const all: Reason[] = ["denied", "timeout", "cooldown", "locked", "busy", "no-dialog", "no-folder", "pairing", "not-saved", "origin", "malformed", "unreachable", "cancelled", "incompatible", "peer", "host", "not-found", "error"]
     for (const r of all) expect(reasonText(r).length).toBeGreaterThan(20)
   })
 
   test("a reason a newer daemon sends still gets a sentence that names it", () => {
-    expect(reasonText("something-new" as Reason)).toBe("The daemon on this computer refused the request (something-new).")
+    expect(reasonText("something-new")).toBe("agentd on this computer refused the request (something-new).")
   })
 })
 

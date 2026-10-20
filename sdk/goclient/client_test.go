@@ -293,7 +293,7 @@ func TestAConnectionThatWaitsForTheDialogEndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	got := goclient.ConnectBrowser(ctx, found, app, goclient.WithHTTPClient(clientWith(hang)))
-	if got.Granted || got.Reason != goclient.ReasonUnreachable {
+	if got.Granted || got.Reason != goclient.ReasonCancelled { // the daemon did answer nothing yet: its dialog may still be open
 		t.Fatalf("result = %+v", got)
 	}
 }
@@ -320,14 +320,12 @@ func TestDisconnectSendsDeleteAndSaysWhetherTheDaemonConfirmed(t *testing.T) {
 }
 
 func TestEveryReasonHasASentenceAPersonCanActOn(t *testing.T) {
-	for _, r := range []goclient.Reason{goclient.ReasonDenied, goclient.ReasonTimeout, goclient.ReasonCooldown, goclient.ReasonBusy, goclient.ReasonNoDialog, goclient.ReasonPairing, goclient.ReasonOrigin, goclient.ReasonMalformed, goclient.ReasonUnreachable} {
+	for _, r := range knownReasons { // every constant: the words themselves are tested against the golden file
 		if len(goclient.ReasonText(r)) <= 20 {
 			t.Errorf("%s: %q", r, goclient.ReasonText(r))
 		}
 	}
-	for _, r := range []goclient.Reason{"peer", "host", "error"} { // refusals the gateway sends that are no Reason constant
-		if text := goclient.ReasonText(r); !strings.Contains(text, string(r)) {
-			t.Errorf("%s: %q", r, text)
-		}
+	if text := goclient.ReasonText("from-a-newer-daemon"); !strings.Contains(text, "from-a-newer-daemon") {
+		t.Errorf("a reason this package does not know: %q", text)
 	}
 }

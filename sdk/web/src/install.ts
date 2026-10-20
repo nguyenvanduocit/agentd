@@ -59,25 +59,36 @@ export function recommendInstall(platform: Platform = browserPlatform()): Instal
 export interface InstallOptions {
   /** The releases page the installer comes from (default: agentd's on GitHub; a fork or a development server names its own). */
   agentd?: string
-  /** The origin of the app the daemon will pair with: the one that minted `code`. */
-  app: string
+  /**
+   * The origin of the app the daemon will pair with: the one that minted `code`. Give it with `code`, or give neither
+   * (a page in browser mode pairs with no app: the command then only installs and starts agentd; since 0.7.0).
+   */
+  app?: string
   /** The one-time pairing code the app's server gave. */
-  code: string
+  code?: string
 }
 
 /**
- * The one command that installs agentd on the user's machine, pairs it with the app and starts it. Undefined while the
- * origins or the code are not safe to put in a command.
+ * The one command that installs agentd on the user's machine, pairs it with the app and starts it; without `app` and
+ * `code`, the one that installs and starts it. Undefined while the origins or the code are not safe to put in a command,
+ * and while only one of `app` and `code` is given (the installer refuses that).
  */
-export function installCommand(o: InstallOptions): string | undefined {
+export function installCommand(o: InstallOptions = {}): string | undefined {
   const releases = o.agentd ?? AGENTD_RELEASES
-  if (!SAFE_RELEASES.test(releases) || releases.split("/").includes("..") || !SAFE_ORIGIN.test(o.app) || !SAFE_CODE.test(o.code)) return undefined
-  return `curl -fsSL ${releases}/latest/download/install.sh | bash -s -- --app ${o.app} --code ${o.code}`
+  if (!SAFE_RELEASES.test(releases) || releases.split("/").includes("..")) return undefined
+  const base = `curl -fsSL ${releases}/latest/download/install.sh | bash`
+  if (o.app === undefined && o.code === undefined) return base
+  if (o.app === undefined || o.code === undefined || !SAFE_ORIGIN.test(o.app) || !SAFE_CODE.test(o.code)) return undefined
+  return `${base} -s -- --app ${o.app} --code ${o.code}`
 }
 
-/** What a user runs on the machine that has the daemon: the service's state, where its log is read, how to start it again. */
+/**
+ * What a user runs on the machine that has the daemon, when it was installed from a terminal: the service's state, where
+ * its log is read, how to start it again. They name the launcher by its path, because the installer does not put agentd
+ * on PATH. The desktop app (agentd.app) has no command line: it shows these in its own window.
+ */
 export const AGENTD_COMMANDS = {
-  status: "agentd service status",
+  status: "~/.agentd/bin/agentd service status",
   logs: "~/.agentd/bin/agentd service logs",
-  start: "agentd service start",
+  start: "~/.agentd/bin/agentd service start",
 } as const

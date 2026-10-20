@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,26 +25,12 @@ func real(t *testing.T) []byte {
 	return b
 }
 
-func TestTheReleaseKeyIsTheOneDaemonsCheck(t *testing.T) {
-	b, err := os.ReadFile("../../daemon/release.pub")
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, _ := pem.Decode(b)
-	if block == nil {
-		t.Fatal("daemon/release.pub is not PEM")
-	}
-	if got := base64.StdEncoding.EncodeToString(block.Bytes); got != releaseKey {
-		t.Fatalf("releaseKey = %s, daemon/release.pub = %s: they must be the same key", releaseKey, got)
-	}
-}
-
 func TestAPublishedReleaseVerifies(t *testing.T) {
 	var o Offer
 	if err := json.Unmarshal(real(t), &o); err != nil {
 		t.Fatal(err)
 	}
-	if err := check(o, key(t)); err != nil {
+	if err := check(o, []ed25519.PublicKey{key(t)}); err != nil {
 		t.Fatalf("the v0.2.0 offer: %v", err)
 	}
 }
@@ -61,7 +45,7 @@ func TestAnOfferTheReleaseKeyDidNotSignIsRefused(t *testing.T) {
 	}
 	sha := strings.Repeat("a", 64)
 	good := Offer{Version: "1.2.3", URL: "/download/v1.2.3/agentd-1.2.3.tgz", SHA256: sha, Signature: sign("1.2.3", sha)}
-	if err := check(good, pub); err != nil {
+	if err := check(good, []ed25519.PublicKey{pub}); err != nil {
 		t.Fatalf("a signed offer: %v", err)
 	}
 	for name, o := range map[string]Offer{
@@ -78,7 +62,7 @@ func TestAnOfferTheReleaseKeyDidNotSignIsRefused(t *testing.T) {
 		if name == "signed by another" {
 			k = key(t)
 		}
-		if err := check(o, k); err == nil {
+		if err := check(o, []ed25519.PublicKey{k}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -192,16 +176,12 @@ func TestOlderOrdersPlainReleasesOnly(t *testing.T) {
 	}
 }
 
-// key is the release key as check takes it.
+// key is the release key (keys/release.pub) as check takes it.
 func key(t *testing.T) ed25519.PublicKey {
 	t.Helper()
-	der, err := base64.StdEncoding.DecodeString(releaseKey)
-	if err != nil {
-		t.Fatal(err)
+	keys, err := releaseKeys()
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("releaseKeys = %d keys, %v", len(keys), err)
 	}
-	k, err := x509.ParsePKIXPublicKey(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k.(ed25519.PublicKey) //nolint:forcetypeassert // the key is the test's own fixture
+	return keys[0]
 }

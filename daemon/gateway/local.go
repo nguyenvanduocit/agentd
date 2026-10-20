@@ -152,6 +152,11 @@ func (c *Cooldown) Blocked(origin string) bool {
 	return c.until[origin].After(c.now())
 }
 
+// Wait is how long origin still waits; 0 when it does not.
+func (c *Cooldown) Wait(origin string) time.Duration {
+	return max(c.until[origin].Sub(c.now()), 0)
+}
+
 // Lockout: refusals count across every origin, because a page that asks from a new subdomain after each Deny would
 // otherwise open a dialog each time. `limit` refusals within `window` lock every dialog until the oldest of them is out
 // of the window. It is not safe for concurrent use; its caller serializes.
@@ -175,6 +180,16 @@ func (l *Lockout) Strike() {
 // Locked is whether every dialog is locked now.
 func (l *Lockout) Locked() bool {
 	return len(l.recent()) >= l.limit
+}
+
+// Wait is how long until the dialogs unlock; 0 when they are not locked. The lock lifts when fewer than `limit` refusals
+// are inside the window, so it is the refusal `limit` places from the newest that must leave it.
+func (l *Lockout) Wait() time.Duration {
+	recent := l.recent()
+	if len(recent) < l.limit {
+		return 0
+	}
+	return max(recent[len(recent)-l.limit].Add(l.window).Sub(l.now()), 0)
 }
 
 // Reset is an Allow: the user is paying attention, what came before no longer counts.

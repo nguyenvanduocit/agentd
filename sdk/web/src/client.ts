@@ -20,34 +20,62 @@ export interface Granted {
 }
 
 /**
- * What `detect` found. `protocol` is the version of the page protocol the daemon states; a daemon that predates the
+ * A daemon `detect` found. `protocol` is the version of the page protocol the daemon states; a daemon that predates the
  * statement sends none, and the key is then absent.
  */
-export type Detected = { found: false } | { found: true; port: number; version: string; granted: Granted; agents: AgentInfo[] | undefined; protocol?: number }
+export type FoundDaemon = { found: true; port: number; version: string; granted: Granted; agents: AgentInfo[] | undefined; protocol?: number }
 
-export type Reason =
+/**
+ * No daemon answered like one. When a program on one of the ports did refuse this page with agentd's own refusal (the
+ * gateway answers `origin` to a request without an Origin header, `host`, `peer`), `refused` says which: that daemon is
+ * there, and this page is not what it talks to (since 0.7.0).
+ */
+export type AbsentDaemon = { found: false; refused?: Reason; message?: string }
+
+export type Detected = AbsentDaemon | FoundDaemon
+
+/**
+ * Why the daemon refused a request, or the SDK could not ask it. The words for each are `reasonText(reason)`.
+ * `locked`, `no-folder` and `not-saved` are the daemon's more specific `code` for `cooldown`, `no-dialog` and
+ * `pairing`; `unreachable`, `cancelled` and `incompatible` come from the SDK itself.
+ */
+export type KnownReason =
   | "denied"
   | "timeout"
   | "cooldown"
+  | "locked"
   | "busy"
   | "no-dialog"
+  | "no-folder"
   | "pairing"
+  | "not-saved"
   | "origin"
-  | "malformed"
-  | "unreachable"
-  | "peer"
   | "host"
+  | "malformed"
   | "not-found"
   | "error"
+  | "peer"
+  | "unreachable"
+  | "cancelled"
+  | "incompatible"
 
-export type ConnectResult = { granted: true } | { granted: false; reason: Reason; message?: string }
+/** A `KnownReason`, or the reason of a newer daemon, as it was sent: `reasonText` has words for it too. */
+export type Reason = KnownReason | (string & {})
+
+/** `retryAfter` is the seconds after which asking again can work, when the daemon said (`cooldown`, `locked`). */
+export type ConnectResult = { granted: true } | { granted: false; reason: Reason; message?: string; retryAfter?: number }
 
 export interface Daemon {
   port: number
 }
 
+/** The part of `fetch` this SDK calls. The global `fetch`, a wrapper that adds a header, or a fake all fit. */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
+
 export interface FetchOptions {
-  fetch?: typeof fetch
+  fetch?: FetchLike
+  /** Stops the request; the answer is then the reason `cancelled` (the dialog on the user's computer may still be open). */
+  signal?: AbortSignal
 }
 
 export interface DetectOptions extends FetchOptions {
@@ -75,36 +103,81 @@ function agentInfo(a: WireAgent): AgentInfo {
   return { name: a.name, title: a.title || a.name, ready: a.ready === true, reason: a.reason ?? "" }
 }
 
+/** What the gateway says when it refuses a request: `reason` is the legacy value, `code` the more specific one (since daemon 0.7). */
+interface RefusalBody {
+  granted?: unknown
+  reason?: unknown
+  code?: unknown
+  message?: unknown
+  retryAfter?: unknown
+}
+
+/** The reason of a refusal: its `code` when this SDK knows it, else its `reason` (which every SDK knows), else "malformed". */
+function reasonOf(body: RefusalBody): Reason {
+  if (typeof body.code === "string" && Object.hasOwn(TEXT, body.code)) return body.code
+  return typeof body.reason === "string" ? body.reason : "malformed"
+}
+
+const messageOf = (body: RefusalBody): { message?: string } => (typeof body.message === "string" ? { message: body.message } : {})
+
+/** The seconds after which asking again can work: the body's `retryAfter`, else the `Retry-After` header. */
+function retryAfterOf(body: RefusalBody, res: Response): { retryAfter?: number } {
+  if (typeof body.retryAfter === "number" && Number.isFinite(body.retryAfter) && body.retryAfter >= 0) return { retryAfter: body.retryAfter }
+  const header = Number(res.headers.get("retry-after"))
+  return Number.isFinite(header) && header > 0 ? { retryAfter: header } : {}
+}
+
+/** An answer that is agentd's own refusal: `{granted: false, reason}`. Anything else a program on the port says is not. */
+function isRefusal(body: RefusalBody): boolean {
+  return body.granted === false && typeof body.reason === "string"
+}
+
 async function probe(port: number, o: DetectOptions): Promise<Detected> {
   const ms = o.timeoutMs ?? DETECT_TIMEOUT_MS
-  try {
-    const res = await within(ms, (o.fetch ?? fetch)(statusUrl(port), { signal: AbortSignal.timeout(ms) }))
-    if (!res.ok) return { found: false }
+  const ask = async (): Promise<Detected> => {
+    const res = await (o.fetch ?? fetch)(statusUrl(port), { signal: AbortSignal.timeout(ms) })
+    if (!res.ok) {
+      const refusal = (await res.json().catch(() => ({}))) as RefusalBody
+      return isRefusal(refusal) ? { found: false, refused: reasonOf(refusal), ...messageOf(refusal) } : { found: false }
+    }
     const body = (await res.json()) as { name?: unknown; version?: unknown; granted?: Granted; agents?: WireAgent[]; protocol?: unknown }
     if (body.name !== "agentd" || typeof body.version !== "string") return { found: false }
     const agents = body.agents?.map(agentInfo)
     const protocol = typeof body.protocol === "number" ? { protocol: body.protocol } : {}
     return { found: true, port, version: body.version, granted: body.granted ?? { server: false, browser: false }, agents, ...protocol }
+  }
+  try {
+    return await within(ms, ask())
   } catch {
     // Nothing listens there, the browser blocked the call, or the user said no to its prompt: all look the same.
     return { found: false }
   }
 }
 
-/** Looks for a daemon on this machine. A browser that blocks the call looks the same as no daemon. */
+/**
+ * Looks for a daemon on this machine. A browser that blocks the call looks the same as no daemon; a daemon that answers
+ * with its own refusal (a page without an Origin header, an address it does not accept) is reported in `refused`.
+ */
 export async function detect(o: DetectOptions = {}): Promise<Detected> {
   const results = await Promise.all((o.ports ?? DEFAULT_PORTS).map((p) => probe(p, o)))
-  return results.find((r) => r.found) ?? { found: false }
+  return results.find((r): r is FoundDaemon => r.found) ?? results.find((r) => !r.found && r.refused !== undefined) ?? { found: false }
+}
+
+/** What a request that threw means: the caller stopped it (`cancelled`), or nothing answered (`unreachable`). */
+function failure(e: unknown, o: FetchOptions): { reason: Reason; message: string } {
+  const message = e instanceof Error ? e.message : String(e)
+  const stopped = o.signal?.aborted === true || (e instanceof Error && e.name === "AbortError")
+  return { reason: stopped ? "cancelled" : "unreachable", message }
 }
 
 async function connectRequest(d: Daemon, init: RequestInit, path: string, o: FetchOptions): Promise<ConnectResult> {
   try {
-    const res = await (o.fetch ?? fetch)(`${base(d)}${path}`, init)
-    const body = (await res.json().catch(() => ({}))) as { granted?: boolean; reason?: Reason; message?: string }
+    const res = await (o.fetch ?? fetch)(`${base(d)}${path}`, o.signal === undefined ? init : { ...init, signal: o.signal })
+    const body = (await res.json().catch(() => ({}))) as RefusalBody
     if (res.ok && body.granted === true) return { granted: true }
-    return { granted: false, reason: body.reason ?? "malformed", ...(body.message === undefined ? {} : { message: body.message }) }
+    return { granted: false, reason: reasonOf(body), ...messageOf(body), ...retryAfterOf(body, res) }
   } catch (e) {
-    return { granted: false, reason: "unreachable", message: e instanceof Error ? e.message : String(e) }
+    return { granted: false, ...failure(e, o) }
   }
 }
 
@@ -133,29 +206,35 @@ export type DisconnectResult = { disconnected: true } | { disconnected: false; r
  */
 export async function disconnect(d: Daemon, o: FetchOptions = {}): Promise<DisconnectResult> {
   try {
-    const res = await (o.fetch ?? fetch)(`${base(d)}/v1/connect`, { method: "DELETE" })
+    const res = await (o.fetch ?? fetch)(`${base(d)}/v1/connect`, o.signal === undefined ? { method: "DELETE" } : { method: "DELETE", signal: o.signal })
     if (res.ok) return { disconnected: true }
-    const body = (await res.json().catch(() => ({}))) as { reason?: Reason; message?: string }
-    return { disconnected: false, reason: body.reason ?? "malformed", ...(body.message === undefined ? {} : { message: body.message }) }
+    const body = (await res.json().catch(() => ({}))) as RefusalBody
+    return { disconnected: false, reason: reasonOf(body), ...messageOf(body) }
   } catch (e) {
-    return { disconnected: false, reason: "unreachable", message: e instanceof Error ? e.message : String(e) }
+    return { disconnected: false, ...failure(e, o) }
   }
 }
 
-const TEXT: Record<Reason, string> = {
+// The sentences are those of contract/testdata/page-reasons.json, which the gateway and the Go client test against too.
+const TEXT: Record<KnownReason, string> = {
   denied: "You declined. The app stays disconnected from this computer.",
   timeout: "The dialog on this computer was not answered in time. Try again and answer it.",
   cooldown: "You declined a moment ago. Wait half a minute before asking again.",
+  locked: "Several connection requests were declined in a row, so agentd is not asking for a while. Try again in a few minutes.",
   busy: "Another connection request is waiting for an answer on this computer. Answer it first.",
   "no-dialog": "This computer cannot show the confirmation dialog (no graphical session), so nothing was connected.",
+  "no-folder": "No folder was chosen, so nothing was connected. Choose at least one folder to allow.",
   pairing: "The app refused the pairing code. Start the connection again to get a fresh one.",
-  origin: "The daemon does not accept requests from this page's address.",
-  malformed: "The daemon did not understand the request. Update the daemon and try again.",
-  unreachable: "The daemon on this computer did not answer. Check that it is running.",
-  peer: "The daemon on this computer runs as another user than this browser, so it refuses the request.",
-  host: "The daemon did not accept the address this page used to reach it. Open the page from its usual address.",
-  "not-found": "The daemon does not know this request. Update the daemon and try again.",
-  error: "The daemon could not carry out the request. Look at its log, then try again.",
+  "not-saved": "agentd could not save the connection on this computer. Look at its log, then try again.",
+  origin: "agentd does not accept requests from this address. Use the address the app is served from, without a path.",
+  host: "agentd did not accept the address used to reach it. Open the page from its usual address.",
+  malformed: "agentd did not understand the request. Update agentd and try again.",
+  "not-found": "This agentd does not know the request. Update agentd and try again.",
+  error: "agentd could not carry out the request. Look at its log, then try again.",
+  peer: "agentd runs as another user than this program, so it refuses the request.",
+  unreachable: "agentd on this computer did not answer. Check that it is running.",
+  cancelled: "You stopped waiting. The dialog may still be open: answering Allow there still connects.",
+  incompatible: "This agentd cannot work with this page. Update agentd, or come back after the app updates.",
 }
 
 /**
@@ -163,7 +242,7 @@ const TEXT: Record<Reason, string> = {
  * gets a sentence that names it, never undefined.
  */
 export function reasonText(reason: Reason): string {
-  return (TEXT as Record<string, string | undefined>)[reason] ?? `The daemon on this computer refused the request (${reason}).`
+  return Object.hasOwn(TEXT, reason) ? TEXT[reason as KnownReason] : `agentd on this computer refused the request (${reason}).`
 }
 
 export interface Frame {
@@ -172,12 +251,27 @@ export interface Frame {
   code: number
 }
 
-/** A stdio MCP server as ACP's session/new takes it in `mcpServers`. */
+/** The `_meta` that ACP allows on its objects. It is here so that these types fit ACP's: see `McpServer`. */
+export type AcpMeta = { [key: string]: unknown } | null
+
+/** One environment variable of a stdio MCP server, as ACP types it. */
+export interface McpEnvVariable {
+  name: string
+  value: string
+  _meta?: AcpMeta
+}
+
+/**
+ * A stdio MCP server as ACP's session/new takes it in `mcpServers`. The optional `_meta` of the server and of each
+ * variable is ACP's: without them the official SDK's `request("session/new", …)` does not accept a server of this type
+ * as a typed argument and answers `unknown` (since 0.7.0).
+ */
 export interface McpServer {
   name: string
   command: string
   args: string[]
-  env: { name: string; value: string }[]
+  env: McpEnvVariable[]
+  _meta?: AcpMeta
 }
 
 /** The page's end of the bridge between the agent and the page's own MCP server, as an MCP transport takes it. */
@@ -233,6 +327,21 @@ interface Incoming {
 
 export interface SessionOptions {
   WebSocket?: typeof WebSocket
+}
+
+/**
+ * Why `openSession` could not open an agent: `reason` is `unreachable` when the socket could not be opened or was closed
+ * (a page that has no grant is hung up on, and the browser says no more than that), and `error` when the daemon refused
+ * the open itself, with its own words in `message` (an agent it does not know, one that is not ready). Since 0.7.0.
+ */
+export class SessionError extends Error {
+  readonly reason: Reason
+
+  constructor(message: string, reason: Reason) {
+    super(message)
+    this.name = "SessionError"
+    this.reason = reason
+  }
 }
 
 /** Splits text into the complete lines it ends and the start of the next one. */
@@ -303,9 +412,9 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
     mcpIn.end()
   }
   return new Promise((resolve, reject) => {
-    ws.onerror = () => reject(new Error("cannot open a session: the daemon refused the connection (is this page allowed?)"))
+    ws.onerror = () => reject(new SessionError("cannot open a session: the daemon refused the connection (is this page allowed?)", "unreachable"))
     ws.onclose = () => {
-      reject(new Error("the daemon closed the session"))
+      reject(new SessionError("the daemon closed the session", "unreachable"))
       end()
       for (const c of closers) c()
     }
@@ -315,7 +424,7 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
         version = m.version ?? version
         send({ t: "open", id, agent })
       } else if (m.id !== id) return
-      else if (m.t === "error") reject(new Error(m.message))
+      else if (m.t === "error") reject(new SessionError(m.message ?? "the daemon refused to open the agent", "error"))
       else if (m.t === "mcp") mcpIn.line(m.line ?? "")
       else if (m.t === "frame") {
         const frame: Frame = { kind: m.kind ?? "out", data: m.data ?? "", code: m.code ?? 0 }
