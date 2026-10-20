@@ -41,6 +41,26 @@ func TestSettingsShowsWhatTheDaemonServes(t *testing.T) {
 	}
 }
 
+func TestSettingsShowsWhyADroppedAppIsStillListed(t *testing.T) {
+	reason := "The app stopped this connection."
+	tt, _, sent := open(State{
+		Version: "1",
+		AppList: []AppRow{{Server: "https://b.example", Status: "stopped", Reason: reason}},
+		Notice:  "Could not disconnect https://b.example: disk full.",
+	})
+	for _, want := range []string{reason, "Could not disconnect https://b.example: disk full.", "https://b.example"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in %q", want, tt.Texts())
+		}
+	}
+	if err := tt.Click("Disconnect https://b.example"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*sent, []string{"disconnect:https://b.example"}) {
+		t.Fatalf("sent %v", *sent)
+	}
+}
+
 func TestSettingsSaysWhatAgentdIsAndWhatToDoWhenNothingIsConnected(t *testing.T) {
 	tt, _, _ := open(State{Version: "1"})
 	if !tt.HasText("agentd lets apps you approve run AI coding agents on this computer. Go back to the app that sent you here and choose Connect.") || tt.HasText("Agents") {

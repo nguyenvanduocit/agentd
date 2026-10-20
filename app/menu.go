@@ -26,6 +26,18 @@ type State struct {
 	// Acp is how another program reaches the standard ACP endpoint; absent while there is none. It holds the token:
 	// it is copied for the user and never drawn, logged or reported back.
 	Acp *AcpAccess `json:"acp,omitempty"`
+	// AppList is every saved app with its status. Nil means a daemon that does not send it: the menu draws Apps.
+	// An empty list is a daemon that has no saved app.
+	AppList []AppRow `json:"appList,omitempty"`
+	// Notice is one sentence about a choice that failed; absent when there is none.
+	Notice string `json:"notice,omitempty"`
+}
+
+// AppRow is one saved app. Reason is a plain sentence when it is not connected.
+type AppRow struct {
+	Server string `json:"server"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // AcpAccess is the address of the standard ACP endpoint (Base, ending in a slash) and its token, with the agents that
@@ -180,8 +192,43 @@ func Summary(s State) string {
 	return strings.Join(parts, ", ")
 }
 
-// BuildMenu is the whole menu for a state: the title and status, what is connected (each with its own Disconnect),
-// and the controls. In agentd.app, Quit ends agentd, and an engine that does not run offers Start.
+// listedApp is one app the menu or the window draws, with the sentence under its name when it is not connected.
+type listedApp struct {
+	server string
+	note   string
+}
+
+// listedApps is every saved app when the daemon sends AppList, and the linked apps when it does not.
+func listedApps(s State) []listedApp {
+	if s.AppList != nil {
+		out := make([]listedApp, len(s.AppList))
+		for i, row := range s.AppList {
+			note := row.Reason
+			if note == "" && row.Status == "connecting" {
+				note = "Connecting…"
+			}
+			out[i] = listedApp{server: row.Server, note: note}
+		}
+		return out
+	}
+	out := make([]listedApp, len(s.Apps))
+	for i, app := range s.Apps {
+		out[i] = listedApp{server: app}
+	}
+	return out
+}
+
+func appEntry(app listedApp) Entry {
+	disconnect := Entry{ID: "disconnect:" + app.server, Label: "Disconnect"}
+	if app.note == "" {
+		return Entry{Label: app.server, Children: []Entry{disconnect}}
+	}
+	return Entry{Label: app.server, Children: []Entry{{Label: app.note, Disabled: true}, disconnect}}
+}
+
+// BuildMenu is the whole menu for a state: the title and status, what is saved (each app, with why it is not
+// connected when it is not, and each web page, each with its own Disconnect), and the controls. In agentd.app, Quit
+// ends agentd, and an engine that does not run offers Start.
 func BuildMenu(s State, h Host) []Entry {
 	if h.App && !h.Running {
 		return []Entry{
@@ -202,14 +249,18 @@ func BuildMenu(s State, h Host) []Entry {
 	if note := GatewayNote(s); note != "" {
 		menu = append(menu, Entry{Label: note, Disabled: true})
 	}
+	if s.Notice != "" {
+		menu = append(menu, Entry{Label: s.Notice, Disabled: true})
+	}
 	menu = append(menu, Entry{Separator: true})
-	for _, app := range s.Apps {
-		menu = append(menu, Entry{Label: app, Children: []Entry{{ID: "disconnect:" + app, Label: "Disconnect"}}})
+	apps := listedApps(s)
+	for _, app := range apps {
+		menu = append(menu, appEntry(app))
 	}
 	for _, page := range s.Pages {
 		menu = append(menu, Entry{Label: page + " (web page)", Children: []Entry{{ID: "disconnect:" + page, Label: "Disconnect"}}})
 	}
-	if len(s.Apps)+len(s.Pages) > 0 {
+	if len(apps)+len(s.Pages) > 0 {
 		menu = append(menu, Entry{Separator: true})
 	}
 	if ready := AcpReady(s); len(ready) > 0 {

@@ -62,14 +62,18 @@ func (d *daemon) startTray(open func(onAction func(ui.Action)) ui.Link) func() {
 		RegistryFile: d.file,
 		Hello:        d.trayHello,
 		Linked:       d.hub.Has,
-		Sessions:     sessions,
-		GatewayPort:  port,
-		LogFile:      logFile,
-		Stop:         d.stop,
-		Restart:      func() { d.restartRequested("the tray menu", sessions()) },
-		Disconnect:   d.disconnectOrigin,
-		Updates:      func() bool { return d.settings.Get().Updates },
-		Updatable:    d.updates.updatable,
+		AppStatus: func(server string) ui.AppState {
+			s := d.hub.Status(server)
+			return ui.AppStateOf(s.Linked, s.Connected, string(s.Dropped), s.Detail)
+		},
+		Sessions:    sessions,
+		GatewayPort: port,
+		LogFile:     logFile,
+		Stop:        d.stop,
+		Restart:     func() { d.restartRequested("the tray menu", sessions()) },
+		Disconnect:  d.disconnectOrigin,
+		Updates:     func() bool { return d.settings.Get().Updates },
+		Updatable:   d.updates.updatable,
 		SetUpdates: func(on bool) error {
 			if _, err := d.settings.Change(home.SettingsPatch{Updates: &on}); err != nil {
 				return err

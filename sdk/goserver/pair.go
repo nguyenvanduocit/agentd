@@ -1,6 +1,7 @@
 package goserver
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -36,13 +37,6 @@ var (
 	errRateLimited = errors.New("too many wrong codes: wait a minute")
 )
 
-type pairCode struct {
-	text    string // as shown to the user: XXXXX-XXXXX
-	userID  string
-	expires time.Time
-	timer   *time.Timer
-}
-
 func newCode() string {
 	b := make([]byte, codeLength)
 	if _, err := rand.Read(b); err != nil {
@@ -59,56 +53,74 @@ func normalizeCode(s string) string {
 	return strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(s))
 }
 
-// liveCodeLocked is the user's pairing code if it has not expired.
-func (h *Server) liveCodeLocked(userID string) *pairCode {
-	for _, c := range h.codes {
-		if c.userID == userID && h.opts.Now().Before(c.expires) {
-			return c
-		}
+// codeDraws bounds how many codes StartPairing draws when the store says one is already taken.
+const codeDraws = 8
+
+// displayCode is the canonical code as the user reads it, XXXXX-XXXXX.
+func displayCode(canonical string) string {
+	if len(canonical) == codeLength {
+		return canonical[:5] + "-" + canonical[5:]
 	}
-	return nil
+	return canonical
 }
 
-// dropCodeLocked forgets the user's pairing code, if any.
-func (h *Server) dropCodeLocked(userID string) {
-	for key, c := range h.codes {
-		if c.userID == userID {
-			c.timer.Stop()
-			delete(h.codes, key)
-		}
+// armCodeTimer tells this instance's tabs when a code it issued runs out. The store is the record of the code; the
+// timer only publishes. A code redeemed on another instance stays on these tabs until this fires or Refresh is called.
+func (h *Server) armCodeTimer(userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if t := h.codeTimers[userID]; t != nil {
+		t.Stop()
 	}
+	h.codeTimers[userID] = time.AfterFunc(codeTTL, func() { h.publish(userID) })
+}
+
+func (h *Server) disarmCodeTimer(userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if t := h.codeTimers[userID]; t != nil {
+		t.Stop()
+		delete(h.codeTimers, userID)
+	}
+}
+
+func pairingDown(err error) error {
+	return fmt.Errorf("%w: %w", ErrPairingUnavailable, err)
 }
 
 // StartPairing gives the user a new single-use code, replacing the one they had: a user has at most one.
 func (h *Server) StartPairing(userID string) (List, error) {
-	c := &pairCode{text: newCode(), userID: userID, expires: h.opts.Now().Add(codeTTL)}
-	key := normalizeCode(c.text)
-	c.timer = time.AfterFunc(codeTTL, func() { h.expire(key, c) })
-	h.mu.Lock()
-	h.dropCodeLocked(userID) // dropped and replaced in one step: a user never has two codes
-	h.codes[key] = c
-	h.mu.Unlock()
+	now := h.opts.Now()
+	expires := now.Add(codeTTL)
+	var issued bool
+	for range codeDraws {
+		text := newCode()
+		err := h.opts.Pairing.Issue(context.Background(), userID, normalizeCode(text), now, expires)
+		if errors.Is(err, ErrCodeTaken) {
+			continue
+		}
+		if err != nil {
+			return List{}, pairingDown(err)
+		}
+		issued = true
+		break
+	}
+	if !issued {
+		return List{}, ErrPairingUnavailable
+	}
+	h.armCodeTimer(userID)
 	h.publish(userID)
 	return h.List(userID)
 }
 
 // CancelPairing forgets the user's pending code; without one it changes nothing.
 func (h *Server) CancelPairing(userID string) (List, error) {
-	h.mu.Lock()
-	h.dropCodeLocked(userID)
-	h.mu.Unlock()
+	if err := h.opts.Pairing.Cancel(context.Background(), userID); err != nil {
+		return List{}, pairingDown(err)
+	}
+	h.disarmCodeTimer(userID)
 	h.publish(userID)
 	return h.List(userID)
-}
-
-// expire forgets c once it ran out and tells the user's tabs.
-func (h *Server) expire(key string, c *pairCode) {
-	h.mu.Lock()
-	if h.codes[key] == c {
-		delete(h.codes, key)
-	}
-	h.mu.Unlock()
-	h.publish(c.userID)
 }
 
 // Machine is what a daemon says about itself when it pairs.
@@ -141,48 +153,34 @@ func (h *Server) Pair(code string, m Machine, remoteIP string) (string, error) {
 }
 
 // takeCode uses up a code and returns the user it belongs to. A wrong code counts against the
-// per-IP failure limit so one attacker cannot deny service to all users.
+// per-IP failure limit so one attacker cannot deny service to all users. The count is read before the code is used,
+// so a store that cannot be asked pairs nobody.
 func (h *Server) takeCode(key, remoteIP string) (string, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	now := h.opts.Now()
-	h.sweepFailures(now)
-	recent := trimFailures(h.failures[remoteIP], now)
-	if len(recent) >= maxFailures {
+	ctx := context.Background()
+	n, err := h.opts.Pairing.Failures(ctx, remoteIP, now, failureWindow)
+	if err != nil {
+		return "", pairingDown(err)
+	}
+	if n >= maxFailures {
 		return "", errRateLimited
 	}
-	c := h.codes[key]
-	if c == nil || !now.Before(c.expires) {
-		h.failures[remoteIP] = append(recent, now)
+	userID, err := h.opts.Pairing.Redeem(ctx, key, now)
+	if errors.Is(err, ErrCodeNotFound) {
+		count, ferr := h.opts.Pairing.Fail(ctx, remoteIP, now, failureWindow)
+		if ferr != nil {
+			log.Printf("daemon: pair: wrong pairing code from %s (the failure was not recorded: %v)", remoteIP, ferr)
+			return "", errBadCode
+		}
 		// The address is the limit's key: behind a proxy, this line shows whether the client's header is what counts.
-		log.Printf("daemon: pair: wrong pairing code from %s (%d in the last minute)", remoteIP, len(h.failures[remoteIP]))
+		log.Printf("daemon: pair: wrong pairing code from %s (%d in the last minute)", remoteIP, count)
 		return "", errBadCode
 	}
-	c.timer.Stop()
-	delete(h.codes, key)
-	return c.userID, nil
-}
-
-// sweepFailures drops the clients whose failures have all aged out, at most once per failureWindow, so the map holds
-// only the clients that failed within the last two windows however many addresses have come and gone.
-func (h *Server) sweepFailures(now time.Time) {
-	if now.Sub(h.failuresSwept) < failureWindow {
-		return
+	if err != nil {
+		return "", pairingDown(err)
 	}
-	h.failuresSwept = now
-	for ip, failures := range h.failures {
-		if len(trimFailures(failures, now)) == 0 {
-			delete(h.failures, ip)
-		}
-	}
-}
-
-func trimFailures(failures []time.Time, now time.Time) []time.Time {
-	keep := 0
-	for keep < len(failures) && now.Sub(failures[keep]) >= failureWindow {
-		keep++
-	}
-	return failures[keep:]
+	h.disarmCodeTimer(userID)
+	return userID, nil
 }
 
 type pairRequest struct {
@@ -244,6 +242,9 @@ func (h *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusTooManyRequests)
 	case errors.Is(err, errBadCode):
 		http.Error(w, err.Error(), http.StatusForbidden)
+	case errors.Is(err, ErrPairingUnavailable):
+		w.Header().Set("Retry-After", "10")
+		http.Error(w, "pairing is unavailable right now: try again", http.StatusServiceUnavailable)
 	case err != nil:
 		log.Printf("daemon: pair: %v", err)
 		http.Error(w, "pairing failed", http.StatusInternalServerError)

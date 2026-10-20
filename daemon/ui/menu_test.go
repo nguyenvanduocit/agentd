@@ -89,7 +89,7 @@ func TestMenuShowsWhatTheDaemonServes(t *testing.T) {
 	if !f.link.started.Load() {
 		t.Fatal("the link was not started")
 	}
-	want := State{T: "state", Version: "0.0.0-test", Apps: []string{app}, Pages: []string{page}, Sessions: 2, Managed: true, Agents: []pagetools.AgentInfo{claude}, Updates: true, Updatable: true}
+	want := State{T: "state", Version: "0.0.0-test", Apps: []string{app}, AppList: []AppRow{{Server: app, Status: AppConnected}, {Server: "https://b.example", Status: AppConnecting}}, Pages: []string{page}, Sessions: 2, Managed: true, Agents: []pagetools.AgentInfo{claude}, Updates: true, Updatable: true}
 	if got := f.link.last(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}

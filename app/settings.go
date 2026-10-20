@@ -26,6 +26,9 @@ func (w *Settings) View(c *ui.Context) {
 			if note := GatewayNote(w.State); note != "" {
 				ui.Text(c, note)
 			}
+			if w.State.Notice != "" {
+				ui.Text(c, w.State.Notice)
+			}
 		})
 		w.connected(c)
 		w.agents(c)
@@ -89,20 +92,26 @@ func heading(c *ui.Context, s string) {
 // firstRunText is what the window says while nothing is connected: what agentd is, and the one thing to do.
 const firstRunText = "agentd lets apps you approve run AI coding agents on this computer. Go back to the app that sent you here and choose Connect."
 
-// connected lists each app and web page with its own Disconnect, which ends its sessions and forgets it. With none, it
-// says what agentd is and where to go next, unless web pages cannot reach agentd: the line under the summary says
-// that, and "choose Connect" would send the person to a page that cannot connect.
+// connected lists each saved app and web page with its own Disconnect, which ends its sessions and forgets it. An app
+// the daemon dropped stays, with the sentence that says why. With none, it says what agentd is and where to go next,
+// unless web pages cannot reach agentd: the line under the summary says that, and "choose Connect" would send the
+// person to a page that cannot connect.
 func (w *Settings) connected(c *ui.Context) {
 	ui.Column(c).Gap(8).Children(func() {
-		if len(w.State.Apps)+len(w.State.Pages) == 0 {
+		apps := listedApps(w.State)
+		if len(apps)+len(w.State.Pages) == 0 {
 			if GatewayNote(w.State) == "" {
 				ui.Text(c, firstRunText)
 			}
 			return
 		}
 		heading(c, "Connected")
-		for _, app := range w.State.Apps {
-			w.origin(c, app, "app")
+		for _, app := range apps {
+			kind := app.note
+			if kind == "" {
+				kind = "app"
+			}
+			w.origin(c, app.server, kind)
 		}
 		for _, page := range w.State.Pages {
 			w.origin(c, page, "web page")

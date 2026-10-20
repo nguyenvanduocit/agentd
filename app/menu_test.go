@@ -106,6 +106,40 @@ func TestBuildMenuWithoutApps(t *testing.T) {
 	}
 }
 
+func TestBuildMenuShowsWhyADroppedAppIsStillListed(t *testing.T) {
+	reason := "The app no longer accepts this computer: its access was taken back."
+	notice := "Could not disconnect https://b.example: disk full."
+	m := BuildMenu(State{
+		Version: "1", Managed: true, Log: true,
+		Apps: []string{"https://a.example"},
+		AppList: []AppRow{
+			{Server: "https://a.example", Status: "connected"},
+			{Server: "https://b.example", Status: "refused", Reason: reason},
+		},
+		Notice: notice,
+	}, Host{})
+	var sawNotice, sawReason, sawDisconnect bool
+	for _, e := range m {
+		if e.Label == notice && e.Disabled {
+			sawNotice = true
+		}
+		if e.Label != "https://b.example" {
+			continue
+		}
+		for _, c := range e.Children {
+			if c.Label == reason && c.Disabled {
+				sawReason = true
+			}
+			if c.ID == "disconnect:https://b.example" && c.Label == "Disconnect" {
+				sawDisconnect = true
+			}
+		}
+	}
+	if !sawNotice || !sawReason || !sawDisconnect {
+		t.Fatalf("notice %v, reason %v, disconnect %v in %+v", sawNotice, sawReason, sawDisconnect, m)
+	}
+}
+
 func TestBuildMenuListsEachAppAndPageWithItsOwnDisconnect(t *testing.T) {
 	m := BuildMenu(State{Version: "1", Managed: true, Apps: []string{"https://a"}, Pages: []string{"https://p"}}, Host{})
 	var ids []string

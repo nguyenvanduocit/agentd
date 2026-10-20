@@ -3,7 +3,10 @@ package ui
 import (
 	"os/exec"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
@@ -12,6 +15,9 @@ import (
 )
 
 const refreshEvery = 2 * time.Second
+
+// NoticeFor is how long a sentence about a choice that failed stays on the state, long enough to read.
+const NoticeFor = 30 * time.Second
 
 // File is the tray program to start: AGENTD_TRAY (a path; "off" for none) or the one packaged beside the engine, in
 // dir; "" for none. exists is the file probe.
@@ -46,6 +52,9 @@ type MenuDeps struct {
 	Hello        func() Hello
 	// Linked: whether the daemon is linked to the app at server now.
 	Linked func(server string) bool
+	// AppStatus is how a saved app stands, including why the daemon dropped it. Nil: a linked app is connected and any
+	// other saved app is on its way to being linked.
+	AppStatus func(server string) AppState
 	// Sessions is the agents running for apps and for web pages.
 	Sessions func() int
 	// GatewayPort is the port of the local gateway, 0 when none was free.
@@ -104,8 +113,59 @@ func (d MenuDeps) openLog() {
 	}
 }
 
-// act does what the user chose; refresh sends the state again at once, for a choice that changes it.
-func (d MenuDeps) act(action Action, refresh func()) {
+// notice is one sentence about a choice that failed, shown until it is read or a later choice works.
+type notice struct {
+	mu    sync.Mutex
+	text  string
+	until time.Time
+}
+
+func (n *notice) set(text string, now time.Time) {
+	n.mu.Lock()
+	n.text, n.until = text, now.Add(NoticeFor)
+	n.mu.Unlock()
+}
+
+func (n *notice) clear() {
+	n.mu.Lock()
+	n.text = ""
+	n.mu.Unlock()
+}
+
+func (n *notice) current(now time.Time) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.text == "" || !now.Before(n.until) {
+		return ""
+	}
+	return n.text
+}
+
+// oneLineOf is the first line of an error, trimmed, without a trailing stop, and short enough for one menu line.
+// An empty error says that no reason was given.
+func oneLineOf(err error) string {
+	s := ""
+	if err != nil {
+		s = err.Error()
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, ".")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "no reason was given"
+	}
+	if utf8.RuneCountInString(s) > 159 {
+		return string([]rune(s)[:159]) + "…"
+	}
+	return s
+}
+
+// act does what the user chose; refresh sends the state again at once, for a choice that changes it. A choice that
+// fails leaves one sentence for NoticeFor; one that works clears it.
+func (d MenuDeps) act(action Action, refresh func(), note *notice, now func() time.Time) {
 	switch action.Kind {
 	case ActionLogs:
 		d.openLog()
@@ -120,6 +180,9 @@ func (d MenuDeps) act(action Action, refresh func()) {
 		go func() {
 			if err := d.Disconnect(action.Origin); err != nil {
 				d.Log.Warn("tray: cannot disconnect " + action.Origin + ": " + err.Error())
+				note.set("Could not disconnect "+action.Origin+": "+oneLineOf(err)+".", now())
+			} else {
+				note.clear()
 			}
 			refresh()
 		}()
@@ -128,6 +191,9 @@ func (d MenuDeps) act(action Action, refresh func()) {
 		go func() {
 			if err := d.SetUpdates(action.On); err != nil {
 				d.Log.Warn("tray: cannot save the updates setting: " + err.Error())
+				note.set("Could not save the updates setting: "+oneLineOf(err)+".", now())
+			} else {
+				note.clear()
 			}
 			refresh()
 		}()
@@ -138,21 +204,32 @@ func (d MenuDeps) act(action Action, refresh func()) {
 // daemon serves. It returns what ends it.
 func StartMenu(d MenuDeps) (end func()) {
 	var link Link
+	var note notice
+	now := time.Now
+	if d.Now != nil {
+		now = d.Now
+	}
+	status := d.AppStatus
+	if status == nil {
+		status = func(server string) AppState {
+			if d.Linked(server) {
+				return AppState{Status: AppConnected}
+			}
+			return AppState{Status: AppConnecting}
+		}
+	}
 	push := func() {
 		r, err := registry.Load(d.RegistryFile)
 		if err != nil {
 			return
 		}
 		hello := d.Hello()
-		var apps, pages []string
+		var servers, apps, pages []string
 		for _, a := range r.Apps {
+			servers = append(servers, a.Server)
 			if d.Linked(a.Server) {
 				apps = append(apps, a.Server)
 			}
-		}
-		now := time.Now
-		if d.Now != nil {
-			now = d.Now
 		}
 		for _, b := range r.Browsers {
 			if b.Live(now()) {
@@ -168,6 +245,8 @@ func StartMenu(d MenuDeps) (end func()) {
 		link.Update(NewState(Facts{
 			Version:     hello.Version,
 			Apps:        apps,
+			AppList:     AppRows(servers, status),
+			Notice:      note.current(now()),
 			Browsers:    pages,
 			Sessions:    d.Sessions(),
 			Managed:     hello.Managed,
@@ -179,7 +258,7 @@ func StartMenu(d MenuDeps) (end func()) {
 			Acp:         acp,
 		}))
 	}
-	link = d.Open(func(action Action) { d.act(action, push) })
+	link = d.Open(func(action Action) { d.act(action, push, &note, now) })
 	link.Start()
 	push()
 	every := d.Refresh

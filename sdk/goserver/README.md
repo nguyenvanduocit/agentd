@@ -39,6 +39,7 @@ func serve(tokens goserver.Tokens) error {
 - **`Tokens`** is where paired daemons are kept. `goserver.NewMemoryTokens()` keeps them in memory, which is right for tests and examples and loses every pairing when the process ends. A real app implements `goserver.Tokens` over its database: seven methods (`ByHash`, `ByID`, `List`, `Add`, `Rename`, `Delete`, `Seen`), and the godoc of each says what it owes. The one rule that matters: a method that takes a `userID` answers only that user's daemons, and a daemon of another user is `goserver.ErrNotFound`.
 - **An app that already runs a Socket.IO server** does not call `Attach`, which registers `/socket.io/` itself. It makes its server with `goserver.SocketOptions()`, calls `h.Mount(io, mux)`, and routes `/socket.io/` to `io` itself. `Mount` alone does not serve `/socket.io/`: a daemon that cannot reach it retries on the user's machine ("bad handshake") while your app shows it as offline.
 - **Behind a proxy**, set `Options.ClientIPHeader` to the header in which it puts the client's address (`Fly-Client-IP`): wrong pairing codes are counted per address.
+- **Several instances of the app** share pairing codes through `Options.Pairing` (`goserver.PairingStore`). Nil keeps them in this process, which is right for one instance. `pairingtest.Run` checks a store. After another instance changes a code, call `Refresh` so this instance's browser tabs read the list again. Since 0.8.0.
 
 ## Pair a computer
 

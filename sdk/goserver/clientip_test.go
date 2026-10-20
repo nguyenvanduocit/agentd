@@ -46,14 +46,15 @@ func TestAgedOutClientsLeaveTheFailureMap(t *testing.T) {
 			t.Fatalf("takeCode = %v, want a bad code", err)
 		}
 	}
-	if len(h.failures) != 5 {
-		t.Fatalf("failures holds %d clients, want 5", len(h.failures))
+	store := h.opts.Pairing.(*memoryPairingStore)
+	if store.failureClients() != 5 {
+		t.Fatalf("failures holds %d clients, want 5", store.failureClients())
 	}
 	now = now.Add(2 * failureWindow)
 	if _, err := h.takeCode("NOPE0-NOPE0", "198.51.100.1"); !errors.Is(err, errBadCode) {
 		t.Fatalf("takeCode = %v, want a bad code", err)
 	}
-	if len(h.failures) != 1 {
-		t.Fatalf("failures holds %d clients after the window, want only the new one", len(h.failures))
+	if store.failureClients() != 1 {
+		t.Fatalf("failures holds %d clients after the window, want only the new one", store.failureClients())
 	}
 }

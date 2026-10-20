@@ -21,9 +21,12 @@ import (
 
 // State is the state message the tray reads (app/menu.go State). The field order is the order on the wire.
 type State struct {
-	T        string   `json:"t"`
-	Version  string   `json:"version"`
+	T       string `json:"t"`
+	Version string `json:"version"`
+	// Apps are the apps the daemon is linked to now. AppList is every saved app with its status, the linked ones and
+	// the ones the daemon dropped: a tray program that knows AppList draws that, one that does not draws Apps.
 	Apps     []string `json:"apps"`
+	AppList  []AppRow `json:"appList"`
 	Pages    []string `json:"pages"`
 	Sessions int      `json:"sessions"`
 	Managed  bool     `json:"managed"`
@@ -37,6 +40,85 @@ type State struct {
 	Updatable bool `json:"updatable"`
 	// Acp is how a program on this computer reaches the standard ACP endpoint; absent while there is no endpoint.
 	Acp *AcpState `json:"acp,omitempty"`
+	// Notice is one plain sentence about a choice of the user that failed ("Could not disconnect ..."); absent when
+	// there is none. It stays for NoticeFor, and any choice that works clears it.
+	Notice string `json:"notice,omitempty"`
+}
+
+// The statuses of a saved app.
+const (
+	// AppConnected: the link is up.
+	AppConnected = "connected"
+	// AppConnecting: linked and not connected yet, or reconnecting; also a saved app not linked yet.
+	AppConnecting = "connecting"
+	// AppStopped: the app's server sent Stop, so it stays disconnected until the next start.
+	AppStopped = "stopped"
+	// AppRefused: the app's server refused the token: it took the access back.
+	AppRefused = "refused"
+	// AppIncompatible: the app speaks a protocol this agentd does not.
+	AppIncompatible = "incompatible"
+)
+
+// AppRow is one saved app and how it stands. Reason is a plain sentence for the statuses that are not working.
+type AppRow struct {
+	Server string `json:"server"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// AppState is the status of one app and, when it is not working, why.
+type AppState struct {
+	Status string
+	Reason string
+}
+
+// The sentences of the apps that are not linked. They say "app" and "this computer": the person never needs to know
+// there is a daemon.
+const (
+	stoppedReason      = "The app stopped this connection."
+	refusedReason      = "The app no longer accepts this computer: its access was taken back."
+	incompatibleReason = "The app and agentd on this computer speak different versions: one of them needs an update."
+)
+
+// AppStateOf is the status of an app from what the hub knows of it: whether it is linked and connected, and, for an
+// app it let go, why (hub.Drop: "stopped", "refused" or "incompatible") with the hub's sentence for the last. A reason
+// it does not know is no reason: the app is on its way to being linked.
+func AppStateOf(linked, connected bool, dropped, detail string) AppState {
+	switch {
+	case linked && connected:
+		return AppState{Status: AppConnected}
+	case linked:
+		return AppState{Status: AppConnecting}
+	}
+	switch dropped {
+	case "stopped":
+		return AppState{Status: AppStopped, Reason: stoppedReason}
+	case "refused":
+		return AppState{Status: AppRefused, Reason: refusedReason}
+	case "incompatible":
+		if detail == "" {
+			detail = incompatibleReason
+		}
+		return AppState{Status: AppIncompatible, Reason: detail}
+	}
+	return AppState{Status: AppConnecting}
+}
+
+// AppRows are the saved apps, in the order they are saved, each with its status. status says it for one app; nil, or an
+// answer without a status, means the app is on its way to being linked.
+func AppRows(servers []string, status func(server string) AppState) []AppRow {
+	rows := make([]AppRow, 0, len(servers))
+	for _, server := range servers {
+		st := AppState{}
+		if status != nil {
+			st = status(server)
+		}
+		if st.Status == "" {
+			st.Status = AppConnecting
+		}
+		rows = append(rows, AppRow{Server: server, Status: st.Status, Reason: st.Reason})
+	}
+	return rows
 }
 
 // AcpState is the address of the standard ACP endpoint and the token that goes with it: the app copies
@@ -50,8 +132,11 @@ type AcpState struct {
 
 // Facts are what a State is made of.
 type Facts struct {
-	Version  string
-	Apps     []string
+	Version string
+	Apps    []string
+	// AppList is every saved app with its status (AppRows); Notice the sentence about a choice that failed.
+	AppList  []AppRow
+	Notice   string
 	Browsers []string
 	Sessions int
 	Managed  bool
@@ -72,6 +157,7 @@ func NewState(f Facts) State {
 		T:          "state",
 		Version:    f.Version,
 		Apps:       nonNil(f.Apps),
+		AppList:    nonNil(f.AppList),
 		Pages:      nonNil(f.Browsers),
 		Sessions:   f.Sessions,
 		Managed:    f.Managed,
@@ -81,6 +167,7 @@ func NewState(f Facts) State {
 		Updates:    f.Updates,
 		Updatable:  f.Updatable,
 		Acp:        f.Acp,
+		Notice:     f.Notice,
 	}
 }
 

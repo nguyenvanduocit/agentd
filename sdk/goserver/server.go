@@ -69,6 +69,11 @@ type Options struct {
 	// ClientIPHeader names the request header in which a trusted proxy puts the client's address; empty counts the
 	// connection's own address. Set it only when every request passes through that proxy, which overwrites the header.
 	ClientIPHeader string
+	// Pairing is where the pairing codes and the count of wrong codes are kept. Nil keeps them in this process's memory
+	// (NewMemoryPairingStore), which is right for one instance of an app. An app that runs several instances passes one
+	// store they all share (Redis, SQL, ...), so that a code issued by one is redeemed at another and wrong codes count
+	// together; the package pairingtest checks a store against the PairingStore contract. Since 0.8.0.
+	Pairing PairingStore
 	// MaxUnreadBytes bounds the agent output a session holds that the app has not read; a session past it ends. Zero is
 	// 64 MiB, which still holds one message of MaxMessageBytes.
 	MaxUnreadBytes int
@@ -92,8 +97,8 @@ type peer struct {
 	ending string
 }
 
-// Server holds the daemons that are connected, the sessions running on them, the pairing codes and the browser tabs
-// watching a user's daemons.
+// Server holds the daemons that are connected, the sessions running on them, and the browser tabs watching a user's
+// daemons. Pairing codes live in Options.Pairing.
 type Server struct {
 	opts Options
 
@@ -103,11 +108,9 @@ type Server struct {
 	bridges  map[string]map[*bridge]struct{} // by daemon id: the MCP bridges its token opened
 	seq      uint64                          // the last peer.seq handed out
 	sessions map[string]*session             // by session id
-	codes    map[string]*pairCode
-	failures map[string][]time.Time // recent wrong pairing codes per client address (pair.go clientIP)
-	// failuresSwept is when failures last dropped its aged-out clients.
-	failuresSwept time.Time
-	watchers      map[string]map[*watcher]struct{}
+	// codeTimers publishes when a code this instance issued runs out. The pairing store holds the code.
+	codeTimers map[string]*time.Timer
+	watchers   map[string]map[*watcher]struct{}
 
 	agentsChanged func(userID, daemonID string) // see OnAgentsChanged; guarded by mu
 
@@ -124,12 +127,15 @@ func New(opts Options) *Server {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Pairing == nil {
+		opts.Pairing = NewMemoryPairingStore()
+	}
 	if opts.MaxUnreadBytes <= 0 {
 		opts.MaxUnreadBytes = defaultMaxUnreadBytes
 	}
 	return &Server{
 		opts: opts, peers: map[string]*peer{}, refused: map[string]refused{}, bridges: map[string]map[*bridge]struct{}{}, sessions: map[string]*session{},
-		codes: map[string]*pairCode{}, failures: map[string][]time.Time{}, watchers: map[string]map[*watcher]struct{}{}, sent: map[string]List{},
+		codeTimers: map[string]*time.Timer{}, watchers: map[string]map[*watcher]struct{}{}, sent: map[string]List{},
 	}
 }
 
@@ -593,14 +599,13 @@ func (h *Server) latestVersion() string {
 }
 
 // List is the user's daemons as the browser shows them, with the pending pairing code, if any. The only error is the
-// Tokens store failing.
+// Tokens store failing. A pairing store that cannot say which code is pending leaves the code off the list.
 func (h *Server) List(userID string) (List, error) {
 	recs, err := h.opts.Tokens.List(userID)
 	if err != nil {
 		return List{}, fmt.Errorf("list daemons: %w", err)
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	sessions := map[*peer]int{} // the agent sessions each daemon runs
 	for _, s := range h.sessions {
 		if s.opened.Load() {
@@ -621,8 +626,10 @@ func (h *Server) List(userID string) (List, error) {
 		}
 		list.Daemons = append(list.Daemons, info)
 	}
-	if code := h.liveCodeLocked(userID); code != nil {
-		list.Pairing = Pairing{Code: code.text, ExpiresAt: code.expires.UnixMilli()}
+	h.mu.Unlock()
+	code, expires, err := h.opts.Pairing.Pending(context.Background(), userID, h.opts.Now())
+	if err == nil && code != "" {
+		list.Pairing = Pairing{Code: displayCode(code), ExpiresAt: expires.UnixMilli()}
 	}
 	return list, nil
 }

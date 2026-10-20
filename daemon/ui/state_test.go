@@ -18,7 +18,7 @@ var baseFacts = Facts{Version: "1", GatewayPort: 47615, Updates: true, Updatable
 
 func TestNewStateIsTheStateMessageTheTrayReads(t *testing.T) {
 	got := NewState(Facts{Version: "1.2.3", Apps: []string{"https://a"}, Browsers: []string{"http://localhost:5173"}, Sessions: 2, Managed: true, GatewayPort: 47615, LogFile: "/h/logs/daemon.log", Agents: []pagetools.AgentInfo{claude}, Updates: false, Updatable: true})
-	want := State{T: "state", Version: "1.2.3", Apps: []string{"https://a"}, Pages: []string{"http://localhost:5173"}, Sessions: 2, Managed: true, GatewayOff: false, Log: true, Agents: []pagetools.AgentInfo{claude}, Updates: false, Updatable: true}
+	want := State{T: "state", Version: "1.2.3", Apps: []string{"https://a"}, AppList: []AppRow{}, Pages: []string{"http://localhost:5173"}, Sessions: 2, Managed: true, GatewayOff: false, Log: true, Agents: []pagetools.AgentInfo{claude}, Updates: false, Updatable: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -40,7 +40,7 @@ func TestNewStateSaysWhenThereIsNoLogFileToOpen(t *testing.T) {
 
 func TestStateLineHasTheFieldsTheTrayReadsInOrder(t *testing.T) {
 	// Lists are [] and never null: app/menu.go ranges over them, and an app may not.
-	want := `{"t":"state","version":"1","apps":[],"pages":[],"sessions":0,"managed":false,"gatewayOff":false,"log":false,"agents":[],"updates":true,"updatable":true}`
+	want := `{"t":"state","version":"1","apps":[],"appList":[],"pages":[],"sessions":0,"managed":false,"gatewayOff":false,"log":false,"agents":[],"updates":true,"updatable":true}`
 	if got := NewState(baseFacts).line(); got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
