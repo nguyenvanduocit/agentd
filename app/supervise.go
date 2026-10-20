@@ -17,7 +17,19 @@ const (
 	quickRun   = 10 * time.Second
 	maxCrashes = 5
 	maxDelay   = 30 * time.Second
+	// On the first launch the app has just ended the launchd job of a terminal install (TakeOverCLIService): launchctl
+	// returns before that engine has exited, so the new engine can find the lock of the home held for a moment and leave
+	// at once with 0, when nothing else will be running a second later. The app starts it again after quickStopWait, up
+	// to maxQuickStops times in a row, before it tells the person that another agentd is running.
+	maxQuickStops = 2
+	quickStopWait = 1500 * time.Millisecond
 )
+
+// leftAtOnce is whether an engine that exited with code after ranFor was not stopped by anyone: it found another agentd
+// on the home and left, as it is told to, with 0.
+func leftAtOnce(code int, ranFor time.Duration) bool {
+	return code == exitStopped && ranFor < quickStop
+}
 
 // Next is what the app does after its engine exits.
 type Next struct {
@@ -35,7 +47,7 @@ func AfterExit(code int, ranFor time.Duration, crashes int) (Next, int) {
 	case exitRestart:
 		return Next{Restart: true}, 0
 	case exitStopped:
-		if ranFor < quickStop {
+		if leftAtOnce(code, ranFor) {
 			return Next{Note: "agentd did not start here: another agentd is already running on this computer. Open its menu-bar icon, or quit it first."}, 0
 		}
 		return Next{Note: "agentd was stopped"}, 0

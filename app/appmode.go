@@ -29,8 +29,12 @@ type desktop struct {
 	quitting bool
 	// launch runs the engine: StartEngine, or a stand-in in a test.
 	launch func(f EngineFiles, home, path string, onLine func(line []byte)) (*Engine, error)
-	// restart is the wait before the start that follows a crash; there is at most one.
+	// restart is the wait before the start that follows a crash or a quick stop; there is at most one.
 	restart *time.Timer
+	// after runs f on the main thread once delay has passed: afterOnMain, or a stand-in in a test.
+	after func(delay time.Duration, f func()) *time.Timer
+	// quickStops counts the starts in a row that ended at once with 0 and were tried again (supervise.go).
+	quickStops int
 }
 
 // startApp makes this process agentd.app, run once; false when one runs already (it gets to show its window).
@@ -159,15 +163,38 @@ func (d *desktop) ended(e *Engine) {
 		mygo.App.Quit()
 		return
 	}
-	next, crashes := AfterExit(e.ExitCode(), e.RanFor(), d.crashes)
+	code, ranFor := e.ExitCode(), e.RanFor()
+	next, crashes := AfterExit(code, ranFor, d.crashes)
 	d.crashes = crashes
+	switch {
+	case !leftAtOnce(code, ranFor):
+		d.quickStops = 0 // the stops that count are the ones in a row
+	case d.quickStops < maxQuickStops:
+		// It may be the engine of a terminal install that was told to end a moment ago and still holds the lock: try
+		// again before telling the person another agentd runs (supervise.go, quickStopWait).
+		d.quickStops++
+		next = Next{Restart: true, Delay: quickStopWait}
+	}
 	if !next.Restart {
 		d.stopped(next.Note)
 		return
 	}
 	d.stopped("agentd is starting again")
+	d.wait(next.Delay)
+}
+
+// wait starts the engine again after delay, on the main thread; it replaces the wait that was left.
+func (d *desktop) wait(delay time.Duration) {
 	d.cancelRestart()
-	d.restart = time.AfterFunc(next.Delay, func() { mygo.RunOnMain(d.start) })
+	after := d.after
+	if after == nil {
+		after = afterOnMain
+	}
+	d.restart = after(delay, d.start)
+}
+
+func afterOnMain(delay time.Duration, f func()) *time.Timer {
+	return time.AfterFunc(delay, func() { mygo.RunOnMain(f) })
 }
 
 // cancelRestart ends the wait before a start that follows a crash, if there is one.
@@ -181,6 +208,8 @@ func (d *desktop) cancelRestart() {
 // beforeQuit holds the quit until the engine has ended its agents: it closes its channel, and ended quits again.
 func (d *desktop) beforeQuit(q *mygo.QuitEvent) {
 	if d.engine == nil {
+		// Nothing to wait for, so the quit goes on: the wait for the next start ends with it, and no engine starts behind it.
+		d.cancelRestart()
 		return
 	}
 	q.PreventDefault()
@@ -196,7 +225,7 @@ func (d *desktop) handle(id string) bool {
 	switch id {
 	case StartID:
 		if d.engine == nil && d.files.Engine != "" {
-			d.crashes = 0
+			d.crashes, d.quickStops = 0, 0
 			d.start()
 		}
 	case QuitID:

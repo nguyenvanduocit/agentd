@@ -182,8 +182,10 @@ when a chat session opens, so no timeout of a chat can cut an install.
   a daemon's first socket when it connects again), and every agent would run twice. The code is 0 and not a new one
   because the exit codes are the protocol with the service manager (above): 0 stays stopped, so launchd, systemd and the
   launcher's loop leave it alone, while any other code would be started again at once and counted as a crash, and two quick
-  crashes make the launcher roll a good version back. agentd.app shows "agentd did not start here: another agentd is
-  already running on this computer" for an engine that stops with 0 within three seconds of its start. The lock is an
+  crashes make the launcher roll a good version back. agentd.app starts an engine that stops with 0 within three
+  seconds of its start again after 1.5 s, twice at most in a row (the terminal install it has just taken over may still
+  be ending and holding the lock; Start by hand gives the tries back), and only then shows "agentd did not start here:
+  another agentd is already running on this computer". The lock is an
   operating-system lock (`flock`), not a pid file: the system releases it when the process ends in any way, a `kill -9`
   included, so there is never a stale lock to clean up, and it is not inherited by the agents and the tray program the
   daemon starts (close-on-exec), so one that outlives a killed daemon does not keep the next one out. The file also
