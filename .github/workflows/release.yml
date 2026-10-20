@@ -78,6 +78,22 @@ jobs:
           DAEMON_SIGNING_KEY="$RUNNER_TEMP/daemon-signing.key" APP_UPDATE_KEY="$RUNNER_TEMP/mygo-update.key" \
             scripts/release.sh "${args[@]}"
 
+      # Run the workflow without publishing first: this is what shows the apps it built are signed, notarized and stapled.
+      - name: Check the apps are signed, notarized and stapled
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          for arch in arm64 amd64; do
+            dir="app/build/darwin-$arch"
+            codesign --verify --deep --strict "$dir/agentd.app"
+            xcrun stapler validate "$dir/agentd.app"
+            xcrun stapler validate "$dir/agentd $VERSION $arch.dmg"
+            verdict="$(spctl -a -vv -t exec "$dir/agentd.app" 2>&1)"
+            echo "$verdict"
+            grep -q 'source=Notarized Developer ID' <<<"$verdict"
+            grep -q 'origin=Developer ID Application: Duoc Nguyen (53NJTFJB2R)' <<<"$verdict"
+          done
+
       - name: Remove the signing material
         if: always()
         run: |
