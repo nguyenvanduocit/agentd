@@ -83,7 +83,11 @@ installs from a terminal, and the SDK's download links. `app/mygo.json` carries 
 commit. The window has "Check for Updates…"; the updater checks once a day on its own. The app's update carries the engine
 (`engine/agentd`), so the engine never updates itself.
 
-Signing is ad hoc until a Developer ID is chosen (a decision of the user): Gatekeeper then asks once (Open Anyway).
+`mygo build` signs the app, with the engine and Node inside it, with the Developer ID Application certificate of
+team 53NJTFJB2R (`macos.signingIdentity` in `app/mygo.json`) and the hardened runtime, submits the disk image to Apple's
+notary service with the `notary` keychain profile (`macos.notarize`), and staples the ticket, so Gatekeeper opens the app
+without asking. The profile holds an App Store Connect API key (`xcrun notarytool store-credentials notary --key …`);
+`.env` keeps the key's ID, issuer and contents for another machine.
 
 ### 6. Web apps
 

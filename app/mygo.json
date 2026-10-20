@@ -13,6 +13,8 @@
     "helperEntitlements": {
       "node/bin/node": "node.entitlements.plist"
     },
+    "signingIdentity": "Developer ID Application: Duoc Nguyen (53NJTFJB2R)",
+    "notarize": { "keychainProfile": "notary" },
     "dmgTitle": "agentd"
   },
   "updates": {
