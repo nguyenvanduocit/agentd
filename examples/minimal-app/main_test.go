@@ -53,3 +53,19 @@ func TestConfigTellsThePageWhereToLookForAgentd(t *testing.T) {
 		}
 	}
 }
+
+// The page's Remove button relies on this: an unknown computer is 404 with a sentence in {"error": ...}, which is how
+// it tells "already gone" from a failure.
+func TestRemovingAnUnknownComputerIs404WithASentence(t *testing.T) {
+	mux := http.NewServeMux()
+	(&app{server: goserver.New(goserver.Options{Tokens: goserver.NewMemoryTokens()})}).routes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("DELETE", "/api/daemons/no-such-computer", nil))
+	var body struct{ Error string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("%q: %v", rec.Body.String(), err)
+	}
+	if rec.Code != http.StatusNotFound || body.Error == "" {
+		t.Errorf("DELETE of an unknown computer = %d %s, want 404 with an error sentence", rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+}

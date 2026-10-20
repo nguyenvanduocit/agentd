@@ -31,23 +31,23 @@ type Record struct {
 
 // ErrNotFound is what a Tokens store returns for a daemon it does not have. A Server never returns it: its methods
 // answer ErrUnknownDaemon.
-var ErrNotFound = errors.New("daemon not found")
+var ErrNotFound = errors.New("computer not found")
 
 // ErrNameTaken is what a Tokens store returns when the user already has another daemon with that name. Rename passes
 // it on (wrapped; test with errors.Is).
-var ErrNameTaken = errors.New("another daemon of yours already has that name")
+var ErrNameTaken = errors.New("another computer of yours already has that name")
 
 // ErrNoDaemon is what OpenLatest returns when the user has no paired daemon: their agents run on their own computer,
 // so none can start. The text names no place in an app; an app that wants to point at its pairing view says so itself
 // (errors.Is).
-var ErrNoDaemon = errors.New("No daemon is connected: pair one first") //nolint:staticcheck // ST1005: the text is shown to the user as written
+var ErrNoDaemon = errors.New("No computer is connected: pair one first") //nolint:staticcheck // ST1005: the text is shown to the user as written
 
 // ErrNoOnlineDaemon is what OpenLatest returns when the user has paired daemons and none of them is online. Since 0.7.0.
-var ErrNoOnlineDaemon = errors.New("None of your daemons is online: start one, or pair another") //nolint:staticcheck // ST1005: the text is shown to the user as written
+var ErrNoOnlineDaemon = errors.New("None of your computers is online: start one, or pair another") //nolint:staticcheck // ST1005: the text is shown to the user as written
 
 // ErrUnknownDaemon means the user has no paired daemon with the id a call named: it never existed, it was
 // disconnected, or it belongs to someone else. Every method of a Server answers it for such an id.
-var ErrUnknownDaemon = errors.New("The daemon chosen is no longer paired: pick another") //nolint:staticcheck // ST1005: the text is shown to the user as written
+var ErrUnknownDaemon = errors.New("The computer chosen is no longer paired: pick another") //nolint:staticcheck // ST1005: the text is shown to the user as written
 
 // ErrNoSuchDaemon is ErrUnknownDaemon.
 //

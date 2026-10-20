@@ -124,7 +124,7 @@ Every error is a value to test with `errors.Is` or `errors.As`, and the godoc of
 
 | Error | When | What to tell the user |
 |---|---|---|
-| `ErrUnknownDaemon` | the id is not one of the user's computers (never existed, disconnected, someone else's). `ErrNoSuchDaemon` is the same value | the text: "The daemon chosen is no longer paired: pick another" |
+| `ErrUnknownDaemon` | the id is not one of the user's computers (never existed, disconnected, someone else's). `ErrNoSuchDaemon` is the same value | the text: "The computer chosen is no longer paired: pick another" |
 | `OfflineError` (`Name`) | paired but not connected. `Restart` and `Stop` answer it too (text "&lt;name&gt; is offline") | start agentd on that computer, or pick another |
 | `IncompatibleError` (`Name`, `Reason`) | connected, but agentd and the app speak protocols that do not meet | `Reason` names the side to update |
 | `*AgentNotReadyError` (`Daemon`, `Agent`, `Title`, `Reason`, `Offered`) | the computer does not have the agent, or says it is not ready (since 0.7.0) | `Reason`: "Node is not installed"... |
