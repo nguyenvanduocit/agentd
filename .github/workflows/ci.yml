@@ -57,6 +57,17 @@ jobs:
       - run: ../../scripts/check-release.sh sdk
       - run: ../../scripts/build-sdk.sh "$RUNNER_TEMP/dist"
 
+  workflows:
+    name: Workflows and shell scripts (actionlint, shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: shellcheck scripts/*.sh
+
   app:
     name: App vet, test, cross-build
     runs-on: ubuntu-latest

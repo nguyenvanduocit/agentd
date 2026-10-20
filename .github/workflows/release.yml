@@ -1,0 +1,84 @@
+name: Release
+
+# Builds, signs, notarizes and publishes a release of agentd with scripts/release.sh, on a macOS runner. Run it by hand
+# from main, in the commit that carries the release: app/mygo.json at that version and the pins moved (scripts/pins.sh).
+#
+#   gh workflow run release.yml -f version=0.7.0                  # builds and checks everything, publishes nothing
+#   gh workflow run release.yml -f version=0.7.0 -f publish=true  # the same, then the GitHub release v0.7.0
+#
+# The signing material is the secrets of the `release` environment, which only main can use: the Developer ID certificate
+# and the notary API key (scripts/signing-keychain.sh makes the keychain `mygo build` reads from them), and the two
+# private keys release.sh signs the updates with (DAEMON_SIGNING_KEY, APP_UPDATE_KEY). Nothing else runs with them: the
+# CI workflow has no access to the environment, and pull requests never start this one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release, x.y.z
+        required: true
+        type: string
+      publish:
+        description: Publish the GitHub release (a tag is final)
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release ${{ inputs.version }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    environment: release
+    timeout-minutes: 60
+    permissions:
+      contents: write # gh release create
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # check-release.sh compares the SDK's sources with the previous release tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Make the signing keychain
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: scripts/signing-keychain.sh setup
+
+      - name: Release
+        env:
+          VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+          DAEMON_SIGNING_KEY_PEM: ${{ secrets.DAEMON_SIGNING_KEY }}
+          APP_UPDATE_KEY_VALUE: ${{ secrets.APP_UPDATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          printf '%s\n' "$DAEMON_SIGNING_KEY_PEM" >"$RUNNER_TEMP/daemon-signing.key"
+          printf '%s' "$APP_UPDATE_KEY_VALUE" >"$RUNNER_TEMP/mygo-update.key"
+          args=("$VERSION")
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          DAEMON_SIGNING_KEY="$RUNNER_TEMP/daemon-signing.key" APP_UPDATE_KEY="$RUNNER_TEMP/mygo-update.key" \
+            scripts/release.sh "${args[@]}"
+
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/daemon-signing.key" "$RUNNER_TEMP/mygo-update.key"
+          scripts/signing-keychain.sh teardown
