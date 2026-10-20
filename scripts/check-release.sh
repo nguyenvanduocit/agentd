@@ -43,7 +43,7 @@ check_sdk() {
   # The compiled SDK is its non-test sources: compare them by content, file by file, so a renamed directory is no change.
   local was is
   was="$(git ls-tree -r "$prev" -- "$old_dir/src" | awk -v p="$old_dir/src/" -F'\t' '{ split($1, a, " "); sub("^" p, "", $2); print a[3], $2 }' | grep -v '\.test\.ts$' | sort || true)"
-  is="$(cd sdk/web/src && find . -type f ! -name '*.test.ts' | sed 's#^\./##' | sort | while read -r f; do echo "$(git hash-object "$f") $f"; done)"
+  is="$(cd sdk/web/src && find . -type f ! -name '*.test.ts' | sed 's#^\./##' | sort | while read -r f; do echo "$(git hash-object "$f") $f"; done | sort)"
   if [ "$was" = "$is" ]; then
     echo "the SDK's sources are those of $prev: version $now is fine" >&2
     return 0

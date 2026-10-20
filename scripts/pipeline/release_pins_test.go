@@ -148,6 +148,25 @@ func TestTheSDKRuleRefusesChangedSourcesUnderTheVersionOfTheLastRelease(t *testi
 	}
 }
 
+// The sources of several files are compared by content, whatever order their hashes and their names fall in: an SDK
+// that did not change since the last release is no change, which a single source file cannot show.
+func TestTheSDKRuleSeesUnchangedSourcesOfSeveralFilesAsUnchanged(t *testing.T) {
+	dir := releaseRepo(t)
+	write(t, dir, "sdk/web/package.json", packageJSON("0.5.0"))
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "sub/h"} {
+		write(t, dir, "sdk/web/src/"+name+".ts", "export const "+filepath.Base(name)+" = 1\n")
+	}
+	commitAll(t, dir, "release")
+	if out, code := in(t, dir, "git", "tag", "v1.0.0"); code != 0 {
+		t.Fatalf("git tag: %s", out)
+	}
+	write(t, dir, "docs.md", "a doc\n")
+	commitAll(t, dir, "doc")
+	if out, code := checkSDK(t, dir); code != 0 || !strings.Contains(out, "version 0.5.0 is fine") {
+		t.Errorf("sources unchanged since the tag: exit %d: %s", code, out)
+	}
+}
+
 const pinnedReadme = "install: bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.6.0/agentd-client-0.5.0.tgz\n" +
 	"template: bun add https://github.com/nguyenvanduocit/agentd/releases/download/v<version>/agentd-client-<sdk version>.tgz\n" +
 	"go: go get github.com/nguyenvanduocit/agentd@v0.6.0 and go get github.com/nguyenvanduocit/agentd/sdk/goclient@v0.6.0\n"
