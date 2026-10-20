@@ -305,3 +305,5 @@ scripts/build-daemon.sh /tmp/dist   # download/v<version>/{agentd-<version>.tgz 
 The integration tests build `cmd/agentd` and `cmd/fake-agent` once per run into a temporary directory and run each daemon as a
 process with its own `AGENTD_HOME` and `HOME`. The app server they talk to is the `sdk/goserver/` library or the contract server in
 `daemon/run/app_test.go`; installs and updates come from the release stand-in `cmd/agentd-server`, started in process by `scripts/pipeline`.
+
+`TestTheLastReleaseUpdatesToThisTree` (`scripts/pipeline/update_previous_test.go`) installs the newest release tag with the `install.sh` that tag built, starts its launcher, publishes a build of this tree on the release server and lets the old daemon, with its own updater and launcher, take it; it also checks that a build signed by a stranger and a build older than the running one are refused. Without git or the tag it skips on a developer's machine and fails when `CI` is set (the Go job fetches the tags); `PIPELINE_PREVIOUS_TREE=<dir>` with `PIPELINE_PREVIOUS_VERSION=x.y.z` starts from another tree instead.

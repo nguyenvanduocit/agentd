@@ -29,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags: scripts/pipeline installs the last release and updates it to this tree
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
