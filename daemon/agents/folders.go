@@ -29,6 +29,16 @@ var folderKeys = []string{"cwd", "additionalDirectories", "additionalRoots"}
 // each piece as a line of its own, so a line with a newline inside it is refused: this guard reads it as one value.
 // Listing sessions without a folder is refused, because the adapters then list the sessions of every project.
 //
+// The walk is the same for every method, `mcp/message` included: the inner params of an MCP-over-ACP message are not
+// treated as opaque, so a tool argument called `cwd` that points outside the folders is refused instead of ignored.
+// Why that stays: nothing that works is lost (that method is unstable and no adapter implements it: claude-agent-acp
+// advertises mcpCapabilities {http, sse}, codex-acp {acp: false}, and both answer -32601 to it), the schemas still
+// disagree about its shape (acp-go-sdk 0.13.5: connectionId with mcp/connect and mcp/disconnect; the RFD's current
+// revision and the TypeScript SDK: serverId and requestId), and no evidence says what a future adapter does with the
+// inner params. Under the RFD's current revision a client sends an agent only notifications on it (a `tools/call` goes
+// from the agent to the client), so a legitimate message rarely names a folder. Whoever loosens this must key it on the
+// exact method name, never on a field the client writes, and change folders_mcp_test.go and the README together.
+//
 // It keeps an app that asks for the wrong folder out of it. It is not a sandbox: an agent's shell can leave the folder.
 func GuardLine(folders []string, line string, failed error) (reply string, refused bool) {
 	if failed == nil && len(folders) == 0 {
