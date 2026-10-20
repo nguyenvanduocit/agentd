@@ -1,7 +1,7 @@
 {
   "name": "agentd",
   "identifier": "com.agentd.app",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "copyright": "© 2026 nguyenvanduocit",
   "icon": "icon/app.png",
   "macos": {
