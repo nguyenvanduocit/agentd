@@ -14,11 +14,11 @@ import (
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
 
 	"github.com/nguyenvanduocit/agentd/contract"
-	"github.com/nguyenvanduocit/agentd/hub"
+	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
 // The app's server the daemon dials, as the daemon's tests need it: the contract's server side on the /agentd
-// namespace exactly as the real server serves it (hub.MaxMessageBytes of buffer), and calls a test makes on the
+// namespace exactly as the real server serves it (goserver.MaxMessageBytes of buffer), and calls a test makes on the
 // connected daemon (open, write, close, restart, stop) or against the socket (kick, revoke). It also answers the pairing
 // request of an app with its code.
 
@@ -65,9 +65,9 @@ func startApp(t *testing.T) *fakeApp {
 	t.Helper()
 	a := &fakeApp{token: testToken}
 	opts := socket.DefaultServerOptions()
-	opts.SetMaxHttpBufferSize(hub.MaxMessageBytes)
+	opts.SetMaxHttpBufferSize(goserver.MaxMessageBytes)
 	a.io = socket.NewServer(nil, opts)
-	ns := a.io.Of(hub.Namespace, nil)
+	ns := a.io.Of(goserver.Namespace, nil)
 	ns.Use(a.authenticate)
 	if err := ns.On("connection", func(c ...any) { a.onConnection(t, c) }); err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func (h handler) HandleHello(_ context.Context, info contract.Hello) (contract.H
 	h.a.mu.Lock()
 	defer h.a.mu.Unlock()
 	h.a.hellos = append(h.a.hellos, info)
-	return contract.HelloReply{Protocol: hub.Protocol}, nil
+	return contract.HelloReply{Protocol: goserver.Protocol}, nil
 }
 
 func (h handler) HandleAgents(_ context.Context, list []contract.AgentInfo) error {

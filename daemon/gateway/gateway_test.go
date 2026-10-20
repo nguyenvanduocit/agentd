@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -115,6 +116,9 @@ func TestAllowPairsSavesAndLinksAndTheOriginThenSeesTheAgents(t *testing.T) {
 	}
 	if q := w.asks()[0]; q.Origin != app || q.Mode != consent.ModeServer || len(q.Agents) != 1 || q.Agents[0] != "claude" {
 		t.Fatalf("the dialog asked %+v: only agents that are ready, for the caller's own origin", q)
+	}
+	if q := w.asks()[0]; len(q.Titles) != 1 || q.Titles[0] != "Claude Code" {
+		t.Fatalf("the dialog names the agents %q: want them as a user reads them", q.Titles)
 	}
 	st := status(t, g.Port, app)
 	if server, browser := granted(t, st); !server || browser {
@@ -326,7 +330,7 @@ func TestAGrantedOriginGetsItsAnswerWhileALockoutHoldsEveryDialog(t *testing.T) 
 	for i := range 3 {
 		connectAs(t, g.Port, map[string]any{"mode": "browser"}, "http://localhost:"+strconv.Itoa(5170+i))
 	}
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z")
+	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
 	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 200, map[string]any{"granted": true})
 }
 
@@ -391,7 +395,7 @@ func TestStartNeedsAGate(t *testing.T) {
 func gatewayHere(t *testing.T, owners consent.PeerOwners) (*Gateway, *world) {
 	t.Helper()
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z")
+	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()
@@ -468,7 +472,7 @@ func TestALookupThatFailsIsLoggedOnce(t *testing.T) {
 
 func TestTheRealLookupLetsThisProcessInRoutesAnswerAndTheUpgradeGoesThrough(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z")
+	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()
@@ -489,5 +493,27 @@ func TestTheRealLookupLetsThisProcessInRoutesAnswerAndTheUpgradeGoesThrough(t *t
 	}
 	if len(w.upgraded) != 1 || w.upgraded[0] != page {
 		t.Fatalf("upgraded %v", w.upgraded)
+	}
+}
+
+func TestAllowSavesTheFoldersTheUserChose(t *testing.T) {
+	for _, mode := range []map[string]any{{"mode": "server", "code": code}, {"mode": "browser"}} {
+		w := newWorld()
+		w.chosen = []string{"/work/a", "/work/b"}
+		g := startGateway(t, w.deps(), nil)
+		wantReply(t, connectAs(t, g.Port, mode, page), 200, map[string]any{"granted": true})
+		if got := append(w.reg.AppFolders(page), w.reg.BrowserFolders(page)...); !reflect.DeepEqual(got, []string{"/work/a", "/work/b"}) {
+			t.Errorf("%v: saved folders = %v", mode["mode"], got)
+		}
+	}
+}
+
+func TestAnAllowWithoutAFolderGrantsNothing(t *testing.T) {
+	w := newWorld()
+	w.chosen = []string{}
+	g := startGateway(t, w.deps(), nil)
+	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 503, map[string]any{"reason": "no-dialog"})
+	if len(w.reg.Browsers) != 0 || len(w.reg.Apps) != 0 {
+		t.Fatalf("saved %+v", w.reg)
 	}
 }

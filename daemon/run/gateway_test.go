@@ -20,17 +20,19 @@ import (
 // The local gateway of a whole daemon: what pages may ask, what the user is asked, and what the daemon does with the
 // answer. (The gateway's rules on their own are tested in daemon/gateway.)
 
-// consentScript is a program for AGENTD_CONSENT: it appends a line to `ran`, waits delay seconds, exits with code.
+// consentScript is a program for AGENTD_CONSENT: it appends a line to `ran`, waits delay seconds, prints `folder` (the
+// folder the user chose) and exits with code.
 type consentScript struct {
-	file string
-	ran  string
+	file   string
+	ran    string
+	folder string
 }
 
 func newConsent(t *testing.T, code, delayS int) consentScript {
 	t.Helper()
 	dir := t.TempDir()
-	c := consentScript{file: filepath.Join(dir, "consent"), ran: filepath.Join(dir, "ran")}
-	script := fmt.Sprintf("#!/bin/sh\necho \"$1\" >> %s\nsleep %d\nexit %d\n", c.ran, delayS, code)
+	c := consentScript{file: filepath.Join(dir, "consent"), ran: filepath.Join(dir, "ran"), folder: filepath.Join(dir, "work")}
+	script := fmt.Sprintf("#!/bin/sh\necho \"$1\" >> %s\nsleep %d\necho %s\nexit %d\n", c.ran, delayS, c.folder, code)
 	if err := os.WriteFile(c.file, []byte(script), 0o755); err != nil { //nolint:gosec // a test program
 		t.Fatal(err)
 	}
@@ -168,6 +170,16 @@ func (g *gatewayDaemon) savedApps(t *testing.T) []string {
 	return servers
 }
 
+// saved is what daemon.json holds now.
+func (g *gatewayDaemon) saved(t *testing.T) registry.Registry {
+	t.Helper()
+	reg, err := registry.Load(g.box.configFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
 // want checks a reply's status and the fields of its body.
 func (r reply) want(t *testing.T, status int, fields map[string]any) {
 	t.Helper()
@@ -255,6 +267,9 @@ func TestGatewayAllowPairsSavesAndLinksWithoutARestartAndTheOriginThenSeesTheAge
 	g.connect(t, serverBody, app.origin()).want(t, 200, map[string]any{"granted": true})
 	if n := c.lines(); n != 1 {
 		t.Fatalf("the dialog ran %d times, want 1", n)
+	}
+	if got := g.saved(t).AppFolders(app.origin()); len(got) != 1 || got[0] != c.folder {
+		t.Fatalf("the app's folders = %v, want the one the user chose: %s", got, c.folder)
 	}
 	if saved := g.savedApps(t); len(saved) != 1 || saved[0] != app.origin() {
 		t.Fatalf("saved apps = %v", saved)
@@ -408,10 +423,14 @@ func TestGatewayAnAppThatStopDetachedIsOfferedAgainAndConnectsAgain(t *testing.T
 
 func TestGatewayBrowserAllowSavesTheOriginAndTheDaemonOutlivesItsLastServerApp(t *testing.T) {
 	app := startApp(t)
-	g := startGatewayDaemon(t, map[string]string{"AGENTD_CONSENT": newConsent(t, 0, 0).file}, app)
+	c := newConsent(t, 0, 0)
+	g := startGatewayDaemon(t, map[string]string{"AGENTD_CONSENT": c.file}, app)
 	app.waitHellos(t, 1)
 	g.connect(t, map[string]any{"mode": "browser"}, pageOrigin).want(t, 200, map[string]any{"granted": true})
 	g.status(t, pageOrigin).want(t, 200, granted(false, true))
+	if got := g.saved(t).BrowserFolders(pageOrigin); len(got) != 1 || got[0] != c.folder {
+		t.Fatalf("the page's folders = %v, want the one the user chose: %s", got, c.folder)
+	}
 	app.stopDaemon(t)
 	waitFor(t, "the app is detached", func() bool { return !app.connected() })
 	waitForNothing(t, "the daemon to stay up", g.d.hasExited)

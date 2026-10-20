@@ -1,16 +1,14 @@
 package cli
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"strings"
 	"unicode/utf8"
 )
 
 // This file is the Go form of Node's util.parseArgs with strict: true and allowPositionals: true, for the daemon's
-// option table. The argument shapes it accepts and the error messages it gives are Node's, so a mistake reads the
-// same as it did when the daemon ran on Node.
+// option table. The argument shapes it accepts and the error messages it gives are Node's, except for an unknown
+// option, which is reported in agentd's own words.
 
 type flagKind int
 
@@ -35,6 +33,7 @@ var flagSpecs = []flagSpec{
 	{name: "lines", short: 'n', kind: stringFlag},
 	{name: "follow", short: 'f', kind: boolFlag},
 	{name: "help", short: 'h', kind: boolFlag},
+	{name: "version", short: 'v', kind: boolFlag},
 }
 
 func specByName(name string) (flagSpec, bool) {
@@ -65,7 +64,7 @@ func isStringFlag(short rune) bool {
 // `--dir` stay different; the last occurrence of a flag wins.
 type flagValues struct {
 	app, dir, config, code, session, lines *string
-	page, follow, help                     bool
+	page, follow, help, version            bool
 }
 
 func (v *flagValues) store(name string, value *string) {
@@ -88,6 +87,8 @@ func (v *flagValues) store(name string, value *string) {
 		v.follow = true
 	case "help":
 		v.help = true
+	case "version":
+		v.version = true
 	}
 }
 
@@ -187,22 +188,11 @@ func tokenize(args []string) ([]flagToken, []string) {
 	return tokens, positionals
 }
 
-func jsonQuote(s string) string {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(s); err != nil {
-		return `"` + s + `"`
-	}
-	return strings.TrimSuffix(b.String(), "\n")
-}
-
 // checkToken is Node's strict-mode check of one flag token.
 func checkToken(tok flagToken) (flagSpec, error) {
 	spec, ok := specByName(tok.name)
 	if !ok {
-		// The closing quote of the hint is missing in Node's own message too.
-		return spec, errors.New("Unknown option '" + tok.rawName + "'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + jsonQuote(tok.rawName))
+		return spec, errors.New("unknown option " + tok.rawName + `. Run "agentd --help".`)
 	}
 	shortAndLong := "--" + spec.name
 	if spec.short != 0 {

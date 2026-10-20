@@ -1,5 +1,5 @@
 // Package goclient is what a Go program uses to find the agentd daemon on the user's computer, ask it to connect, and
-// run an agent through it: the Go counterpart of the JavaScript client in sdk/client (@agentd/client), for programs
+// run an agent through it: the Go counterpart of the JavaScript client in sdk/web (@agentd/client), for programs
 // that talk to the daemon's local gateway (127.0.0.1, ports 47615 to 47624) as a web page does.
 //
 // A web page has an origin the browser puts in every request; a Go program has none, so every call takes the app's

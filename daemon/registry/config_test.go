@@ -111,18 +111,31 @@ func TestLoadOfAMissingFileIsAnEmptyRegistry(t *testing.T) {
 	wantEqual(t, got, Empty())
 }
 
-func TestLoadOfABrokenOrIncompleteFileNamesItselfAndSaysHowToPair(t *testing.T) {
+// A damaged file stops `pair` too (it reads the file before it writes), so the way out is to move the file aside, not to pair.
+func TestLoadOfABrokenOrIncompleteFileNamesItAndSaysHowToMoveItAside(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "c.json")
-	for _, tc := range []struct{ text, want string }{
-		{"{oops", f + " is not valid JSON"},
-		{`{"server":"https://s"}`, f + " has no apps list"},
-	} {
-		if err := os.WriteFile(f, []byte(tc.text), 0o600); err != nil {
+	want := f + " is damaged. Move it aside (mv " + f + " " + f + ".broken), then connect again from the app's page."
+	for _, text := range []string{"{oops", "", `{"server":"https://s"}`, `{"apps":[{"server":"https://s"}]}`} {
+		if err := os.WriteFile(f, []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Load(f); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "agentd pair --app") {
-			t.Errorf("Load(%q) error = %v, want it to contain %q", tc.text, err, tc.want)
+		if _, err := Load(f); err == nil || err.Error() != want {
+			t.Errorf("Load(%q) error = %v, want %q", text, err, want)
 		}
+	}
+}
+
+func TestADamagedFilesPathIsQuotedForTheShellWhenItNeedsIt(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "My Config", "c.json")
+	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte("{oops"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(f)
+	if err == nil || !strings.Contains(err.Error(), "(mv '"+f+"' '"+f+".broken')") {
+		t.Errorf("error = %v, want the mv command with both paths in single quotes", err)
 	}
 }
 
@@ -201,5 +214,19 @@ func TestUpdateOfABrokenFileFailsAndLeavesItAlone(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(file); string(got) != "{oops" {
 		t.Errorf("file = %q, want it untouched", got)
+	}
+}
+
+func TestShellWord(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home/ann/.config/agentd/daemon.json": "/home/ann/.config/agentd/daemon.json",
+		"/home/ann/My Config/daemon.json":      "'/home/ann/My Config/daemon.json'",
+		"/home/o'brien/daemon.json":            `'/home/o'\''brien/daemon.json'`,
+		"":                                     "''",
+		"/tmp/$(rm -rf x)":                     "'/tmp/$(rm -rf x)'",
+	} {
+		if got := shellWord(in); got != want {
+			t.Errorf("shellWord(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

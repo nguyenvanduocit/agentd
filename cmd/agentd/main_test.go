@@ -47,18 +47,27 @@ func execute(t *testing.T, stdin string, args ...string) result {
 }
 
 func TestVersionPrintsTheVersionBakedInAtBuildTime(t *testing.T) {
-	r := execute(t, "", "version")
-	if r.code != 0 || r.stdout != home.Version+"\n" || r.stderr != "" {
-		t.Fatalf("%+v", r)
+	for _, arg := range []string{"version", "--version", "-v"} {
+		r := execute(t, "", arg)
+		if r.code != 0 || r.stdout != home.Version+"\n" || r.stderr != "" {
+			t.Fatalf("%s: %+v", arg, r)
+		}
 	}
 }
 
 func TestHelpPrintsTheUsageOnStdoutAndExits0(t *testing.T) {
-	for _, flag := range []string{"--help", "-h"} {
-		r := execute(t, "", flag)
+	for _, arg := range []string{"help", "--help", "-h"} {
+		r := execute(t, "", arg)
 		if r.code != 0 || !strings.Contains(r.stdout, "agentd pair --app") || r.stderr != "" {
-			t.Fatalf("%s: %+v", flag, r)
+			t.Fatalf("%s: %+v", arg, r)
 		}
+	}
+}
+
+func TestAnUnknownOptionSaysSoAndPointsAtHelp(t *testing.T) {
+	r := execute(t, "", "--nope")
+	if r.code != 2 || r.stdout != "" || !strings.HasPrefix(r.stderr, `unknown option --nope. Run "agentd --help".`+"\n\nagentd: runs your agents") {
+		t.Fatalf("%+v", r)
 	}
 }
 
@@ -132,7 +141,7 @@ func TestPairTradesTheCodeForATokenAndSavesItWithMode0600(t *testing.T) {
 	file := sandbox(t)
 	server, body := pairServer(t, func(w http.ResponseWriter) { _, _ = io.WriteString(w, `{"token":"tok-123"}`) })
 	r := execute(t, "", "pair", "--app", server, "--code", "ABCD-1234")
-	if r.code != 0 || !strings.Contains(r.stdout, "paired with "+server) {
+	if r.code != 0 || r.stdout != "Paired with "+server+".\n" {
 		t.Fatalf("%+v", r)
 	}
 	if got := body(); got["code"] != "ABCD-1234" || got["os"] == "" || got["arch"] == "" || got["hostname"] == "" {

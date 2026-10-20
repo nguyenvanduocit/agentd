@@ -4,7 +4,7 @@ import "bytes"
 
 // MaxLineBytes is the longest line a splitter keeps, 32 MiB. A line goes on to the server as a JSON string inside one
 // Socket.IO message; escaping a JSON line at most doubles it (a backslash before each quote and backslash), so a line
-// at the cap still fits the server's 64 MiB message limit (hub.MaxMessageBytes). It is three times the 10 MiB line
+// at the cap still fits the server's 64 MiB message limit (goserver.MaxMessageBytes). It is three times the 10 MiB line
 // the Go ACP SDK reads and hundreds of times a real one (a large tool result runs to tens of KB).
 const MaxLineBytes = 32 * 1024 * 1024
 

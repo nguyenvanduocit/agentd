@@ -1,4 +1,4 @@
-// Contract between the server and a user's daemon, source of truth for socketrpc-gen. Regenerate with scripts/gen-rpc.sh.
+// Contract between the server and a user's daemon, source of truth for socketrpc-gen. Regenerate with scripts/gen-contract.sh.
 // The server implements ServerFunctions (the daemon calls them); the daemon implements ClientFunctions (the server calls them).
 // Methods must be arrow-typed properties; void return means fire-and-forget.
 

@@ -25,8 +25,11 @@ type Question struct {
 	// Origin is the page's origin, from the browser's Origin header.
 	Origin string
 	Mode   Mode
-	// Agents are the agents that are ready now.
+	// Agents are the agents that are ready now, by name.
 	Agents []string
+	// Titles are the same agents as a user reads them ("Claude Code"): the words of the question. Agents is what the
+	// consent window's line carries; Titles never leave the daemon but in the text.
+	Titles []string
 }
 
 // Text is the dialog's title and body.
@@ -47,26 +50,49 @@ const (
 	AnswerUnavailable Answer = "unavailable"
 )
 
-// ConsentText says what Allow is: full access to the user's account. Whoever drives a session (the app's server, or
-// the origin's page) chooses its folder, its MCP servers and its answers to permission requests, and agents run as the
-// user; nothing on this machine narrows that. The two modes differ in when that access can be used.
-func ConsentText(q Question) Text {
-	agents := "no agent is ready yet"
-	if len(q.Agents) > 0 {
-		agents = strings.Join(q.Agents, ", ")
+// ConsentText is the question of the consent window, in the words of the user. It says who asks and when they can
+// start agents, that the folders chosen are where agents start and no more (agents run as the user, so they can read
+// and change any file and run any program), and where to take the access back. Whoever drives a session (the app's
+// server, or the site's pages) chooses its folder, its MCP servers and its answers to permission requests; nothing on
+// this machine narrows that. The two modes differ in when that access can be used.
+func ConsentText(q Question) Text { return text(q, false) }
+
+// DialogText is ConsentText for the native dialogs, which also name the terminal command that disconnects: a machine
+// that has to fall back to them may have no agentd icon in its menu bar.
+func DialogText(q Question) Text { return text(q, true) }
+
+func text(q Question, terminal bool) Text {
+	agents, none := "agents", " No agent is ready yet."
+	if len(q.Titles) > 0 {
+		agents, none = joinTitles(q.Titles), ""
 	}
-	var when string
+	var who, when string
 	if q.Mode == ModeServer {
-		when = fmt.Sprintf("%s wants to connect its server to this computer.\n\nIf you allow it, that server can start your agents (%s) here at any time, even when none of its pages is open.", q.Origin, agents)
+		who = fmt.Sprintf("The app at %s wants to connect to agentd on this computer.", q.Origin)
+		when = fmt.Sprintf("If you allow it, the app can start %s here at any time, even when none of its pages is open.%s", agents, none)
 	} else {
-		when = fmt.Sprintf("%s wants to run agents on this computer from its pages.\n\nIf you allow it, its pages can start your agents (%s) here whenever one of its pages is open.", q.Origin, agents)
+		who = fmt.Sprintf("The pages of %s want to run agents on this computer.", q.Origin)
+		when = fmt.Sprintf("If you allow it, its pages can start %s here whenever one of its pages is open.%s", agents, none)
+	}
+	disconnect := "You can disconnect it whenever you want, from the agentd icon in the menu bar."
+	if terminal {
+		disconnect = "You can disconnect it whenever you want, from the agentd icon in the menu bar or in a terminal with: agentd apps remove " + q.Origin
 	}
 	return Text{
-		Title: "Give " + q.Origin + " access to this computer?",
-		Body: when + " The agents run as you: they can read and change any of your files and run any program.\n\n" +
-			"It keeps that access until you disconnect it, from the daemon's icon in the menu bar or with: agentd apps remove " + q.Origin + "\n\n" +
-			"Only allow apps you trust.",
+		Title: "Let " + q.Origin + " run agents on this computer?",
+		Body: who + "\n\n" + when + "\n\n" +
+			"You choose the folders it may start agents in. That is only where they start: agents run as you, so they can read and change any of your files, including files outside those folders, and run any program.\n\n" +
+			disconnect + "\n\n" +
+			"Only allow sites you trust.",
 	}
+}
+
+// joinTitles is a list in English: "A", "A and B", "A, B and C".
+func joinTitles(titles []string) string {
+	if len(titles) == 1 {
+		return titles[0]
+	}
+	return strings.Join(titles[:len(titles)-1], ", ") + " and " + titles[len(titles)-1]
 }
 
 // DialogKind is the tool that shows the dialog.
@@ -95,6 +121,10 @@ var osascript = []string{
 
 // Plan is the command that shows the dialog on `platform` (a GOOS value), or false when the machine has no tool to
 // show one. has reports whether a program is on the PATH.
+//
+// Deny is the button that has the focus when the dialog opens, so a stray Return denies: osascript says so with
+// `default button "Deny"`, zenity with `--default-cancel`. kdialog documents no option that does it, so there the
+// toolkit decides which button has the focus.
 func Plan(platform string, has func(cmd string) bool, t Text, timeoutS int) (DialogPlan, bool) {
 	if platform == "darwin" && has("osascript") {
 		args := make([]string, 0, 2*len(osascript)+2)
@@ -109,7 +139,7 @@ func Plan(platform string, has func(cmd string) bool, t Text, timeoutS int) (Dia
 	if has("zenity") {
 		return DialogPlan{Kind: KindZenity, File: "zenity", Args: []string{
 			"--question", "--no-markup", "--title=" + t.Title, "--text=" + t.Body,
-			"--ok-label=Allow", "--cancel-label=Deny", fmt.Sprintf("--timeout=%d", timeoutS),
+			"--ok-label=Allow", "--cancel-label=Deny", "--default-cancel", fmt.Sprintf("--timeout=%d", timeoutS),
 		}}, true
 	}
 	if has("kdialog") {

@@ -44,6 +44,9 @@ type AppHubOptions struct {
 	// Backoff and ConnectTimeout are those of every app's Link (see Options); the zero values are the defaults.
 	Backoff        home.BackoffOptions
 	ConnectTimeout time.Duration
+	// Folders are the folders the user allowed the app at `server`, read when they matter
+	// (agents.FleetOptions.Folders); nil sets no limit.
+	Folders func(server string) ([]string, error)
 	// Hello is what this daemon tells an app on every (re)connect.
 	Hello func() contract.Hello
 	// OnEmpty runs when an app left (Stop, or a refused token) and no link remains.
@@ -156,6 +159,9 @@ func (h *AppHub) Add(app registry.App) error {
 	fleetOptions := h.o.Fleet
 	fleetOptions.BinDir = binDir
 	fleetOptions.Sink = link.Sink
+	if h.o.Folders != nil {
+		fleetOptions.Folders = func() ([]string, error) { return h.o.Folders(app.Server) }
+	}
 	if fleetOptions.Log == nil {
 		fleetOptions.Log = h.log
 	}
@@ -196,8 +202,8 @@ type handler struct {
 	e *entry
 }
 
-func (a handler) HandleOpen(_ context.Context, sessionID, agent string) (contract.Opened, error) {
-	opened, err := a.e.fleet.Open(sessionID, agent)
+func (a handler) HandleOpen(ctx context.Context, sessionID, agent string) (contract.Opened, error) {
+	opened, err := a.e.fleet.OpenOn(ctx, sessionID, agent)
 	if err != nil {
 		return contract.Opened{}, err
 	}

@@ -34,7 +34,7 @@ only a terminal could start it again (the agentd.app launcher of 0.3.1 patched t
 
 ## The parts
 
-### 1. The app (`tray/`, Go, mygo)
+### 1. The app (`app/`, Go, mygo)
 
 The tray program becomes the app. One binary, two modes:
 
@@ -56,7 +56,7 @@ itself, the app's updates carry it. The desktop app is agentd.app, so the engine
 
 ### 3. The bundle
 
-`mygo build` makes the app from `tray/` with `tray/mygo.json`: name agentd, identifier `com.agentd.app`, the badge icon,
+`mygo build` makes the app from `app/` with `app/mygo.json`: name agentd, identifier `com.agentd.app`, the badge icon,
 `LSUIElement`. Resources, per platform and merged by mygo into that platform's app (`resources/darwin-<arch>/engine/agentd`
 is `Contents/Resources/engine/agentd`): `darwin-<arch>/engine/agentd`, the engine built by `scripts/build-desktop.sh`
 (`CGO_ENABLED=0 go build ./cmd/agentd` for that architecture, with the app's version and no release key or release
@@ -79,7 +79,7 @@ under names that stay from release to release (`agentd-darwin-arm64.dmg`, `agent
 (`agentd-<version>-darwin-<arch>.tar.gz`, `update-darwin-<arch>.json`, and delta updates once a version is published),
 the daemon tarball with `latest.json` and `install.sh`, and the SDK. The latest release then serves every reader at once:
 the app's updater (mygo's, with a key of its own from `mygo keygen`, kept out of the repository like the release key),
-installs from a terminal, and the SDK's download links. `tray/mygo.json` carries the app's version, set in the release's
+installs from a terminal, and the SDK's download links. `app/mygo.json` carries the app's version, set in the release's
 commit. The window has "Check for Updates…"; the updater checks once a day on its own. The app's update carries the engine
 (`engine/agentd`), so the engine never updates itself.
 

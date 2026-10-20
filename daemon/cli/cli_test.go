@@ -180,13 +180,62 @@ func TestParseServiceLinesRange(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, want := range []string{"apps remove", "pair --app", "service install"} {
+	for _, want := range []string{"apps remove", "pair --app", "service install", "agentd help", "-v, --version", "-h, --help"} {
 		if !strings.Contains(Usage, want) {
 			t.Errorf("Usage lacks %q", want)
 		}
 	}
-	if !strings.HasPrefix(Usage, "agentd: runs your agents for the apps you allow\n\nusage:\n") || !strings.HasSuffix(Usage, "service logs: keep printing\n") {
+	if !strings.HasPrefix(Usage, "agentd: runs your agents for the apps you allow\n\nusage:\n") || !strings.HasSuffix(Usage, "agentd service install\n") {
 		t.Errorf("Usage has the wrong frame: %q ... %q", Usage[:40], Usage[len(Usage)-40:])
+	}
+}
+
+// Every line of the usage says what its command does, and none says what is not true.
+func TestUsageDescribesEveryCommandAndExplainsRemove(t *testing.T) {
+	lines := strings.Split(Usage, "\n")
+	for _, command := range []string{"agentd service uninstall", "agentd service status", "agentd version"} {
+		found := false
+		for _, line := range lines {
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), command); ok {
+				found = true
+				if strings.TrimSpace(rest) == "" {
+					t.Errorf("%q has no description", command)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Usage has no line for %q", command)
+		}
+	}
+	if strings.Contains(Usage, "service restart applies it") {
+		t.Error("a removed app goes within seconds of the running daemon reading its registry: no restart is needed")
+	}
+	if !strings.Contains(Usage, "examples:\n") {
+		t.Error("Usage has no examples")
+	}
+}
+
+func TestHelpAndVersionAreCommandsAndFlags(t *testing.T) {
+	for _, argv := range [][]string{{"help"}, {"--help"}, {"-h"}} {
+		if _, ok := mustParse(t, argv...).(Help); !ok {
+			t.Errorf("Parse(%q) is not Help", argv)
+		}
+	}
+	for _, argv := range [][]string{{"version"}, {"--version"}, {"-v"}} {
+		if _, ok := mustParse(t, argv...).(Version); !ok {
+			t.Errorf("Parse(%q) is not Version", argv)
+		}
+	}
+	if got := parseError(t, "help", "me"); got != `unexpected argument "me"` {
+		t.Errorf("help me: %q", got)
+	}
+}
+
+func TestAnUnknownOptionPointsAtHelp(t *testing.T) {
+	for _, tc := range []struct{ arg, name string }{{"--nope", "--nope"}, {"--nope=1", "--nope"}, {"-x", "-x"}} {
+		if got, want := parseError(t, tc.arg), "unknown option "+tc.name+`. Run "agentd --help".`; got != want {
+			t.Errorf("Parse(%q) error = %q, want %q", tc.arg, got, want)
+		}
 	}
 }
 

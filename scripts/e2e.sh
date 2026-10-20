@@ -1,5 +1,5 @@
 #!/bin/bash
-# The whole product end to end, natively, through ego-browser: the release server, the example app built on the hub library and
+# The whole product end to end, natively, through ego-browser: the release server, the example app built on sdk/goserver and
 # the page SDK (built from this tree), and real daemons installed, paired, answering and updated.
 #
 #   scripts/e2e.sh [scenario]        # e2e/<scenario>.mjs, default: all

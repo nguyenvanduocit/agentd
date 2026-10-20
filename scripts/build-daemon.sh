@@ -18,8 +18,11 @@
 # Every build is signed (cmd/sign-daemon): `signature` is the Ed25519 signature of the version and the tarball's
 # sha256, and every engine bakes in the public key a daemon checks every update against. The private key is the file
 # $DAEMON_SIGNING_KEY (PKCS8 PEM). Without it the dev key .dev-signing/daemon-signing.key is used, made on first use:
-# daemons built with it accept only updates built with it. RELEASE=1 (the Dockerfile) requires $DAEMON_SIGNING_KEY and
-# fails unless its public key is daemon/release.pub, so a wrong key never ships daemons that installed ones refuse.
+# daemons built with it accept only updates built with it. RELEASE=1 requires $DAEMON_SIGNING_KEY and fails unless its
+# public key is daemon/release.pub, so a wrong key never ships daemons that installed ones refuse; and a build that is not
+# RELEASE=1 refuses that key, so a development build never carries the signature every installed daemon trusts.
+# RELEASE_PUB_FILE names one more public key that a build that is not RELEASE=1 refuses (the tests use it, as the
+# release private key is not theirs to hold); a RELEASE=1 build ignores it and checks daemon/release.pub only.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:?usage: scripts/build-daemon.sh <outdir>}"
@@ -66,8 +69,19 @@ if [ ! -f "$KEY" ] || [ ! -r "$KEY" ]; then
   exit 1
 fi
 PUB="$("${SIGN[@]}" public "$KEY")"
-if [ "${RELEASE:-}" = 1 ] && ! cmp -s <(printf '%s\n' "$PUB") "$ROOT/daemon/release.pub"; then
-  echo "RELEASE=1: the public key of DAEMON_SIGNING_KEY is not daemon/release.pub; installed daemons would refuse this build" >&2
+RELEASE_PUB="$ROOT/daemon/release.pub"
+if [ ! -f "$RELEASE_PUB" ]; then
+  echo "$RELEASE_PUB is missing: it is the public key every daemon checks updates against" >&2
+  exit 1
+fi
+is_public_key() { cmp -s <(printf '%s\n' "$PUB") "$1"; }
+if [ "${RELEASE:-}" = 1 ]; then
+  if ! is_public_key "$RELEASE_PUB"; then
+    echo "RELEASE=1: the public key of DAEMON_SIGNING_KEY is not daemon/release.pub; installed daemons would refuse this build" >&2
+    exit 1
+  fi
+elif is_public_key "$RELEASE_PUB" || { [ -n "${RELEASE_PUB_FILE:-}" ] && is_public_key "$RELEASE_PUB_FILE"; }; then
+  echo "the release key signs only RELEASE=1 builds: a development build signed with it would be an update every installed daemon takes, and it points at a development server" >&2
   exit 1
 fi
 RELEASE_KEY="$("${SIGN[@]}" public-b64 "$KEY")"
@@ -123,7 +137,7 @@ cat >"$PKG/package.json" <<JSON
 }
 JSON
 
-# The tray program (tray/, Go): $TRAY_DIR holds a build of every platform (scripts/build-tray.sh); without it one is built here.
+# The tray program (app/, Go): $TRAY_DIR holds a build of every platform (scripts/build-tray.sh); without it one is built here.
 if [ -z "${TRAY_DIR:-}" ]; then
   TRAY_DIR="$STAGE/tray-build"
   "$ROOT/scripts/build-tray.sh" "$TRAY_DIR"

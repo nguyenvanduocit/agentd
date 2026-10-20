@@ -59,7 +59,13 @@ func Ask(q Question, env home.Env, timeoutS int) Answer {
 }
 
 func askOn(platform string, q Question, env home.Env, timeoutS int) Answer {
-	text := ConsentText(q)
+	answer, _ := ask(platform, q, env, timeoutS)
+	return answer
+}
+
+// ask is the Allow/Deny dialog: the answer, and what the tool printed (the seam's folders).
+func ask(platform string, q Question, env home.Env, timeoutS int) (Answer, string) {
+	text := DialogText(q)
 	var (
 		kind DialogKind
 		file string
@@ -71,7 +77,7 @@ func askOn(platform string, q Question, env home.Env, timeoutS int) Answer {
 		has := func(cmd string) bool { _, ok := home.FindProgram(cmd, env); return ok }
 		plan, ok := Plan(platform, has, text, timeoutS)
 		if !ok {
-			return AnswerUnavailable
+			return AnswerUnavailable, ""
 		}
 		// Run the program found in env's PATH: the lookup and the run agree on which one.
 		path, _ := home.FindProgram(plan.File, env)
@@ -79,16 +85,16 @@ func askOn(platform string, q Question, env home.Env, timeoutS int) Answer {
 	}
 	r := run(file, args, timeoutS)
 	if r.timedOut {
-		return AnswerTimeout
+		return AnswerTimeout, r.stdout
 	}
 	if r.failed {
-		return AnswerUnavailable
+		return AnswerUnavailable, r.stdout
 	}
 	if kind == "" {
 		if r.code == 0 {
-			return AnswerAllow
+			return AnswerAllow, r.stdout
 		}
-		return AnswerDeny
+		return AnswerDeny, r.stdout
 	}
-	return AnswerOf(kind, r.code, r.stdout)
+	return AnswerOf(kind, r.code, r.stdout), r.stdout
 }

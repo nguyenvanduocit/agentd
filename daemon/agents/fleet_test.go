@@ -1,8 +1,11 @@
 package agents
 
 import (
+	"errors"
 	"io"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -170,4 +173,80 @@ func TestFleetEndAll(t *testing.T) {
 	if _, err := f.Open("b", "claude"); err != nil {
 		t.Fatalf("a socket that returns may open again: %v", err)
 	}
+}
+
+func TestFleetFolders(t *testing.T) {
+	allowed := t.TempDir()
+	elsewhere := t.TempDir()
+	newLine := func(id int, cwd string) string {
+		return `{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"method":"session/new","params":{"cwd":"` + cwd + `"}}`
+	}
+	limited := func(t *testing.T) (*Fleet, *recordingSink) {
+		f, sink, _, _ := seamFleet(t, "cat")
+		f.o.Folders = func() ([]string, error) { return []string{filepath.Join(allowed, "missing"), allowed}, nil }
+		return f, sink
+	}
+
+	t.Run("the agent starts in the first folder that exists", func(t *testing.T) {
+		f, _ := limited(t)
+		opened, err := f.Open("s1", "claude")
+		if err != nil || opened.Cwd != allowed {
+			t.Fatalf("got %+v, %v; want it in %s", opened, err, allowed)
+		}
+	})
+
+	t.Run("a session inside the folders reaches the agent, one outside it is answered with an error", func(t *testing.T) {
+		f, sink := limited(t)
+		if _, err := f.Open("s1", "claude"); err != nil {
+			t.Fatal(err)
+		}
+		inside := newLine(1, filepath.Join(allowed, "project"))
+		if !f.Write("s1", inside) || !f.Write("s1", newLine(2, elsewhere)) {
+			t.Fatal("Write")
+		}
+		waitFor(t, "the echo of the first line and the error for the second", 5*time.Second, func() bool { return len(sink.data(FrameOut)) == 2 })
+		// Replies are matched by id, not by order: the refusal does not wait for the agent's echo.
+		var echoed, refused string
+		for _, line := range sink.data(FrameOut) {
+			if strings.Contains(line, `"method"`) {
+				echoed = line
+			} else {
+				refused = line
+			}
+		}
+		if !strings.Contains(echoed, `"id":1`) || !strings.Contains(echoed, `"method":"session/new"`) {
+			t.Errorf("the agent should have echoed the first request, got %q", echoed)
+		}
+		if !strings.Contains(refused, `"id":2`) || !strings.Contains(refused, `"error"`) {
+			t.Errorf("the client should get an error for request 2, got %q", refused)
+		}
+	})
+
+	t.Run("no folders is no limit", func(t *testing.T) {
+		f, sink, _, _ := seamFleet(t, "cat")
+		if _, err := f.Open("s1", "claude"); err != nil {
+			t.Fatal(err)
+		}
+		f.Write("s1", newLine(1, elsewhere))
+		waitFor(t, "the echo", 5*time.Second, func() bool { return len(sink.data(FrameOut)) == 1 })
+		if strings.Contains(sink.data(FrameOut)[0], `"error"`) {
+			t.Errorf("got %q", sink.data(FrameOut)[0])
+		}
+	})
+
+	t.Run("an unreadable list refuses the open", func(t *testing.T) {
+		f, _, _, _ := seamFleet(t, "cat")
+		f.o.Folders = func() ([]string, error) { return nil, errors.New("daemon.json is unreadable") }
+		if _, err := f.Open("s1", "claude"); err == nil || !strings.Contains(err.Error(), "daemon.json is unreadable") {
+			t.Fatalf("got %v", err)
+		}
+	})
+
+	t.Run("folders that do not exist refuse the open", func(t *testing.T) {
+		f, _, _, _ := seamFleet(t, "cat")
+		f.o.Folders = func() ([]string, error) { return []string{filepath.Join(allowed, "gone")}, nil }
+		if _, err := f.Open("s1", "claude"); err == nil || !strings.Contains(err.Error(), "none of the folders you allowed") {
+			t.Fatalf("got %v", err)
+		}
+	})
 }

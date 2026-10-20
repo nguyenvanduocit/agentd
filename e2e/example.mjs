@@ -31,7 +31,7 @@ _cp.execFileSync("tar", ["-xzf", _path.join("__DIST__/download/v0.0.1", tarball)
 // A file made under this browser carries its quarantine flag, and macOS kills an unnotarized binary that has one; the installer's curl sets none.
 _cp.spawnSync("xattr", ["-dr", "com.apple.quarantine", bundle]);
 const consent = _path.join(a.home, "consent");
-_fs.writeFileSync(consent, `#!/bin/sh\necho "$1" >> ${_path.join(a.home, "asked")}\nexit 0\n`, { mode: 0o755 });
+_fs.writeFileSync(consent, `#!/bin/sh\necho "$1" >> ${_path.join(a.home, "asked")}\necho ${a.home}\nexit 0\n`, { mode: 0o755 });
 const engine = _path.join(bundle, `agentd-${process.platform}-${process.arch === "x64" ? "amd64" : process.arch}`);
 a.start(`${engine} run`, { AGENTD_CONSENT: consent });
 const gatewayLine = async () => { for (let i = 0; i < 100; i++) { const m = /local gateway on 127\.0\.0\.1:(\d+)/.exec(a.output()); if (m) return m[1]; await sleep(200); } return undefined; };

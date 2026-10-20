@@ -12,7 +12,7 @@ OUT="${1:?usage: scripts/build-sdk.sh <outdir>}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
-cd "$ROOT/sdk/client"
+cd "$ROOT/sdk/web"
 [ -d node_modules ] || bun install --frozen-lockfile
 rm -rf dist
 bunx tsc -p tsconfig.build.json

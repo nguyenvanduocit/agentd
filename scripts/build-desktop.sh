@@ -1,26 +1,26 @@
 #!/bin/bash
-# Builds agentd.app, the desktop app (tray/, with mygo), for macOS. Into its resources go the engine (agentd, the Go
+# Builds agentd.app, the desktop app (app/, with mygo), for macOS. Into its resources go the engine (agentd, the Go
 # binary of cmd/agentd, which never updates itself: the app does) and Node.js for the ACP adapters, the version
 # daemon/install.sh.in pins, checked against nodejs.org's SHASUMS256.txt.
 #
 #   scripts/build-desktop.sh
 #
-# The version is tray/mygo.json's. Writes tray/build/darwin-<arch>/agentd.app and "agentd <version> <arch>.dmg" for
+# The version is app/mygo.json's. Writes app/build/darwin-<arch>/agentd.app and "agentd <version> <arch>.dmg" for
 # each of $DESKTOP_ARCHES (default: "arm64 amd64"), and with $MYGO_UPDATER_PRIVATE_KEY (the key itself) the signed update
 # installed apps take: agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json. Node.js downloads stay in
 # $AGENTD_NODE_CACHE between builds.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCHES="${DESKTOP_ARCHES:-arm64 amd64}"
-VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$ROOT/tray/mygo.json")"
+VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$ROOT/app/mygo.json")"
 NODE_VERSION="$(sed -n "s/^NODE_VERSION='\([0-9.]*\)'\$/\1/p" "$ROOT/daemon/install.sh.in")"
-[ -n "$VERSION" ] || { echo "no version in tray/mygo.json" >&2; exit 1; }
+[ -n "$VERSION" ] || { echo "no version in app/mygo.json" >&2; exit 1; }
 [ -n "$NODE_VERSION" ] || { echo "no NODE_VERSION in daemon/install.sh.in" >&2; exit 1; }
 NODE_DIST="${AGENTD_NODE_DIST:-https://nodejs.org/dist}"
 CACHE="${AGENTD_NODE_CACHE:-$HOME/Library/Caches/agentd-build/node}"
-RES="$ROOT/tray/resources"
+RES="$ROOT/app/resources"
 
-rm -rf "$RES" "$ROOT/tray/build"
+rm -rf "$RES" "$ROOT/app/build"
 mkdir -p "$CACHE"
 
 # The engine for one architecture, into the platform's resources, which mygo build merges into that platform's app
@@ -61,6 +61,6 @@ for arch in $ARCHES; do
   platforms="${platforms:+$platforms,}darwin/$arch"
 done
 
-cd "$ROOT/tray"
+cd "$ROOT/app"
 go tool mygo build -platform "$platforms" -o build
 echo "built agentd.app $VERSION for: $ARCHES (Node.js $NODE_VERSION)" >&2

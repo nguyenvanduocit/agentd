@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,8 +23,13 @@ type GroupRecorder interface {
 
 // FleetOptions are what a Fleet needs.
 type FleetOptions struct {
-	// Cwd is the working directory of every agent.
+	// Cwd is the working directory of every agent, unless Folders names folders.
 	Cwd string
+	// Folders, when set, is the folders the user allowed this fleet's app, read each time they matter: an agent starts
+	// in the first of them that exists, and `session/...` requests that name a place outside them are refused
+	// (GuardLine). Nil, or no folder, is no limit; an error (the list cannot be read) stops the open and every such
+	// request, never lifts the limit.
+	Folders func() ([]string, error)
 	// BinDir is the directory that holds the agentd-mcp wrapper; it goes first on every agent's PATH.
 	BinDir string
 	// Env is the daemon's environment.
@@ -73,6 +79,13 @@ func (f *Fleet) Size() int {
 
 // Open starts the agent `agent` for session `id`.
 func (f *Fleet) Open(id, agent string) (Opened, error) {
+	return f.OpenOn(context.Background(), id, agent)
+}
+
+// OpenOn is Open for a session that lives and dies with a connection: connection is done when that connection is, and
+// an agent that was not registered by then is not started. EndAll after the connection ended therefore finds every
+// agent the connection opened, and an open still on its way starts nothing.
+func (f *Fleet) OpenOn(connection context.Context, id, agent string) (Opened, error) {
 	if err := f.check(id); err != nil {
 		return Opened{}, err
 	}
@@ -102,7 +115,7 @@ func (f *Fleet) Open(id, agent string) (Opened, error) {
 	if !ok {
 		return Opened{}, fmt.Errorf("agent %s: command %q not found in PATH", name, cmd.Command)
 	}
-	return f.start(id, file, cmd.Args, env)
+	return f.start(connection, id, file, cmd.Args, env)
 }
 
 // check is why a session `id` cannot open now, or nil.
@@ -126,17 +139,26 @@ func (f *Fleet) checkLocked(id string) error {
 }
 
 // start holds the lock from the draining check to the registration, so a Shutdown or a session of the same id cannot
-// slip in between; an agent that exits at once ends through onEnd, which waits for the lock.
-func (f *Fleet) start(id, file string, args []string, env home.Env) (Opened, error) {
+// slip in between; an agent that exits at once ends through onEnd, which waits for the lock. The connection's end is
+// checked under the same lock: EndAll takes it after the connection ended, so an open either registers before EndAll
+// looks (and is ended by it) or sees the connection done here.
+func (f *Fleet) start(connection context.Context, id, file string, args []string, env home.Env) (Opened, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.checkLocked(id); err != nil {
 		return Opened{}, err
 	}
+	if connection.Err() != nil {
+		return Opened{}, errors.New("the connection of this session ended before its agent started")
+	}
 	began := time.Now()
 	plan := proc.PlanSpawn(file, args, runtime.GOOS)
+	dir, err := f.dir()
+	if err != nil {
+		return Opened{}, err
+	}
 	cmd := exec.Command(file, args...)
-	cmd.Dir = f.o.Cwd
+	cmd.Dir = dir
 	cmd.Env = environ(env)
 	if plan.Detached {
 		proc.Detach(cmd)
@@ -148,7 +170,27 @@ func (f *Fleet) start(id, file string, args []string, env home.Env) (Opened, err
 	f.sessions[id] = session
 	f.o.State.Add(session.PGID())
 	f.o.Log.Say(fmt.Sprintf("started %s for session %s in %d ms", file, id, time.Since(began).Milliseconds()))
-	return Opened{PID: session.PGID(), Cwd: f.o.Cwd}, nil
+	return Opened{PID: session.PGID(), Cwd: dir}, nil
+}
+
+// folders is what the user allowed this fleet's app; empty is no limit.
+func (f *Fleet) folders() ([]string, error) {
+	if f.o.Folders == nil {
+		return nil, nil
+	}
+	return f.o.Folders()
+}
+
+// dir is the directory an agent starts in.
+func (f *Fleet) dir() (string, error) {
+	folders, err := f.folders()
+	if err != nil {
+		return "", err
+	}
+	if len(folders) > 0 {
+		return firstDir(folders)
+	}
+	return f.o.Cwd, nil
 }
 
 // ended is the agent of session `id` gone: its id may be opened again.
@@ -171,12 +213,21 @@ func (f *Fleet) session(id string) *Session {
 	return f.sessions[id]
 }
 
-// Write writes one line to the agent of session `id`; false when there is none or it can no longer read.
+// Write writes one line to the agent of session `id`; false when there is none or it can no longer read. A request
+// for a folder the user did not allow is answered with an error to the client instead (GuardLine): the line was taken.
 func (f *Fleet) Write(id, line string) bool {
-	if s := f.session(id); s != nil {
-		return s.Write(line)
+	s := f.session(id)
+	if s == nil {
+		return false
 	}
-	return false
+	folders, err := f.folders()
+	if reply, refused := GuardLine(folders, line, err); refused {
+		if reply != "" {
+			f.o.Sink().Send(id, FrameOut, reply, 0)
+		}
+		return true
+	}
+	return s.Write(line)
 }
 
 // Close ends the agent of session `id`.

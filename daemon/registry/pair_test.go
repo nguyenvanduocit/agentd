@@ -40,7 +40,7 @@ var testMachine = Machine{Hostname: "box", OS: "linux", Arch: "x64"}
 
 func pairWith(t *testing.T, client Doer, server, code, file string) (App, error) {
 	t.Helper()
-	return Pair(context.Background(), client, testMachine, server, code, file)
+	return Pair(context.Background(), client, testMachine, server, code, file, nil)
 }
 
 func TestPairPostsTheCodeWithThisMachinesFactsAndSavesTheToken(t *testing.T) {
@@ -181,7 +181,7 @@ func TestPairGivesUpAfterTheTimeout(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})
-	_, err := Pair(ctx, slow, testMachine, "https://s", "c", filepath.Join(t.TempDir(), "d.json"))
+	_, err := Pair(ctx, slow, testMachine, "https://s", "c", filepath.Join(t.TempDir(), "d.json"), nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot reach https://s (context deadline exceeded)") {
 		t.Errorf("error = %v", err)
 	}
@@ -265,7 +265,7 @@ func newPairRig(t *testing.T, client Doer, env home.Env, stdin string) pairRig {
 	}
 }
 
-func TestRunPairTradesTheCodeAndSaysWhereItSaved(t *testing.T) {
+func TestRunPairTradesTheCodeAndSaysItPaired(t *testing.T) {
 	var code string
 	client := doerFunc(func(r *http.Request) (*http.Response, error) {
 		var body map[string]string
@@ -281,7 +281,7 @@ func TestRunPairTradesTheCodeAndSaysWhereItSaved(t *testing.T) {
 	if code != "ABCD-1234" {
 		t.Errorf("code = %q", code)
 	}
-	if want := "paired with https://s; saved " + rig.file + ". Run agentd to connect.\n"; rig.out.String() != want {
+	if want := "Paired with https://s.\n"; rig.out.String() != want {
 		t.Errorf("output = %q, want %q", rig.out.String(), want)
 	}
 	saved, err := Load(rig.file)

@@ -55,6 +55,19 @@ func TestPassthroughEnv(t *testing.T) {
 		}
 	})
 
+	t.Run("what belongs to one run or one secret never goes into the service file, which other users can read", func(t *testing.T) {
+		got := PassthroughEnv(home.Env{
+			"PATH":              "/usr/bin",
+			"AGENTD_UI_FD":      "3",
+			"AGENTD_PAIR_CODE":  "one-time-code",
+			"AGENTD_MCP_SOCKET": "/tmp/agentd-1/mcp.sock",
+			"AGENTD_MCP_TOKEN":  "session-token",
+		})
+		if !reflect.DeepEqual(got, map[string]string{"PATH": "/usr/bin"}) {
+			t.Fatalf("got %v", got)
+		}
+	})
+
 	t.Run("the variables that name the user's screen go into the service: the tray finds the display with them", func(t *testing.T) {
 		got := PassthroughEnv(home.Env{"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "XAUTHORITY": "/home/ann/.Xauthority", "LANG": "C"})
 		want := map[string]string{"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "XAUTHORITY": "/home/ann/.Xauthority"}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -34,17 +35,18 @@ var ErrPortsTaken = errors.New("every port of the gateway's range is taken")
 type Deps struct {
 	Version string
 	// Agents are the agents and whether each is ready now.
-	Agents   func() []pagemcp.AgentInfo
+	Agents   func() []pagetools.AgentInfo
 	Registry func() (registry.Registry, error)
-	// Ask shows the dialog and waits for the answer.
-	Ask func(q consent.Question) consent.Answer
+	// Ask shows the dialogs and waits for the decision: the answer and, for an Allow, the folders chosen.
+	Ask func(q consent.Question) consent.Decision
 	// Linked is whether the daemon is linked to the app at `server` now (an app that Stop or a refused token detached
 	// is saved, not linked).
 	Linked func(server string) bool
-	// ConnectServer pairs with the server at the page's origin using the code, saves it and links to it now; it fails
-	// when the app refuses.
-	ConnectServer func(server, code string) error
-	GrantBrowser  func(origin string) error
+	// ConnectServer pairs with the server at the page's origin using the code, saves it with its folders and links to
+	// it now; it fails when the app refuses.
+	ConnectServer func(server, code string, folders []string) error
+	// GrantBrowser saves the origin's grant with its folders.
+	GrantBrowser func(origin string, folders []string) error
 	// Revoke forgets the browser grant and the app of `origin`, and ends their sessions.
 	Revoke func(origin string) error
 	// Upgrade serves the WebSocket upgrade of a browser-granted origin on /v1/session, and returns when the socket
@@ -102,10 +104,10 @@ type statusGranted struct {
 }
 
 type statusBody struct {
-	Name    string               `json:"name"`
-	Version string               `json:"version"`
-	Granted statusGranted        `json:"granted"`
-	Agents  *[]pagemcp.AgentInfo `json:"agents,omitempty"`
+	Name    string                 `json:"name"`
+	Version string                 `json:"version"`
+	Granted statusGranted          `json:"granted"`
+	Agents  *[]pagetools.AgentInfo `json:"agents,omitempty"`
 }
 
 type grantedBody struct {
@@ -135,7 +137,7 @@ func (r *routes) status(origin string) out {
 	granted := statusGranted{Server: reg.HasApp(origin) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin)}
 	body := statusBody{Name: "agentd", Version: r.deps.Version, Granted: granted}
 	if granted.Server || granted.Browser {
-		agents := append([]pagemcp.AgentInfo{}, r.deps.Agents()...)
+		agents := append([]pagetools.AgentInfo{}, r.deps.Agents()...)
 		body.Agents = &agents
 	}
 	return out{http.StatusOK, body}
@@ -189,13 +191,15 @@ func (r *routes) end() {
 }
 
 func (r *routes) decide(origin string, want ConnectRequest) out {
-	var ready []string
+	var ready, titles []string
 	for _, a := range r.deps.Agents() {
 		if a.Ready {
 			ready = append(ready, a.Name)
+			titles = append(titles, cmp.Or(a.Title, a.Name))
 		}
 	}
-	answer := r.deps.Ask(consent.Question{Origin: origin, Mode: want.Mode, Agents: ready})
+	decision := r.deps.Ask(consent.Question{Origin: origin, Mode: want.Mode, Agents: ready, Titles: titles})
+	answer := decision.Answer
 	if answer == consent.AnswerUnavailable {
 		return refuse(http.StatusServiceUnavailable, "no-dialog")
 	}
@@ -209,14 +213,19 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 		}
 		return refuse(http.StatusForbidden, "denied")
 	}
+	if len(decision.Folders) == 0 {
+		// An Allow without a folder gives nothing to start agents in. The dialogs never produce one (a picker that
+		// returns none is a Deny), so the machine's way of asking is broken: nothing is granted.
+		return refuse(http.StatusServiceUnavailable, "no-dialog")
+	}
 	r.mu.Lock()
 	r.lockout.Reset()
 	r.mu.Unlock()
 	var err error
 	if want.Mode == consent.ModeServer {
-		err = r.deps.ConnectServer(origin, want.Code)
+		err = r.deps.ConnectServer(origin, want.Code, decision.Folders)
 	} else {
-		err = r.deps.GrantBrowser(origin)
+		err = r.deps.GrantBrowser(origin, decision.Folders)
 	}
 	if err != nil {
 		return refuseWith(http.StatusBadGateway, "pairing", err)

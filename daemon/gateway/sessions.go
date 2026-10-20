@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/nguyenvanduocit/agentd/daemon/agents"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 )
 
@@ -58,8 +58,8 @@ func newPageSocket(conn *websocket.Conn) *pageSocket {
 }
 
 // send queues m; a closed socket drops it.
-func (p *pageSocket) send(m pagemcp.FromDaemon) {
-	data := []byte(pagemcp.Encode(m))
+func (p *pageSocket) send(m pagetools.FromDaemon) {
+	data := []byte(pagetools.Encode(m))
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -160,7 +160,7 @@ type frameSink struct {
 func (s frameSink) Send(id string, kind agents.FrameKind, data string, code int) {
 	s.opening.RLock()
 	defer s.opening.RUnlock()
-	s.p.send(pagemcp.NewFrame(id, kind, data, code))
+	s.p.send(pagetools.NewFrame(id, kind, data, code))
 }
 
 func (s frameSink) Backlog() <-chan struct{} { return s.p.backlog() }
@@ -171,7 +171,7 @@ type bridgePage struct {
 	id string
 }
 
-func (b bridgePage) Send(line string)         { b.p.send(pagemcp.NewMcp(b.id, line)) }
+func (b bridgePage) Send(line string)         { b.p.send(pagetools.NewMcp(b.id, line)) }
 func (b bridgePage) Backlog() <-chan struct{} { return b.p.backlog() }
 
 // lanes run jobs one after another per key, each lane on its own goroutine while it has work: the socket's read loop
@@ -211,12 +211,15 @@ func (l *lanes) drain(key string) {
 type SessionOptions struct {
 	// Fleet is the fleet of each socket; Sink and Ended are the sessions' own.
 	Fleet agents.FleetOptions
-	Hello func() pagemcp.Hello
+	Hello func() pagetools.Hello
 	// Relay is the socket the agents' `agentd-mcp --page` bridges reach, closed by Shutdown; without it `opened`
 	// names no MCP server.
-	Relay *pagemcp.McpRelay
+	Relay *pagetools.McpRelay
 	// BridgeCommand is the absolute path of the pages' `agentd-mcp` wrapper, the command `opened` names.
 	BridgeCommand string
+	// Folders are the folders the user allowed the origin, read when they matter (agents.FleetOptions.Folders); nil
+	// sets no limit.
+	Folders func(origin string) ([]string, error)
 }
 
 // pageEntry is one page's socket: its agents, and the bridges of their sessions to the page's MCP server.
@@ -229,11 +232,11 @@ type pageEntry struct {
 	lanes   lanes
 
 	mu      sync.Mutex // guards bridges and ended
-	bridges map[string]*pagemcp.Binding
+	bridges map[string]*pagetools.Binding
 	ended   bool
 }
 
-func (e *pageEntry) binding(id string) *pagemcp.Binding {
+func (e *pageEntry) binding(id string) *pagetools.Binding {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.bridges[id]
@@ -350,11 +353,14 @@ func (s *BrowserSessions) Upgrade(origin string, w http.ResponseWriter, r *http.
 
 func (s *BrowserSessions) serve(conn *websocket.Conn, origin string) {
 	conn.SetReadLimit(maxPageMessageBytes)
-	e := &pageEntry{conn: conn, page: newPageSocket(conn), origin: origin, bridges: map[string]*pagemcp.Binding{}, lanes: lanes{pending: map[string][]func(){}}}
+	e := &pageEntry{conn: conn, page: newPageSocket(conn), origin: origin, bridges: map[string]*pagetools.Binding{}, lanes: lanes{pending: map[string][]func(){}}}
 	sink := frameSink{p: e.page, opening: &e.opening}
 	fleet := s.o.Fleet
 	fleet.Sink = func() agents.FrameSink { return sink }
 	fleet.Ended = e.unbind
+	if s.o.Folders != nil {
+		fleet.Folders = func() ([]string, error) { return s.o.Folders(origin) }
+	}
 	e.fleet = agents.NewFleet(fleet)
 
 	s.mu.Lock()
@@ -401,26 +407,26 @@ func (s *BrowserSessions) end(e *pageEntry) {
 }
 
 func (s *BrowserSessions) handle(e *pageEntry, text string) {
-	m, ok := pagemcp.ParseToDaemon(text)
+	m, ok := pagetools.ParseToDaemon(text)
 	if !ok {
-		e.page.send(pagemcp.NewError("", "expected a JSON message: open, write, close or mcp"))
+		e.page.send(pagetools.NewError("", "expected a JSON message: open, write, close or mcp"))
 		return
 	}
 	switch m.T {
-	case pagemcp.ToOpen:
+	case pagetools.ToOpen:
 		s.openSession(e, m.ID, m.Agent)
-	case pagemcp.ToWrite:
+	case pagetools.ToWrite:
 		e.lanes.run("write:"+m.ID, func() {
 			if !e.fleet.Write(m.ID, m.Line) {
-				e.page.send(pagemcp.NewError(m.ID, fmt.Sprintf("session %s is not running", m.ID)))
+				e.page.send(pagetools.NewError(m.ID, fmt.Sprintf("session %s is not running", m.ID)))
 			}
 		})
-	case pagemcp.ToClose:
+	case pagetools.ToClose:
 		e.fleet.Close(m.ID)
-	case pagemcp.ToMcp:
+	case pagetools.ToMcp:
 		e.lanes.run("mcp:"+m.ID, func() {
 			if b := e.binding(m.ID); b == nil || !b.ToBridge(m.Line) {
-				e.page.send(pagemcp.NewError(m.ID, fmt.Sprintf("session %s has no MCP bridge connected", m.ID)))
+				e.page.send(pagetools.NewError(m.ID, fmt.Sprintf("session %s has no MCP bridge connected", m.ID)))
 			}
 		})
 	}
@@ -428,22 +434,22 @@ func (s *BrowserSessions) handle(e *pageEntry, text string) {
 
 func (s *BrowserSessions) openSession(e *pageEntry, id, agent string) {
 	if e.fleet.Size() >= MaxSessionsPerSocket {
-		e.page.send(pagemcp.NewError(id, fmt.Sprintf("a page may keep at most %d sessions", MaxSessionsPerSocket)))
+		e.page.send(pagetools.NewError(id, fmt.Sprintf("a page may keep at most %d sessions", MaxSessionsPerSocket)))
 		return
 	}
 	e.opening.Lock()
 	defer e.opening.Unlock()
 	o, err := e.fleet.Open(id, agent)
 	if err != nil {
-		e.page.send(pagemcp.NewError(id, err.Error()))
+		e.page.send(pagetools.NewError(id, err.Error()))
 		return
 	}
-	e.page.send(pagemcp.NewOpened(id, o.PID, o.Cwd, s.bridgeFor(e, id)))
+	e.page.send(pagetools.NewOpened(id, o.PID, o.Cwd, s.bridgeFor(e, id)))
 }
 
 // bridgeFor is the stdio server through which session `id`'s agent reaches the page's MCP server: a token of its own,
 // bound to this page socket and session, that ends with either. Nil when the daemon has no relay socket.
-func (s *BrowserSessions) bridgeFor(e *pageEntry, id string) *pagemcp.McpServer {
+func (s *BrowserSessions) bridgeFor(e *pageEntry, id string) *pagetools.McpServer {
 	relay := s.o.Relay
 	if relay == nil {
 		return nil
@@ -456,6 +462,6 @@ func (s *BrowserSessions) bridgeFor(e *pageEntry, id string) *pagemcp.McpServer 
 	if gone {
 		b.End()
 	}
-	server := pagemcp.PageMcpServer(s.o.BridgeCommand, relay.Path(), b.Token())
+	server := pagetools.PageMcpServer(s.o.BridgeCommand, relay.Path(), b.Token())
 	return &server
 }

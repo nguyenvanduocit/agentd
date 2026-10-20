@@ -1,4 +1,4 @@
-// Command minimal-app is the smallest app that uses agentd: a Go server on the hub library and a page on the
+// Command minimal-app is the smallest app that uses agentd: a Go server on the Server library and a page on the
 // @agentd/client SDK. It has one user, keeps its pairings in memory, and does one thing with the daemon on the user's
 // computer: opens an agent and reads its answer to `initialize`.
 //
@@ -21,7 +21,7 @@ import (
 
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
 
-	"github.com/nguyenvanduocit/agentd/hub"
+	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
 // user is the only user this example has; a real app has accounts and passes the signed-in user's id.
@@ -30,7 +30,7 @@ const user = "demo"
 const askTimeout = 15 * time.Second
 
 type app struct {
-	hub       *hub.Hub
+	server    *goserver.Server
 	agentdURL string
 }
 
@@ -47,7 +47,7 @@ func fail(w http.ResponseWriter, status int, err error) {
 }
 
 // listOr answers with the user's daemons, or the error.
-func listOr(w http.ResponseWriter, list hub.List, err error) {
+func listOr(w http.ResponseWriter, list goserver.List, err error) {
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
@@ -57,13 +57,13 @@ func listOr(w http.ResponseWriter, list hub.List, err error) {
 
 // ping opens an agent on the user's most recently connected daemon, sends it `initialize` and returns its first answer line.
 func (a *app) ping(ctx context.Context) (string, error) {
-	online := a.hub.Online(user)
+	online := a.server.Online(user)
 	if len(online) == 0 {
-		return "", hub.ErrNoDaemon
+		return "", goserver.ErrNoDaemon
 	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
-	conn, err := a.hub.Open(ctx, user, online[0].ID, "claude")
+	conn, err := a.server.Open(ctx, user, online[0].ID, "claude")
 	if err != nil {
 		return "", fmt.Errorf("open an agent: %w", err)
 	}
@@ -85,7 +85,7 @@ func (a *app) ping(ctx context.Context) (string, error) {
 }
 
 func (a *app) routes(mux *http.ServeMux) {
-	me := a.hub.For(user)
+	me := a.server.For(user)
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, _ *http.Request) {
 		reply(w, http.StatusOK, map[string]string{"agentdUrl": a.agentdURL})
 	})
@@ -121,18 +121,18 @@ func run() error {
 	agentd := flag.String("agentd-url", "http://127.0.0.1:7100", "the agentd release server the page tells the user to install from")
 	flag.Parse()
 
-	h := hub.New(hub.Options{
-		Tokens: hub.NewMemoryTokens(),
+	h := goserver.New(goserver.Options{
+		Tokens: goserver.NewMemoryTokens(),
 	})
 	opts := socket.DefaultServerOptions()
-	opts.SetMaxHttpBufferSize(hub.MaxMessageBytes)
+	opts.SetMaxHttpBufferSize(goserver.MaxMessageBytes)
 	io := socket.NewServer(nil, opts)
 	defer io.Close(nil)
 
 	mux := http.NewServeMux()
 	h.Mount(io, mux)
 	mux.Handle("/socket.io/", io.ServeHandler(nil))
-	(&app{hub: h, agentdURL: *agentd}).routes(mux)
+	(&app{server: h, agentdURL: *agentd}).routes(mux)
 	mux.Handle("/", http.FileServer(http.Dir(*static)))
 
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}

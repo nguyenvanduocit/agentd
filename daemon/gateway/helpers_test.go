@@ -16,7 +16,7 @@ import (
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -80,8 +80,9 @@ type world struct {
 	revoked  []string
 	asked    []consent.Question
 	upgraded []string
-	agents   []pagemcp.AgentInfo
+	agents   []pagetools.AgentInfo
 	ask      func(consent.Question) consent.Answer
+	chosen   []string // the folders the user picks after an Allow; none by default means /work
 	sessions *BrowserSessions
 }
 
@@ -89,49 +90,56 @@ func newWorld() *world {
 	return &world{
 		reg:    registry.Empty(),
 		linked: map[string]bool{},
-		agents: []pagemcp.AgentInfo{{Name: "claude", Title: "Claude Code", Ready: true}, {Name: "codex", Title: "Codex", Reason: "not installed"}},
+		agents: []pagetools.AgentInfo{{Name: "claude", Title: "Claude Code", Ready: true}, {Name: "codex", Title: "Codex", Reason: "not installed"}},
 	}
 }
 
 func (w *world) deps() Deps {
 	return Deps{
 		Version: "test",
-		Agents:  func() []pagemcp.AgentInfo { return w.agents },
+		Agents:  func() []pagetools.AgentInfo { return w.agents },
 		Registry: func() (registry.Registry, error) {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			return w.reg, nil
 		},
-		Ask: func(q consent.Question) consent.Answer {
+		Ask: func(q consent.Question) consent.Decision {
 			w.mu.Lock()
 			w.asked = append(w.asked, q)
-			ask := w.ask
+			ask, folders := w.ask, w.chosen
 			w.mu.Unlock()
-			if ask == nil {
-				return consent.AnswerAllow
+			answer := consent.AnswerAllow
+			if ask != nil {
+				answer = ask(q)
 			}
-			return ask(q)
+			if answer != consent.AnswerAllow {
+				return consent.Decision{Answer: answer}
+			}
+			if folders == nil {
+				folders = []string{"/work"}
+			}
+			return consent.Decision{Answer: answer, Folders: folders}
 		},
 		Linked: func(server string) bool {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			return w.linked[server]
 		},
-		ConnectServer: func(server, code string) error {
+		ConnectServer: func(server, code string, folders []string) error {
 			if code == "WRONG" {
 				return fmt.Errorf("%s refused the code", server)
 			}
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			w.paired = append(w.paired, server+" "+code)
-			w.reg = w.reg.AddApp(registry.App{Server: server, Token: "token"})
+			w.reg = w.reg.AddApp(registry.App{Server: server, Token: "token", Folders: folders})
 			w.linked[server] = true
 			return nil
 		},
-		GrantBrowser: func(origin string) error {
+		GrantBrowser: func(origin string, folders []string) error {
 			w.mu.Lock()
 			defer w.mu.Unlock()
-			w.reg = w.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z")
+			w.reg = w.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z", folders)
 			return nil
 		},
 		Revoke: func(origin string) error {

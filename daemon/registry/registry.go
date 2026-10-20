@@ -10,20 +10,25 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 )
 
-// App is a server app this daemon is paired with: it dials out to Server with Token.
+// App is a server app this daemon is paired with: it dials out to Server with Token. Folders are the folders the user
+// allowed it (see agents.GuardLine); none is no limit, as for an app paired from the command line.
 type App struct {
-	Server string `json:"server"`
-	Token  string `json:"token"`
+	Server  string   `json:"server"`
+	Token   string   `json:"token"`
+	Folders []string `json:"folders,omitempty"`
 }
 
-// BrowserGrant is a web page origin the user allowed to run agents through the local gateway.
+// BrowserGrant is a web page origin the user allowed to run agents through the local gateway, in Folders (none is no
+// limit, as for a grant that was made before folders existed).
 type BrowserGrant struct {
-	Origin    string `json:"origin"`
-	GrantedAt string `json:"grantedAt"`
+	Origin    string   `json:"origin"`
+	GrantedAt string   `json:"grantedAt"`
+	Folders   []string `json:"folders,omitempty"`
 }
 
 // Registry is what daemon.json holds. The two lists are never nil in a value this package returns.
@@ -37,14 +42,32 @@ func Empty() Registry {
 	return Registry{Apps: []App{}, Browsers: []BrowserGrant{}}
 }
 
-const errNoApps = "has no apps list. Pair again: agentd pair --app <url> --code <code>"
+const errNoApps = "has no apps list"
+
+// damaged is the error of a registry file that cannot be read back, as Load gives it. `pair` reads the file before it
+// writes it, so pairing again fails the same way: the way out is to move the file aside and connect afresh.
+func damaged(file string) error {
+	return fmt.Errorf("%s is damaged. Move it aside (mv %s %s), then connect again from the app's page.", file, shellWord(file), shellWord(file+".broken"))
+}
+
+// shellWord is s as one word of a shell command: as it is when nothing in it needs quoting, else in single quotes.
+func shellWord(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // Parse reads daemon.json: {"apps":[{"server","token"}],"browsers":[{"origin","grantedAt"}]}. A missing or null
-// "browsers" is an empty list. The error continues a sentence that starts with the file's name.
+// "browsers" is an empty list. The error says what is wrong in words that continue a sentence starting with the
+// file's name; Load does not show it, it says the file is damaged.
 func Parse(text string) (Registry, error) {
 	var doc any
 	if err := json.Unmarshal([]byte(text), &doc); err != nil {
-		return Registry{}, errors.New("is not valid JSON. Pair again: agentd pair --app <url> --code <code>")
+		return Registry{}, errors.New("is not valid JSON")
 	}
 	obj, _ := doc.(map[string]any)
 	rawApps, ok := obj["apps"].([]any)
@@ -80,14 +103,36 @@ func parseApp(v any) (App, bool) {
 	o, _ := v.(map[string]any)
 	server, okServer := o["server"].(string)
 	token, okToken := o["token"].(string)
-	return App{Server: server, Token: token}, okServer && okToken && token != ""
+	folders, okFolders := parseFolders(o["folders"])
+	return App{Server: server, Token: token, Folders: folders}, okServer && okToken && token != "" && okFolders
+}
+
+// parseFolders reads an optional "folders": a missing or null one is none; anything but a list of text is malformed.
+func parseFolders(v any) ([]string, bool) {
+	if v == nil {
+		return nil, true
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	var folders []string
+	for _, item := range list {
+		folder, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		folders = append(folders, folder)
+	}
+	return folders, true
 }
 
 func parseGrant(v any) (BrowserGrant, bool) {
 	o, _ := v.(map[string]any)
 	origin, okOrigin := o["origin"].(string)
 	grantedAt, okAt := o["grantedAt"].(string)
-	return BrowserGrant{Origin: origin, GrantedAt: grantedAt}, okOrigin && okAt
+	folders, okFolders := parseFolders(o["folders"])
+	return BrowserGrant{Origin: origin, GrantedAt: grantedAt, Folders: folders}, okOrigin && okAt && okFolders
 }
 
 // Marshal is the bytes of daemon.json: two-space indent, one trailing newline, "<", ">" and "&" as they are. A CLI
@@ -120,12 +165,12 @@ func (r Registry) AddApp(app App) Registry {
 	return Registry{Apps: apps, Browsers: r.Browsers}
 }
 
-// AddBrowser grants the origin; an origin that is already granted keeps its first grantedAt.
-func (r Registry) AddBrowser(origin, grantedAt string) Registry {
+// AddBrowser grants the origin its folders; an origin that is already granted keeps its first grantedAt and folders.
+func (r Registry) AddBrowser(origin, grantedAt string, folders []string) Registry {
 	if r.HasBrowser(origin) {
 		return r
 	}
-	browsers := append(slices.Clone(r.Browsers), BrowserGrant{Origin: origin, GrantedAt: grantedAt})
+	browsers := append(slices.Clone(r.Browsers), BrowserGrant{Origin: origin, GrantedAt: grantedAt, Folders: folders})
 	return Registry{Apps: r.Apps, Browsers: browsers}
 }
 
@@ -153,6 +198,26 @@ func (r Registry) HasApp(server string) bool {
 // HasBrowser reports whether the registry grants this page origin.
 func (r Registry) HasBrowser(origin string) bool {
 	return slices.ContainsFunc(r.Browsers, func(g BrowserGrant) bool { return g.Origin == origin })
+}
+
+// AppFolders are the folders of the app with this server origin; none is no limit.
+func (r Registry) AppFolders(server string) []string {
+	for _, a := range r.Apps {
+		if a.Server == server {
+			return a.Folders
+		}
+	}
+	return nil
+}
+
+// BrowserFolders are the folders of the page origin's grant; none is no limit.
+func (r Registry) BrowserFolders(origin string) []string {
+	for _, g := range r.Browsers {
+		if g.Origin == origin {
+			return g.Folders
+		}
+	}
+	return nil
 }
 
 // Ended is what keeps running for origins a registry no longer has.

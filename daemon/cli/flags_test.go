@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// Each case is the result of node:util parseArgs (strict, allowPositionals) on the same arguments and option table.
+// Each case is the result of node:util parseArgs (strict, allowPositionals) on the same arguments and option table, except
+// that an unknown option is reported in agentd's words.
 func TestParseFlagsMatchesNode(t *testing.T) {
 	hint := func(raw string) string {
-		return "Unknown option '" + raw + "'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"" + raw + "\""
+		return "unknown option " + raw + `. Run "agentd --help".`
 	}
 	ambiguousLong := "Option '--app' argument is ambiguous.\nDid you forget to specify the option argument for '--app'?\nTo specify an option argument starting with a dash use '--app=-XYZ'."
 	cases := []struct {
@@ -81,11 +82,5 @@ func TestParseFlagsMatchesNode(t *testing.T) {
 		if c.check != nil && !c.check(v) {
 			t.Errorf("parseFlags(%q) values = %+v", c.args, v)
 		}
-	}
-}
-
-func TestJSONQuote(t *testing.T) {
-	if got := jsonQuote(`a"b<c>&\`); got != `"a\"b<c>&\\"` {
-		t.Errorf("jsonQuote = %s", got)
 	}
 }

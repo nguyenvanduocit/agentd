@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,9 +21,10 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/gateway"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/link"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
+	"github.com/nguyenvanduocit/agentd/daemon/ui"
 	"github.com/nguyenvanduocit/agentd/daemon/update"
 )
 
@@ -68,6 +70,9 @@ type daemon struct {
 	hub      *link.AppHub
 	gateway  *gateway.Gateway
 	stopTray func()
+	// ui is the link to the app or the tray program that shows the daemon's state, once it is started: what the
+	// daemon asks the user through (see ask).
+	ui atomic.Pointer[ui.Link]
 
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
@@ -295,14 +300,34 @@ func (d *daemon) startBrowserSessions() error {
 		Hello:         d.pageHello,
 		Relay:         d.listenForBridges(),
 		BridgeCommand: filepath.Join(binDir, home.WrapperFileName(runtime.GOOS)),
+		Folders:       d.browserFolders,
 	})
 	return nil
 }
 
+// browserFolders are the folders the user allowed the page origin; the registry is read each time, so a grant that
+// is made or removed applies to sockets that are already open.
+func (d *daemon) browserFolders(origin string) ([]string, error) {
+	reg, err := registry.Load(d.file)
+	if err != nil {
+		return nil, err
+	}
+	return reg.BrowserFolders(origin), nil
+}
+
+// appFolders are the folders the user allowed the app at server.
+func (d *daemon) appFolders(server string) ([]string, error) {
+	reg, err := registry.Load(d.file)
+	if err != nil {
+		return nil, err
+	}
+	return reg.AppFolders(server), nil
+}
+
 // listenForBridges opens the socket of the pages' `agentd-mcp --page` bridges; without it pages run agents but serve
 // them no tools.
-func (d *daemon) listenForBridges() *pagemcp.McpRelay {
-	relay, err := pagemcp.Listen(filepath.Join(d.root, "mcp.sock"))
+func (d *daemon) listenForBridges() *pagetools.McpRelay {
+	relay, err := pagetools.Listen(filepath.Join(d.root, "mcp.sock"))
 	if err != nil {
 		d.Log.Warn("pages cannot serve MCP tools to their agents: " + err.Error())
 		return nil
@@ -317,6 +342,7 @@ func (d *daemon) startHub() {
 		ConfigFile:  d.file,
 		Executable:  d.exe,
 		Platform:    runtime.GOOS,
+		Folders:     d.appFolders,
 		Hello:       d.hello,
 		OnEmpty:     func(code int) { d.stopUnlessPagesMayConnect(code) },
 		OnRestart:   func(server string) { d.restartRequested(server, d.hub.Size()) },

@@ -56,7 +56,7 @@ func Load(file string) (Registry, error) {
 	}
 	r, err := Parse(string(text))
 	if err != nil {
-		return Registry{}, fmt.Errorf("%s %w", file, err)
+		return Registry{}, damaged(file)
 	}
 	return r, nil
 }

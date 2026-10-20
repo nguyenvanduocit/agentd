@@ -33,7 +33,7 @@ type Adapter struct {
 	Title string
 	// Pkg is the npm package, installed once per version under ~/.agentd/adapters.
 	Pkg string
-	// Version is the pinned version: the ones in agent/package.json; change both together.
+	// Version is the pinned version: the ones in adapters/package.json; change both together.
 	Version string
 }
 

@@ -1,5 +1,5 @@
 // Command agentd-server is a local stand-in for GitHub Releases: it serves the files scripts/build-daemon.sh writes under
-// the URLs GitHub gives a release's assets (see package server). For development and the end-to-end tests; the real
+// the URLs GitHub gives a release's assets (see package releaseserver). For development and the end-to-end tests; the real
 // releases are on GitHub.
 //
 //	agentd-server -dist ./dist -addr 127.0.0.1:7100
@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nguyenvanduocit/agentd/server"
+	"github.com/nguyenvanduocit/agentd/internal/releaseserver"
 )
 
 func env(name, fallback string) string {
@@ -52,7 +52,7 @@ func run() error {
 	dist := flag.String("dist", env("AGENTD_DIST", "dist"), "directory of release files (AGENTD_DIST)")
 	flag.Parse()
 
-	h, err := server.Handler(server.Config{Dist: *dist})
+	h, err := releaseserver.Handler(releaseserver.Config{Dist: *dist})
 	if err != nil {
 		return fmt.Errorf("configure: %w", err)
 	}

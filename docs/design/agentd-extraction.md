@@ -1,5 +1,7 @@
 # agentd: the daemon as its own product (design of this repository)
 
+> Record of the extraction plan. The directories since carry the names of their roles: `tray/` is `app/`, `hub/` is `sdk/goserver/`, `server/` is `internal/releaseserver/`, `sdk/client/` is `sdk/web/`, `agent/` is `adapters/`, and the daemon is Go. `README.md` has the layout as it is.
+
 The daemon, its tray, its protocol, its releases and an SDK for apps live in this repository. MindChains is one app that uses the hub library and the SDK.
 
 ## Why

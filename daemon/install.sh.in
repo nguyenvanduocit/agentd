@@ -42,6 +42,8 @@ ENGINE=""
 
 say() { printf 'agentd: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
+# note <text>: a plain line for the person, without the "agentd:" tag of say.
+note() { printf '%s\n' "$*" >&2; }
 
 # tilde <path>: the path with $HOME written as ~, for messages.
 tilde() {
@@ -225,6 +227,23 @@ paired_config() {
   printf '%s/agentd/daemon.json' "${XDG_CONFIG_HOME:-$HOME/.config}"
 }
 
+# farewell <app> <launcher>: the last words of an install whose service started, so the person knows where to go next.
+# <app> is empty when this run paired with no app: the apps an earlier pairing saved connect by themselves.
+farewell() {
+  local app="$1" launcher="$2"
+  note ""
+  if [ -n "$app" ]; then
+    note "agentd is running and connected to $app."
+    note "Go back to $app in your browser."
+    note "First run only: Claude Code and Codex finish setting up in the background (a few minutes)."
+  else
+    note "agentd is running. It connects to the apps this computer is already paired with; see them with: $launcher apps"
+  fi
+  note ""
+  note "Status: $launcher service status"
+  note "Log:    $launcher service logs -f"
+}
+
 main() {
   local app="" code="" service=1 foreground=0 launcher
   while [ $# -gt 0 ]; do
@@ -310,7 +329,7 @@ main() {
     return 0
   fi
   "$launcher" service install </dev/null || die "the daemon is installed and paired, but its service could not be started (see above). Run it in a terminal with: $launcher run"
-  say "done. Status: $launcher service status   Log: $launcher service logs -f"
+  farewell "$app" "$launcher"
 }
 
 main "$@"

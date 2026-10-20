@@ -1,6 +1,6 @@
 # goclient
 
-What a Go program uses to find the agentd daemon on the user's computer, ask it to connect, and run an agent through it: the Go counterpart of `@agentd/client` (`sdk/client/`), for Go apps that talk to the daemon's gateway on `127.0.0.1` (ports 47615 to 47624) the way a web page does. Standard library and [`gorilla/websocket`](https://github.com/gorilla/websocket) only; the daemon shows the user a native dialog before anything is allowed. The protocol and its limits are in `daemon/README.md` ("Apps, web pages and the gateway").
+What a Go program uses to find the agentd daemon on the user's computer, ask it to connect, and run an agent through it: the Go counterpart of `@agentd/client` (`sdk/web/`), for Go apps that talk to the daemon's gateway on `127.0.0.1` (ports 47615 to 47624) the way a web page does. Standard library and [`gorilla/websocket`](https://github.com/gorilla/websocket) only; the daemon shows the user a native dialog before anything is allowed. The protocol and its limits are in `daemon/README.md` ("Apps, web pages and the gateway").
 
 A page has an origin the browser puts in every request; a Go program has none, so **every call takes the app's origin**. The gateway accepts an `https` origin, or `http` on a loopback host (`http://localhost:5173`), and the daemon connects a server mode app at that origin.
 

@@ -73,7 +73,7 @@ func TestParseDropsUnknownFields(t *testing.T) {
 
 // The file of a Node install (JSON.stringify(registry, null, 2) and a newline) is what Marshal writes.
 func TestMarshalIsTheBytesTheNodeDaemonWrote(t *testing.T) {
-	r := Empty().AddApp(App{Server: "https://a.example", Token: "t<&>"}).AddBrowser("https://c.example", "2026-10-19T00:00:00.000Z")
+	r := Empty().AddApp(App{Server: "https://a.example", Token: "t<&>"}).AddBrowser("https://c.example", "2026-10-19T00:00:00.000Z", nil)
 	want := `{
   "apps": [
     {
@@ -101,7 +101,7 @@ func TestMarshalIsTheBytesTheNodeDaemonWrote(t *testing.T) {
 }
 
 func TestMarshalParseRoundTrip(t *testing.T) {
-	r := Empty().AddApp(appA).AddApp(appB).AddBrowser("https://c.example", "t")
+	r := Empty().AddApp(appA).AddApp(appB).AddBrowser("https://c.example", "t", nil)
 	got, err := Parse(string(r.Marshal()))
 	if err != nil {
 		t.Fatal(err)
@@ -126,14 +126,14 @@ func TestEditsDoNotChangeTheirInput(t *testing.T) {
 }
 
 func TestRemoveOriginDropsTheAppAndTheBrowserGrantOfThatOriginOnly(t *testing.T) {
-	r := Empty().AddApp(appA).AddApp(appB).AddBrowser(appA.Server, "t0").AddBrowser("https://other.example", "t1")
+	r := Empty().AddApp(appA).AddApp(appB).AddBrowser(appA.Server, "t0", nil).AddBrowser("https://other.example", "t1", nil)
 	r = r.RemoveOrigin(appA.Server)
 	wantEqual(t, r.Apps, []App{appB})
 	wantEqual(t, r.Browsers, []BrowserGrant{{Origin: "https://other.example", GrantedAt: "t1"}})
 }
 
 func TestHasAppAndHasBrowserAnswerByOrigin(t *testing.T) {
-	r := Empty().AddApp(appA).AddBrowser("https://c.example", "t")
+	r := Empty().AddApp(appA).AddBrowser("https://c.example", "t", nil)
 	for _, tc := range []struct {
 		name string
 		got  bool
@@ -151,14 +151,14 @@ func TestHasAppAndHasBrowserAnswerByOrigin(t *testing.T) {
 }
 
 func TestWithdrawnIsWhatRunsForAnOriginTheRegistryNoLongerHas(t *testing.T) {
-	r := Empty().AddApp(appA).AddBrowser("https://c.example", "t")
+	r := Empty().AddApp(appA).AddBrowser("https://c.example", "t", nil)
 	wantEqual(t, r.Withdrawn([]string{appA.Server, appB.Server}, []string{"https://c.example", "https://d.example"}),
 		Ended{Apps: []string{appB.Server}, Pages: []string{"https://d.example"}})
 	wantEqual(t, r.Withdrawn([]string{appA.Server}, []string{"https://c.example"}), Ended{Apps: []string{}, Pages: []string{}})
 }
 
 func TestARepeatedBrowserGrantIsStoredOnce(t *testing.T) {
-	r := Empty().AddBrowser("https://c.example", "t0").AddBrowser("https://c.example", "t1")
+	r := Empty().AddBrowser("https://c.example", "t0", nil).AddBrowser("https://c.example", "t1", nil)
 	wantEqual(t, r.Browsers, []BrowserGrant{{Origin: "https://c.example", GrantedAt: "t0"}})
 }
 
@@ -184,10 +184,10 @@ func TestSelectApps(t *testing.T) {
 
 func TestSelectAppTakesTheOnlyAppOrTheOneNamed(t *testing.T) {
 	two := Empty().AddApp(appA).AddApp(appB)
-	if got, err := Empty().AddApp(appA).SelectApp(nil); err != nil || got != appA {
+	if got, err := Empty().AddApp(appA).SelectApp(nil); err != nil || !reflect.DeepEqual(got, appA) {
 		t.Errorf("only app = %+v, %v", got, err)
 	}
-	if got, err := two.SelectApp(ptr(appB.Server)); err != nil || got != appB {
+	if got, err := two.SelectApp(ptr(appB.Server)); err != nil || !reflect.DeepEqual(got, appB) {
 		t.Errorf("named app = %+v, %v", got, err)
 	}
 }
@@ -199,5 +199,36 @@ func TestSelectAppWithSeveralAppsAndNoServerAsksForApp(t *testing.T) {
 	}
 	if _, err := Empty().SelectApp(nil); err == nil || !strings.Contains(err.Error(), "not paired") {
 		t.Errorf("error = %v, want not paired", err)
+	}
+}
+
+func TestFoldersRoundTripAndAreLookedUpPerGrant(t *testing.T) {
+	r := Empty().
+		AddApp(App{Server: "https://a.example", Token: "ta", Folders: []string{"/work/a", "/work/b"}}).
+		AddBrowser("https://c.example", "t", []string{"/work/c"}).
+		AddBrowser("https://d.example", "t", nil)
+	back, err := Parse(string(r.Marshal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEqual(t, back, r)
+	wantEqual(t, back.AppFolders("https://a.example"), []string{"/work/a", "/work/b"})
+	wantEqual(t, back.BrowserFolders("https://c.example"), []string{"/work/c"})
+	if back.BrowserFolders("https://d.example") != nil || back.BrowserFolders("https://unknown.example") != nil || back.AppFolders("https://unknown.example") != nil {
+		t.Error("a grant without folders, or none at all, has no folders")
+	}
+	if strings.Contains(string(Empty().AddBrowser("https://d.example", "t", nil).Marshal()), "folders") {
+		t.Error("a grant without folders is written as before")
+	}
+}
+
+func TestParseRefusesFoldersThatAreNotAListOfText(t *testing.T) {
+	for _, text := range []string{
+		`{"apps":[{"server":"https://a","token":"t","folders":"/x"}]}`,
+		`{"apps":[],"browsers":[{"origin":"https://a","grantedAt":"t","folders":[1]}]}`,
+	} {
+		if _, err := Parse(text); err == nil {
+			t.Errorf("%s parsed", text)
+		}
 	}
 }

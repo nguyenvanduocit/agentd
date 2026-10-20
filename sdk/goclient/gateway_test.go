@@ -28,7 +28,7 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
 	"github.com/nguyenvanduocit/agentd/daemon/gateway"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 	"github.com/nguyenvanduocit/agentd/sdk/goclient"
 )
@@ -145,13 +145,13 @@ func startRig(t *testing.T, agent string) *rig {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	relay, err := pagemcp.Listen(filepath.Join(dir, "mcp.sock"))
+	relay, err := pagetools.Listen(filepath.Join(dir, "mcp.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := home.Env{"PATH": os.Getenv("PATH"), agents.SeamVariable("claude"): agent}
 	find := func(program string) (string, bool) { return home.FindProgram(program, env) }
-	hello := func() pagemcp.Hello { return pagemcp.NewHello("test", agents.AllStatuses(env, find, noAdapter)) }
+	hello := func() pagetools.Hello { return pagetools.NewHello("test", agents.AllStatuses(env, find, noAdapter)) }
 	r := &rig{t: t, reg: registry.Empty(), linked: map[string]bool{}, answer: consent.AnswerAllow, bridge: filepath.Join(binDir, "agentd-mcp"), regFile: filepath.Join(dir, "registry.json")}
 	r.sessions = gateway.NewBrowserSessions(gateway.SessionOptions{
 		Fleet:         agents.FleetOptions{Cwd: dir, BinDir: binDir, Env: env, Adapter: noAdapter, State: noState{}},
@@ -161,17 +161,20 @@ func startRig(t *testing.T, agent string) *rig {
 	})
 	deps := gateway.Deps{
 		Version: "test",
-		Agents:  func() []pagemcp.AgentInfo { return hello().Agents },
+		Agents:  func() []pagetools.AgentInfo { return hello().Agents },
 		Registry: func() (registry.Registry, error) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			return r.reg, nil
 		},
-		Ask: func(q consent.Question) consent.Answer {
+		Ask: func(q consent.Question) consent.Decision {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.asked = append(r.asked, q)
-			return r.answer
+			if r.answer != consent.AnswerAllow {
+				return consent.Decision{Answer: r.answer}
+			}
+			return consent.Decision{Answer: r.answer, Folders: []string{"/work"}}
 		},
 		Linked: func(server string) bool {
 			r.mu.Lock()
@@ -179,8 +182,8 @@ func startRig(t *testing.T, agent string) *rig {
 			return r.linked[server]
 		},
 		// The daemon's own pairing: it posts the code to <server>/agentd/pair and saves the app it gets a token from.
-		ConnectServer: func(server, code string) error {
-			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.MachineOf("host", "linux", "amd64"), server, code, r.regFile)
+		ConnectServer: func(server, code string, folders []string) error {
+			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.MachineOf("host", "linux", "amd64"), server, code, r.regFile, folders)
 			if err != nil {
 				return err
 			}
@@ -190,10 +193,10 @@ func startRig(t *testing.T, agent string) *rig {
 			r.linked[app.Server] = true
 			return nil
 		},
-		GrantBrowser: func(origin string) error {
+		GrantBrowser: func(origin string, folders []string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.reg = r.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z")
+			r.reg = r.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z", folders)
 			return nil
 		},
 		Revoke: func(origin string) error {
@@ -589,16 +592,16 @@ func dialBridge(t *testing.T, server goclient.McpServer) *bridge {
 	for _, e := range server.Env {
 		env[e.Name] = e.Value
 	}
-	conn, err := net.Dial("unix", env[pagemcp.McpSocketEnv])
+	conn, err := net.Dial("unix", env[pagetools.McpSocketEnv])
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if _, err := io.WriteString(conn, pagemcp.BridgeHello(env[pagemcp.McpTokenEnv])+"\n"); err != nil {
+	if _, err := io.WriteString(conn, pagetools.BridgeHello(env[pagetools.McpTokenEnv])+"\n"); err != nil {
 		t.Fatal(err)
 	}
 	b := &bridge{conn: conn, reader: bufio.NewReader(conn)}
-	if answer := pagemcp.ParseBridgeAnswer(b.line(t)); !answer.OK {
+	if answer := pagetools.ParseBridgeAnswer(b.line(t)); !answer.OK {
 		t.Fatalf("the bridge was refused: %s", answer.Message)
 	}
 	return b

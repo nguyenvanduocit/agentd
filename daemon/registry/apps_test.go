@@ -45,17 +45,19 @@ func TestRunAppsListsEveryAppAndBrowserGrantWithoutTokens(t *testing.T) {
 	if err != nil || exit != 0 {
 		t.Fatalf("RunApps = %d, %v", exit, err)
 	}
-	want := "https://a.example  app\nhttps://b.example  app\nhttps://c.example  browser, granted 2026-10-19\n"
+	want := "https://a.example  app, any folder\nhttps://b.example  app, any folder\nhttps://c.example  browser, granted 2026-10-19, any folder\n"
 	if rig.out.String() != want {
 		t.Errorf("output = %q, want %q", rig.out.String(), want)
 	}
 }
 
-func TestRunAppsListOfNothingPairedPrintsNothing(t *testing.T) {
-	rig := newAppsRig(t, "")
-	exit, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log)
-	if err != nil || exit != 0 || rig.out.Len() != 0 {
-		t.Errorf("RunApps = %d, %v, output %q", exit, err, rig.out.String())
+func TestRunAppsListOfNothingPairedSaysNothingIsConnected(t *testing.T) {
+	for name, content := range map[string]string{"no file": "", "an empty registry": `{"apps":[]}`} {
+		rig := newAppsRig(t, content)
+		exit, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log)
+		if want := "Nothing is connected. An app asks to connect from its own page.\n"; err != nil || exit != 0 || rig.out.String() != want || rig.errOut.Len() != 0 {
+			t.Errorf("%s: RunApps = %d, %v, stdout %q, stderr %q", name, exit, err, rig.out.String(), rig.errOut.String())
+		}
 	}
 }
 
@@ -103,18 +105,30 @@ func TestRunAppsUsesTheConfigFileOfTheFlag(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(twoAppsOneBrowser), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RunApps(cli.Apps{Action: cli.AppsList, Config: &cfg}, rig.host, rig.log); err != nil || !strings.Contains(rig.out.String(), "https://a.example  app") {
+	if _, err := RunApps(cli.Apps{Action: cli.AppsList, Config: &cfg}, rig.host, rig.log); err != nil || !strings.Contains(rig.out.String(), "https://a.example  app, any folder") {
 		t.Errorf("err = %v, output %q", err, rig.out.String())
 	}
 }
 
 func TestRunAppsFailsOnABrokenRegistryAndABadOrigin(t *testing.T) {
 	rig := newAppsRig(t, "{oops")
-	if _, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log); err == nil || !strings.Contains(err.Error(), rig.file+" is not valid JSON") {
+	if _, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log); err == nil || !strings.Contains(err.Error(), rig.file+" is damaged") {
 		t.Errorf("error = %v", err)
 	}
 	rig = newAppsRig(t, twoAppsOneBrowser)
 	if _, err := RunApps(cli.Apps{Action: cli.AppsRemove, Origin: "nonsense"}, rig.host, rig.log); err == nil || !strings.Contains(err.Error(), "is not a URL") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestRunAppsListsTheFoldersOfAGrant(t *testing.T) {
+	rig := newAppsRig(t, `{"apps":[{"server":"https://a.example","token":"ta","folders":["/work/a","/work/b"]}],`+
+		`"browsers":[{"origin":"https://c.example","grantedAt":"2026-10-19T00:00:00.000Z","folders":["/work/c"]}]}`)
+	if _, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log); err != nil {
+		t.Fatal(err)
+	}
+	want := "https://a.example  app, in /work/a, /work/b\nhttps://c.example  browser, granted 2026-10-19, in /work/c\n"
+	if rig.out.String() != want {
+		t.Errorf("output = %q, want %q", rig.out.String(), want)
 	}
 }

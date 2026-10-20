@@ -378,6 +378,69 @@ func narrowPath(t *testing.T) string {
 	return bin
 }
 
+// What a person reads last tells them where to go next. The service step that comes before it is not run here (see
+// below), so the test loads the script without its closing call to main and runs the function that says it.
+func TestInstallEndsByTellingThePersonWhatToDoNext(t *testing.T) {
+	text, err := os.ReadFile(filepath.Join(rootDir, "daemon", "install.sh.in"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := strings.CutSuffix(string(text), "\nmain \"$@\"\n")
+	if !ok {
+		t.Fatal(`install.sh.in no longer ends with the line main "$@"`)
+	}
+	if !strings.Contains(body, `farewell "$app" "$launcher"`) {
+		t.Error("main does not end with the farewell")
+	}
+	functions := filepath.Join(t.TempDir(), "install-functions.sh")
+	if err := os.WriteFile(functions, []byte(body+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	farewell := func(app string) string {
+		t.Helper()
+		out, code := run(t, cleanEnv(), "bash", "-c", `source "$0"; farewell "$1" "$2"`, functions, app, "/h/.agentd/bin/agentd")
+		if code != 0 {
+			t.Fatalf("farewell %q exited %d:\n%s", app, code, out)
+		}
+		return out
+	}
+
+	paired := farewell("https://app.example.com")
+	for _, want := range []string{
+		"agentd is running and connected to https://app.example.com.\n",
+		"Go back to https://app.example.com in your browser.\n",
+		"First run only: Claude Code and Codex finish setting up in the background (a few minutes).\n",
+		"/h/.agentd/bin/agentd service status",
+		"/h/.agentd/bin/agentd service logs -f",
+	} {
+		if !strings.Contains(paired, want) {
+			t.Errorf("the ending after a pairing lacks %q:\n%s", want, paired)
+		}
+	}
+
+	// No --app means the pairings saved before: those apps connect by themselves, so nothing is asked of the person.
+	saved := farewell("")
+	for _, want := range []string{
+		"agentd is running. It connects to the apps this computer is already paired with; see them with: /h/.agentd/bin/agentd apps\n",
+		"/h/.agentd/bin/agentd service status",
+	} {
+		if !strings.Contains(saved, want) {
+			t.Errorf("the ending without an app lacks %q:\n%s", want, saved)
+		}
+	}
+	if strings.Contains(saved, "Go back to") {
+		t.Errorf("the ending without an app sends the person to an app:\n%s", saved)
+	}
+
+	for _, out := range []string{paired, saved} {
+		for _, word := range []string{"daemon", "engine", "origin"} {
+			if strings.Contains(strings.ToLower(out), word) {
+				t.Errorf("the ending says %q, which a person has no use for:\n%s", word, out)
+			}
+		}
+	}
+}
+
 // What the install tests leave out, because it needs what a test must not touch or reach:
 //   - the service step (launchd or systemd --user, and the restart loop that runs a daemon): it starts a daemon of this
 //     machine's user;

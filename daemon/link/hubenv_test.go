@@ -17,7 +17,7 @@ import (
 
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
 
-	"github.com/nguyenvanduocit/agentd/hub"
+	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
 const user = "alice"
@@ -30,7 +30,7 @@ func sha256hex(s string) string {
 // store is the hub's token store in a test: it counts the handshakes that present each token, can fail its lookups
 // as a database does while it is down, and with acceptAny knows every token.
 type store struct {
-	hub.Tokens
+	goserver.Tokens
 	acceptAny bool
 	down      atomic.Bool
 
@@ -38,22 +38,22 @@ type store struct {
 	counts map[string]int // token hash -> handshakes
 }
 
-func (s *store) ByHash(hash string) (hub.Record, error) {
+func (s *store) ByHash(hash string) (goserver.Record, error) {
 	s.mu.Lock()
 	s.counts[hash]++
 	s.mu.Unlock()
 	if s.down.Load() {
-		return hub.Record{}, errors.New("connection refused: the database is down")
+		return goserver.Record{}, errors.New("connection refused: the database is down")
 	}
 	if s.acceptAny {
-		return hub.Record{ID: hash[:32], UserID: user, TokenHash: hash, Name: "any"}, nil
+		return goserver.Record{ID: hash[:32], UserID: user, TokenHash: hash, Name: "any"}, nil
 	}
 	return s.Tokens.ByHash(hash)
 }
 
-func (s *store) ByID(userID, id string) (hub.Record, error) {
+func (s *store) ByID(userID, id string) (goserver.Record, error) {
 	if s.acceptAny {
-		return hub.Record{ID: id, UserID: userID}, nil
+		return goserver.Record{ID: id, UserID: userID}, nil
 	}
 	return s.Tokens.ByID(userID, id)
 }
@@ -74,19 +74,19 @@ func (s *store) handshakesOf(token string) int {
 
 // hubEnv is the real hub on an httptest server.
 type hubEnv struct {
-	hub    *hub.Hub
+	hub    *goserver.Server
 	store  *store
-	tokens *hub.MemoryTokens
+	tokens *goserver.MemoryTokens
 	srv    *httptest.Server
 }
 
 func newHubEnv(t *testing.T, acceptAny bool) *hubEnv {
 	t.Helper()
-	e := &hubEnv{tokens: hub.NewMemoryTokens()}
+	e := &hubEnv{tokens: goserver.NewMemoryTokens()}
 	e.store = &store{Tokens: e.tokens, acceptAny: acceptAny, counts: map[string]int{}}
-	e.hub = hub.New(hub.Options{Tokens: e.store})
+	e.hub = goserver.New(goserver.Options{Tokens: e.store})
 	opts := socket.DefaultServerOptions()
-	opts.SetMaxHttpBufferSize(hub.MaxMessageBytes)
+	opts.SetMaxHttpBufferSize(goserver.MaxMessageBytes)
 	sio := socket.NewServer(nil, opts)
 	mux := http.NewServeMux()
 	e.hub.Mount(sio, mux)
@@ -97,18 +97,18 @@ func newHubEnv(t *testing.T, acceptAny bool) *hubEnv {
 }
 
 // pair is what `agentd pair` leaves in daemon.json: a paired daemon of user, and the token it holds.
-func (e *hubEnv) pair(t *testing.T, token string) hub.Record {
+func (e *hubEnv) pair(t *testing.T, token string) goserver.Record {
 	t.Helper()
-	rec, err := e.tokens.Add(hub.Record{ID: sha256hex(token)[:32], UserID: user, TokenHash: sha256hex(token), Name: "laptop", Hostname: "laptop", OS: "linux", Arch: "amd64"})
+	rec, err := e.tokens.Add(goserver.Record{ID: sha256hex(token)[:32], UserID: user, TokenHash: sha256hex(token), Name: "laptop", Hostname: "laptop", OS: "linux", Arch: "amd64"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return rec
 }
 
-func (e *hubEnv) waitState(t *testing.T, id, state string) hub.Info {
+func (e *hubEnv) waitState(t *testing.T, id, state string) goserver.Info {
 	t.Helper()
-	var info hub.Info
+	var info goserver.Info
 	waitFor(t, "the daemon to be "+state, func() bool {
 		list, err := e.hub.List(user)
 		if err != nil {
@@ -126,7 +126,7 @@ func (e *hubEnv) waitState(t *testing.T, id, state string) hub.Info {
 }
 
 // open starts the agent on the user's daemon id.
-func (e *hubEnv) open(t *testing.T, id string) hub.Conn {
+func (e *hubEnv) open(t *testing.T, id string) goserver.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 	defer cancel()
@@ -139,7 +139,7 @@ func (e *hubEnv) open(t *testing.T, id string) hub.Conn {
 }
 
 // readLine reads one line of c's stdout.
-func readLine(t *testing.T, c hub.Conn) string {
+func readLine(t *testing.T, c goserver.Conn) string {
 	t.Helper()
 	type result struct {
 		line string

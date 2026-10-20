@@ -2,7 +2,7 @@
 // against gorilla/websocket.
 //
 // Decision (spike; TestOwnClientConnectsOnceEvery200Times is its regression test): the daemon does not use
-// github.com/zishang520/socket.io/clients/socket/v3, the library client in go.mod. hub/fakedaemon_test.go:19-26
+// github.com/zishang520/socket.io/clients/socket/v3, the library client in go.mod. sdk/goserver/fakedaemon_test.go:19-26
 // documents that it sends the namespace CONNECT twice or never; the second CONNECT makes the hub replace the
 // daemon's first socket and close the transport the two share. The spike connected 200 clients (websocket
 // transport only, one auth token each, an in-process hub counting the handshakes per token), three runs each:
@@ -146,7 +146,13 @@ type conn struct {
 	// pingWindow is how long the server may stay silent: its ping interval and ping timeout.
 	pingWindow time.Duration
 
-	wmu sync.Mutex // one writer at a time
+	// writeLoop is the one goroutine that writes messages, and a message is not interleaved with another on the wire.
+	// What it writes next: a pong first, then the control messages (answers, errors, requests), then the frames in the
+	// order they were offered. Reading never waits for a write.
+	pongs       chan struct{} // a ping to answer; one pending is as good as two
+	control     chan string
+	data        chan frameWrite
+	writerEnded chan struct{} // closed when writeLoop has returned
 
 	mu     sync.Mutex
 	reason string // why the connection ended; "" while it lives
@@ -291,7 +297,12 @@ func newConn(ws *websocket.Conn, ns string, open openPacket) *conn {
 		window = 45 * time.Second
 	}
 	_ = ws.SetWriteDeadline(time.Time{})
-	return &conn{ws: ws, ns: ns, ctx: ctx, end: end, pingWindow: window, acks: map[int]chan []json.RawMessage{}}
+	c := &conn{
+		ws: ws, ns: ns, ctx: ctx, end: end, pingWindow: window, acks: map[int]chan []json.RawMessage{},
+		pongs: make(chan struct{}, 1), control: make(chan string, controlBacklog), data: make(chan frameWrite), writerEnded: make(chan struct{}),
+	}
+	go c.writeLoop()
+	return c
 }
 
 // finish ends the connection for reason (the first reason stays) and closes the transport; the calls that wait for an
@@ -328,13 +339,116 @@ func (c *conn) nsPrefix() string {
 	return c.ns + ","
 }
 
-// write sends one Engine.IO message.
+// controlBacklog is how many control messages wait for the writer before the one that offers the next waits too.
+const controlBacklog = 64
+
+// maxControlRun is how many control messages go out in a row while a frame waits: control comes first, but a flood of
+// answers cannot starve the frames.
+const maxControlRun = 16
+
+// frameWrite is a message in the line of frames: done receives how its write ended.
+type frameWrite struct {
+	text string
+	done chan error
+}
+
+// write sends one Engine.IO message in its turn among the frames, and returns once it was written. The caller waits
+// for it, so that a peer that takes frames slowly slows down whoever produces them.
 func (c *conn) write(text string) error {
 	if c.ctx.Err() != nil {
 		return errDisconnected
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
+	w := frameWrite{text: text, done: make(chan error, 1)}
+	select {
+	case c.data <- w:
+	case <-c.ctx.Done():
+		return errDisconnected
+	}
+	select {
+	case err := <-w.done:
+		return err
+	case <-c.ctx.Done():
+		return errDisconnected
+	}
+}
+
+// signal sends one small Engine.IO message (an answer, an error, a request) ahead of the frames that wait, and returns
+// once it is queued: a write that is stuck on a slow peer delays it by that one message at most. A message that was
+// queued when the connection ended is not sent.
+func (c *conn) signal(text string) error {
+	if c.ctx.Err() != nil {
+		return errDisconnected
+	}
+	select {
+	case c.control <- text:
+		return nil
+	case <-c.ctx.Done():
+		return errDisconnected
+	}
+}
+
+// pong answers a ping without waiting for the write, so that reading goes on whatever the peer takes. A pong already
+// waiting answers this ping too.
+func (c *conn) pong() {
+	select {
+	case c.pongs <- struct{}{}:
+	default:
+	}
+}
+
+// writeLoop writes what the other goroutines queue, one message at a time, until the connection ends.
+func (c *conn) writeLoop() {
+	defer close(c.writerEnded)
+	run := 0 // control messages written since the last frame
+	for {
+		var text string
+		var done chan error
+		select {
+		case <-c.pongs:
+			text = "3"
+		default:
+			if run < maxControlRun {
+				select {
+				case text = <-c.control:
+				default:
+				}
+			}
+			if text == "" {
+				select {
+				case w := <-c.data:
+					text, done = w.text, w.done
+				default:
+				}
+			}
+			if text == "" { // nothing waits: sleep until something does
+				select {
+				case <-c.pongs:
+					text = "3"
+				case text = <-c.control:
+				case w := <-c.data:
+					text, done = w.text, w.done
+				case <-c.ctx.Done():
+					return
+				}
+			}
+		}
+		if done == nil {
+			run++
+		} else {
+			run = 0
+		}
+		err := c.put(text)
+		if done != nil {
+			done <- err // its caller may be gone: done has room
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// put writes one message to the WebSocket. Only writeLoop calls it.
+func (c *conn) put(text string) error {
 	_ = c.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if err := c.ws.WriteMessage(websocket.TextMessage, []byte(text)); err != nil {
 		c.finish(reasonTransport)
@@ -343,13 +457,23 @@ func (c *conn) write(text string) error {
 	return nil
 }
 
-// emit sends the event name with args and does not wait for an answer.
+// emit sends the event name with args in its turn among the frames and returns once it was written. The frames of the
+// sessions use it: their order is the order they are offered in.
 func (c *conn) emit(name string, args ...any) error {
 	text, err := encodePacket('2', c.ns, -1, append([]any{name}, args...))
 	if err != nil {
 		return err
 	}
 	return c.write(text)
+}
+
+// notify sends the event name with args ahead of the frames that wait, and returns once it is queued.
+func (c *conn) notify(name string, args ...any) error {
+	text, err := encodePacket('2', c.ns, -1, append([]any{name}, args...))
+	if err != nil {
+		return err
+	}
+	return c.signal(text)
 }
 
 // call sends the event name with args and returns the values the server acknowledged with. It ends with errTimedOut
@@ -370,7 +494,7 @@ func (c *conn) call(ctx context.Context, name string, args ...any) ([]json.RawMe
 	if err != nil {
 		return nil, err
 	}
-	if err := c.write(text); err != nil {
+	if err := c.signal(text); err != nil {
 		return nil, err
 	}
 	select {
@@ -409,9 +533,7 @@ func (c *conn) serve(onEvent func(name string, args []json.RawMessage, ack func(
 		case '1':
 			return c.finish(reasonTransport)
 		case '2':
-			if c.write("3") != nil {
-				return c.finish(reasonTransport)
-			}
+			c.pong()
 		case '4':
 			if reason := c.handle(string(msg[1:]), onEvent); reason != "" {
 				return c.finish(reason)
@@ -466,5 +588,5 @@ func (c *conn) acknowledge(id int, values []any) {
 	if err != nil {
 		return
 	}
-	_ = c.write(text)
+	_ = c.signal(text)
 }

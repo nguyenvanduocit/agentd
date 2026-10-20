@@ -12,7 +12,7 @@ A browser app with no server of its own gives its agent tools that live in the p
 
 - Renaming the daemon, its home directory or its service labels.
 - A reusable server library for other repos (`internal/daemonhub` imports `internal/agent`, `internal/store` and `rpc`).
-- Scoping a grant to agents or folders: a grant is full access to the user's account (the session's ACP client chooses its folder, MCP servers and permission answers; agents run as the user). Confining an app would take an OS sandbox around the agents.
+- Scoping a grant to agents, and confining agents to a folder with an OS sandbox: a grant is full access to the user's account (the session's ACP client chooses its MCP servers and permission answers; agents run as the user). The folders the user picks keep an app's requests inside them (see Folders); they do not confine what an agent does.
 - An app whose API lives on another origin than its page: the app connected is the one at the page's own origin. Supporting a separate API origin needs a way for that origin to vouch for page origins (for example a file the daemon fetches from it).
 - The daemon running natively on Windows (installer, service, dialog). The tray program is built for Windows; the daemon around it is a separate project.
 
@@ -36,13 +36,19 @@ Refusals: `403 denied|timeout`, `429 cooldown` (30 s per origin, and a lockout o
 
 ### 2. Native dialog (`daemon/consent/ask.go`, `daemon/consent/text.go`)
 
-`osascript` (text as `argv`, never in the script) on macOS; `zenity`, else `kdialog` on Linux. Deny is the default and cancel button; 60 s is Deny. The text names the origin from the `Origin` header and the mode: a server can start the ready agents at any time, even with no page open; a browser grant, whenever a page of the origin is open. It says that the agents run as the user and can read and change any of their files and run any program, until the user disconnects it. No tool or no graphical session: `no-dialog`. `AGENTD_CONSENT=<program>` replaces the dialog in tests (exit 0 = Allow); it is never copied into a service definition.
+`osascript` (text as `argv`, never in the script) on macOS; `zenity`, else `kdialog` on Linux. Deny is the default and cancel button; 60 s is Deny. The text names the origin from the `Origin` header and the mode: a server can start the ready agents at any time, even with no page open; a browser grant, whenever a page of the origin is open. It says that the agents run as the user and can read and change any of their files and run any program, until the user disconnects it. No tool or no graphical session: `no-dialog`. After Allow a second native dialog picks the folders (`choose folder` with several selections on macOS, `zenity --file-selection --directory --multiple`, `kdialog --getexistingdirectory` for one folder); cancelling it, closing it or choosing nothing is a Deny, and 5 minutes without a choice is a Timeout. `AGENTD_CONSENT=<program>` replaces both dialogs in tests (exit 0 = Allow, and what it prints, one absolute folder per line, is the choice); it is never copied into a service definition.
 
-### 3. Browser sessions (`daemon/gateway/sessions.go`, `daemon/pagemcp/localproto.go`)
+### Folders
+
+The chosen folders are saved with the grant in `daemon.json` (`folders` of an `apps` or `browsers` entry); a grant without `folders` (made by `agentd pair`, or before folders existed) has no limit and `agentd apps` lists it as `any folder`. Every line to an agent goes through `Fleet.Write`, for server apps and pages alike. A `session/...` request whose `cwd` or `additionalDirectories` is not a chosen folder or below one (symlinks resolved, relative paths refused) is not forwarded: the client gets a JSON-RPC error (`-32602`) on that request id. The agent starts in the first chosen folder that exists. The folders are read from the registry each time, so removing a grant applies to open sockets and a registry that cannot be read refuses sessions rather than lifting the limit. This is a guard on what the app asks, not a sandbox: an agent's shell can leave the folder.
+
+The question is a window of the tray program or agentd.app (decided by the user, 2026-10-20): the dialog's title and text, the chosen folders as a list (Add folder… opens the system's chooser, Remove drops one), Deny and Allow, which needs a folder; closing the window is a Deny. The daemon asks over the channel that carries its state: `{"t":"consent","id","origin","mode","agents","title","body","timeoutS"}` shows it and `{"t":"consent-end","id"}` withdraws it; the UI answers `{"t":"consent-shown","id"}` when the window is up and `{"t":"consent-answer","id","answer","folders"}`. The id is 128 random bits, and only a reply that carries it is heard; the daemon cleans the folders itself (absolute, once each) and takes an Allow without one as a Deny. A UI that does not say `consent-shown` within 2 s (an older tray program), that goes away, or `AGENTD_CONSENT` being set, makes the daemon ask in the native dialogs above.
+
+### 3. Browser sessions (`daemon/gateway/sessions.go`, `daemon/pagetools/localproto.go`)
 
 One socket is one fleet, ended when the socket closes; at most 5 sessions per socket. Page to daemon: `open`, `write`, `close`, `mcp`. Daemon to page: `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client.
 
-### 3a. Tools from the page (`daemon/pagemcp/relay.go`, `daemon/pagemcp/bridge.go`, `mcp --page` in `daemon/bridge/page.go`)
+### 3a. Tools from the page (`daemon/pagetools/relay.go`, `daemon/pagetools/bridge.go`, `mcp --page` in `daemon/mcpbridge/page.go`)
 
 A browser grant has no server and no token, so `agentd-mcp --session` has nowhere to go; the page serves the tools itself. On `open` the daemon mints a token (256 random bits) bound to that page socket and session id, and `opened.mcp` names the stdio server with the socket path and the token in `env` (process arguments are readable by other OS users): the pages' own wrapper `bin/page/agentd-mcp` (`mcp --page`) by absolute path, as the ACP schema asks for `McpServerStdio.command`, so it does not depend on the `PATH` the agent gives its MCP servers. The bridge connects to the daemon's Unix socket `<tmp>/agentd-XXXXXX/mcp.sock` (the directory is mode 0700: no other OS user reaches it, and no TCP port opens), sends the token, gets `{ok:true}` or `{ok:false, message}`, then relays lines: stdin to the page as `{t:"mcp", id, line}`, the page's `{t:"mcp", id, line}` to stdout. The token dies with the session or the page socket, which closes the bridge; a newer bridge with the same token replaces the older. Lines keep the 32 MiB cap of `LineSplitter`, and lines to the page pause, as frames do, while the page's socket is behind. Claude's ACP adapter starts the stdio MCP servers of `session/new` and does not advertise MCP over ACP, so a stdio bridge is the route. The SDK gives the page `session.mcp` (its end, as ndjson byte streams) and `session.mcpServer(name)` (the entry for `mcpServers`).
 
@@ -62,9 +68,9 @@ Each app has its own socket, fleet and MCP wrapper (`bin/<n>/agentd-mcp --config
 
 Settings > Daemon detects when it opens and when the window gets focus, never at page load (Chrome's local-network prompt). A daemon that is here and not connected is offered with "Connect this computer"; a refusal shows its reason in plain words and cancels the pending pairing; a look while a connection waits for its dialog changes nothing.
 
-### 8. Tray icon (`tray/`, `daemon/tray/tray.go`, `daemon/tray/menu.go`, `daemon/tray/state.go`)
+### 8. Tray icon (`app/`, `daemon/ui/tray.go`, `daemon/ui/menu.go`, `daemon/ui/state.go`)
 
-A Go program (own module, mygo, no cgo) the daemon starts. It reads state lines on stdin and prints the entry the user chose on stdout; it ends with its stdin. Menu: version, status line, each app and web page with Disconnect, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when not managed), Stop daemon (says how many agents it ends). Settings… opens the tray's own native window (mygo `ui`, no webview; `tray/settings.go`): the same status, Disconnect per origin, each agent with Ready or its reason, the switch "Install updates automatically" (saved in `settings.json` beside the registry, applied at once: off ends the release checks; disabled on a daemon that cannot update), and the controls. The daemon pushes a state when it changes (checked every 2 s). A tray that ends quickly three times is given up. `AGENTD_TRAY=off|<path>`.
+A Go program (own module, mygo, no cgo) the daemon starts. It reads state lines on stdin and prints the entry the user chose on stdout; it ends with its stdin. Menu: version, status line, each app and web page with Disconnect, Settings…, Open log (disabled when the daemon writes to its terminal), Restart (disabled when not managed), Stop daemon (says how many agents it ends). Settings… opens the tray's own native window (mygo `ui`, no webview; `app/settings.go`): the same status, Disconnect per origin, each agent with Ready or its reason, the switch "Install updates automatically" (saved in `settings.json` beside the registry, applied at once: off ends the release checks; disabled on a daemon that cannot update), and the controls. The daemon pushes a state when it changes (checked every 2 s). A tray that ends quickly three times is given up. `AGENTD_TRAY=off|<path>`.
 
 Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64, windows amd64; `scripts/build-daemon.sh` packs them as `tray/<os>-<arch>/` from `$TRAY_DIR` or builds them when Go is installed. The tarball grows from 80 KB to about 20 MB (measured 20,199,035 bytes; the window's native UI adds about 3 MB per tray program). The Dockerfile has a `tray` stage.
 
@@ -86,14 +92,15 @@ Packaging: `scripts/build-tray.sh` builds darwin arm64/amd64, linux amd64/arm64,
 
 - The tray is a Go program built with mygo, for macOS, Linux and Windows; the daemon on Windows comes later (14:03).
 - Verification runs natively on the user's machine, never in Docker.
-- A grant is full access to the user's account, said plainly in the dialog and per mode (decided by the agentd session the user handed it to, 2026-10-19): agents have a shell and the ACP client answers their permission requests, so pinning a folder in `session/new` would confine nothing without an OS sandbox.
+- A grant is full access to the user's account, said plainly in the dialog and per mode (decided by the agentd session the user handed it to, 2026-10-19): agents have a shell and the ACP client answers their permission requests, so no folder choice confines an agent without an OS sandbox.
+- Folders (decided by the user, 2026-10-20): after Allow the user picks the folders the origin may start agents in, and the daemon refuses a `session/...` request whose `cwd` or `additionalDirectories` lie outside them. The dialog says it keeps the app to those folders and does not stop an agent from reaching other files.
 
 ## Acceptance and evidence
 
 1. An origin never allowed gets `granted:false`, no agent list and no session. `daemon/run/gateway_test.go`, `daemon/run/browser_test.go`.
 2. A foreign `Host`, a missing or `null` `Origin`, or plain http on a non-loopback origin is refused before any dialog. `daemon/gateway/gateway_test.go`.
 3. Allow pairs, saves and links without a restart; Deny saves nothing and the next request inside 30 s is `cooldown`. `daemon/gateway/gateway_test.go`; in the real app `e2e/daemon-local.mjs` (15 checks).
-4. Two apps connect at once, each reaches only its own agents, Stop from one leaves the other. `daemon/run/multiapp_test.go`, `daemon/bridge/hub_test.go`.
+4. Two apps connect at once, each reaches only its own agents, Stop from one leaves the other. `daemon/run/multiapp_test.go`, `daemon/mcpbridge/hub_test.go`.
 5. A browser grant opens a WebSocket session; the agent ends with the socket. `daemon/run/browser_test.go`.
 6. The real macOS dialog opened and gave `timeout` after its 3 s limit (`osascript` path). Allow and Deny clicks are covered through the `AGENTD_CONSENT` seam; a person clicking them is not.
 7. The tray: against a real daemon on macOS, the menu lists the state and Stop daemon exits the daemon with 0 and ends the tray. Linux and Windows: built, not run.

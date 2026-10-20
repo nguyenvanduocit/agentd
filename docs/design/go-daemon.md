@@ -71,7 +71,9 @@ Wave 5: the engine in `agentd.app` and in the release (`scripts/build-daemon.sh`
 
 ## Known risk
 
-`hub/fakedaemon_test.go:19-26` documents that the Go Socket.IO client now and then sends the namespace CONNECT twice or
-never under load. The daemon's link must not inherit that: `daemon/link` starts with a spike that connects 200 times
-against `hub` and counts handshakes, and picks the library client with a watchdog (reconnect when no CONNECT_ACK
-arrives) or a small client of its own (the daemon uses the websocket transport only, `daemon/src/link.ts:20`).
+`sdk/goserver/fakedaemon_test.go:19-26` documents that the Go Socket.IO client now and then sends the namespace CONNECT
+twice or never under load. The daemon's link must not inherit that: `daemon/link` started with a spike that connected 200
+times against the app library and counted handshakes, to pick the library client with a watchdog (reconnect when no
+CONNECT_ACK arrives) or a small client of its own (the daemon uses the websocket transport only). The spike chose the
+small client: `daemon/link/sio.go:4-19` has the decision and its numbers, and `TestOwnClientConnectsOnceEvery200Times` is
+its regression test. There is no watchdog.

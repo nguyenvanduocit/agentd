@@ -165,7 +165,7 @@ func serveSignal(c *conn, method string, call func() error) {
 		return
 	}
 	if _, err := guarded(func() (struct{}, error) { return struct{}{}, call() }); err != nil {
-		_ = c.emit(contract.RPCErrorEvent, rpcErrorOf(err, method))
+		_ = c.notify(contract.RPCErrorEvent, rpcErrorOf(err, method))
 	}
 }
 
@@ -209,7 +209,7 @@ func (l *Link) Agents(list []contract.AgentInfo) {
 		list = []contract.AgentInfo{}
 	}
 	if c := l.current(); c != nil {
-		_ = c.emit("agents", list)
+		_ = c.notify("agents", list)
 	}
 }
 

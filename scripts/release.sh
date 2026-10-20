@@ -8,7 +8,7 @@
 #     scripts/release.sh <x.y.z> [--publish]
 #
 # Without --publish it builds and checks everything in a temporary directory and prints what it would upload. The private
-# keys sign the daemon and the app's update on this machine; they never leave it. tray/mygo.json carries the version of
+# keys sign the daemon and the app's update on this machine; they never leave it. app/mygo.json carries the version of
 # the app: make it <x.y.z> in the release's commit. Publishing needs `gh` logged in, a clean work tree, and HEAD pushed:
 # the tag marks the commit the files were built from (and is the Go module version of github.com/.../agentd).
 # A tag is final: a fix is the next version.
@@ -21,8 +21,8 @@ PUBLISH=0
 [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "version \"$VERSION\" is not x.y.z" >&2; exit 1; }
 : "${DAEMON_SIGNING_KEY:?DAEMON_SIGNING_KEY is the path of the release private key}"
 : "${APP_UPDATE_KEY:?APP_UPDATE_KEY is the path of the private key that signs the app updates (mygo keygen)}"
-APP_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' tray/mygo.json)"
-[ "$APP_VERSION" = "$VERSION" ] || { echo "tray/mygo.json is version $APP_VERSION: make it $VERSION and commit it first" >&2; exit 1; }
+APP_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' app/mygo.json)"
+[ "$APP_VERSION" = "$VERSION" ] || { echo "app/mygo.json is version $APP_VERSION: make it $VERSION and commit it first" >&2; exit 1; }
 
 REPO="nguyenvanduocit/agentd"
 DIST="$(mktemp -d)"
@@ -52,7 +52,7 @@ grep -qx "package/launcher.sh" <<<"$LISTING" || { echo "the daemon tarball has n
 # and its signed update, whose manifest names this version and this release's archive, as installed apps read it from
 # the latest release.
 for arch in arm64 amd64; do
-  out="tray/build/darwin-$arch"
+  out="app/build/darwin-$arch"
   manifest="$out/update-darwin-$arch.json"
   archive="agentd-$VERSION-darwin-$arch.tar.gz"
   grep -q "\"version\": \"$VERSION\"" "$manifest" || { echo "$manifest is not version $VERSION" >&2; exit 1; }

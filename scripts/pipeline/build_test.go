@@ -194,6 +194,44 @@ func TestAReleaseBuildRefusesAKeyThatIsNotDaemonReleasePub(t *testing.T) {
 	}
 }
 
+// A development build bakes in the address of the local stand-in as its releases page. Signed with the release key, it
+// would be a newer version every installed daemon takes and then never updates from again.
+func TestABuildThatIsNotAReleaseRefusesTheReleaseKey(t *testing.T) {
+	needPipeline(t)
+	key, _ := signingKey(t)
+	pub, code := run(t, cleanEnv(), signer.bin, "public", key)
+	if code != 0 {
+		t.Fatalf("sign-daemon public exited %d: %s", code, pub)
+	}
+	releasePub := filepath.Join(t.TempDir(), "release.pub")
+	if err := os.WriteFile(releasePub, []byte(strings.TrimSpace(pub)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, cleanEnv("VERSION=9.9.9", "DAEMON_SIGNING_KEY="+key, "RELEASE_PUB_FILE="+releasePub),
+		"bash", filepath.Join(rootDir, "scripts", "build-daemon.sh"), t.TempDir())
+	if code != 1 || !strings.Contains(out, "signs only RELEASE=1 builds") {
+		t.Errorf("exit %d, %s", code, out)
+	}
+}
+
+// RELEASE_PUB_FILE is the tests' way to name a key a development build must refuse; in a release it would be a way to
+// name the wrong key as the right one, so a release reads daemon/release.pub only.
+func TestAReleaseBuildIgnoresReleasePubFileFromTheEnvironment(t *testing.T) {
+	needPipeline(t)
+	key, _ := signingKey(t)
+	pub, code := run(t, cleanEnv(), signer.bin, "public", key)
+	if code != 0 {
+		t.Fatalf("sign-daemon public exited %d: %s", code, pub)
+	}
+	stray := filepath.Join(t.TempDir(), "release.pub")
+	if err := os.WriteFile(stray, []byte(strings.TrimSpace(pub)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := releaseBuild(t, "DAEMON_SIGNING_KEY="+key, "RELEASE_PUB_FILE="+stray); code != 1 || !strings.Contains(out, "is not daemon/release.pub") {
+		t.Errorf("exit %d, %s", code, out)
+	}
+}
+
 func TestABuildWithAReleaseURLThatIsNotAReleasesPageStops(t *testing.T) {
 	needPipeline(t)
 	key, _ := signingKey(t)

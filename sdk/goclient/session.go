@@ -57,7 +57,7 @@ type wireMcp struct {
 	Env     []EnvVar `json:"env"`
 }
 
-// incoming is a message of the daemon: hello, opened, error, frame or mcp (daemon/pagemcp/localproto.go).
+// incoming is a message of the daemon: hello, opened, error, frame or mcp (daemon/pagetools/localproto.go).
 type incoming struct {
 	T       string    `json:"t"`
 	ID      string    `json:"id"`

@@ -12,9 +12,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nguyenvanduocit/agentd/daemon/bridge"
 	"github.com/nguyenvanduocit/agentd/daemon/cli"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
+	"github.com/nguyenvanduocit/agentd/daemon/mcpbridge"
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 	"github.com/nguyenvanduocit/agentd/daemon/run"
@@ -73,9 +73,9 @@ func dispatchWith(command cli.Command, host home.Host, p process) (int, error) {
 			Client: http.DefaultClient, Machine: registry.CurrentMachine(), Host: host, Log: p.log, Stdin: p.stdin, Prompt: p.stderr,
 		})
 	case cli.MCP:
-		return bridge.RunBridge(cmd, p.bridgeDeps(host)), nil
+		return mcpbridge.RunBridge(cmd, p.bridgeDeps(host)), nil
 	case cli.PageMCP:
-		return bridge.RunPageBridge(p.bridgeDeps(host)), nil
+		return mcpbridge.RunPageBridge(p.bridgeDeps(host)), nil
 	case cli.Run:
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 		defer stop()
@@ -91,6 +91,6 @@ func dispatchWith(command cli.Command, host home.Host, p process) (int, error) {
 	return 1, fmt.Errorf("unknown command %T", command)
 }
 
-func (p process) bridgeDeps(host home.Host) bridge.Deps {
-	return bridge.Deps{Stdin: p.stdin, Stdout: p.stdout, Stderr: p.stderr, Host: host, Connect: bridge.Dial}
+func (p process) bridgeDeps(host home.Host) mcpbridge.Deps {
+	return mcpbridge.Deps{Stdin: p.stdin, Stdout: p.stdout, Stderr: p.stderr, Host: host, Connect: mcpbridge.Dial}
 }

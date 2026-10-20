@@ -30,7 +30,7 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/update"
-	"github.com/nguyenvanduocit/agentd/server"
+	"github.com/nguyenvanduocit/agentd/internal/releaseserver"
 )
 
 var (
@@ -229,7 +229,7 @@ func (r *release) start(t *testing.T, key, tray string) {
 		r.err = fmt.Errorf("build-daemon.sh %s exited %d:\n%s", r.version, code, out)
 		return
 	}
-	h, err := server.Handler(server.Config{Dist: r.dist})
+	h, err := releaseserver.Handler(releaseserver.Config{Dist: r.dist})
 	if err != nil {
 		r.err = err
 		return

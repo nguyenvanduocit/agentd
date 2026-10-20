@@ -12,7 +12,7 @@ import (
 
 	"github.com/nguyenvanduocit/agentd/contract"
 	"github.com/nguyenvanduocit/agentd/daemon/agents"
-	"github.com/nguyenvanduocit/agentd/hub"
+	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
 // The spike of the client decision (the numbers are in sio.go): 200 clients, 20 at a time, each on the websocket
@@ -62,8 +62,8 @@ func TestOwnClientConnectsOnceEvery200Times(t *testing.T) {
 }
 
 func TestMaxMessageBytesIsTheHubs(t *testing.T) {
-	if maxMessageBytes != hub.MaxMessageBytes {
-		t.Fatalf("maxMessageBytes = %d, the hub accepts %d", maxMessageBytes, hub.MaxMessageBytes)
+	if maxMessageBytes != goserver.MaxMessageBytes {
+		t.Fatalf("maxMessageBytes = %d, the hub accepts %d", maxMessageBytes, goserver.MaxMessageBytes)
 	}
 }
 
@@ -76,7 +76,7 @@ func helloOf(managed bool) contract.Hello {
 }
 
 // pairedLink is a Link of a daemon the hub knows, which says hello on every connect.
-func pairedLink(t *testing.T, e *hubEnv, rec *recorder, managed bool, server string) (*Link, hub.Record, *events) {
+func pairedLink(t *testing.T, e *hubEnv, rec *recorder, managed bool, server string) (*Link, goserver.Record, *events) {
 	t.Helper()
 	token := "token-" + t.Name()
 	r := e.pair(t, token)
@@ -89,7 +89,7 @@ func pairedLink(t *testing.T, e *hubEnv, rec *recorder, managed bool, server str
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 			defer cancel()
-			if reply, err := l.Hello(ctx, helloOf(managed)); err != nil || reply.Protocol != hub.Protocol {
+			if reply, err := l.Hello(ctx, helloOf(managed)); err != nil || reply.Protocol != goserver.Protocol {
 				t.Errorf("hello = %+v, %v", reply, err)
 			}
 		}()

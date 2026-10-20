@@ -22,7 +22,7 @@ import (
 
 	"github.com/nguyenvanduocit/agentd/daemon/agents"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 )
 
 type noState struct{}
@@ -59,7 +59,7 @@ type rig struct {
 	port     int
 	gw       *Gateway
 	sessions *BrowserSessions
-	relay    *pagemcp.McpRelay
+	relay    *pagetools.McpRelay
 	world    *world
 	bridge   string // the pages' agentd-mcp wrapper, as `opened` names it
 	dir      string // the agents' working directory
@@ -73,7 +73,7 @@ func startRig(t *testing.T, agent string) *rig {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	relay, err := pagemcp.Listen(filepath.Join(dir, "mcp.sock"))
+	relay, err := pagetools.Listen(filepath.Join(dir, "mcp.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,13 +82,13 @@ func startRig(t *testing.T, agent string) *rig {
 	r := &rig{relay: relay, world: newWorld(), dir: dir, bridge: filepath.Join(binDir, "agentd-mcp")}
 	r.sessions = NewBrowserSessions(SessionOptions{
 		Fleet: agents.FleetOptions{Cwd: dir, BinDir: binDir, Env: env, Adapter: noAdapter, State: noState{}},
-		Hello: func() pagemcp.Hello {
-			return pagemcp.NewHello("test", agents.AllStatuses(env, find, noAdapter))
+		Hello: func() pagetools.Hello {
+			return pagetools.NewHello("test", agents.AllStatuses(env, find, noAdapter))
 		},
 		Relay:         relay,
 		BridgeCommand: r.bridge,
 	})
-	r.world.reg = r.world.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z")
+	r.world.reg = r.world.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
 	r.world.sessions = r.sessions
 	deps := r.world.deps()
 	deps.Upgrade = r.sessions.Upgrade
@@ -490,7 +490,7 @@ func TestDeleteFromThePageEndsItsOpenSocketAndTheAgentsOnIt(t *testing.T) {
 
 func TestEndOriginClosesTheSocketsOfThatOriginOnly(t *testing.T) {
 	r := startRig(t, "cat")
-	r.world.reg = r.world.reg.AddBrowser(other, "2026-10-19T00:00:00.000Z")
+	r.world.reg = r.world.reg.AddBrowser(other, "2026-10-19T00:00:00.000Z", nil)
 	a := mustDial(t, r.port)
 	b, err := dialPage(t, r.port, other, "")
 	if err != nil {
@@ -569,7 +569,7 @@ func TestARefusedUpgradeNeverGetsASocket(t *testing.T) {
 
 func TestAnUpgradeWithoutAnUpgradeHandlerIsRefused(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z")
+	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
 	g := startGateway(t, w.deps(), nil)
 	if err := dialSession(t, g.Port); err == nil {
 		t.Fatal("got a socket")
@@ -613,21 +613,21 @@ func (s mcpServer) env(name string) string {
 type fakeBridge struct {
 	conn   net.Conn
 	reader *bufio.Reader
-	answer pagemcp.BridgeAnswer
+	answer pagetools.BridgeAnswer
 }
 
 // dialBridge connects to the relay of `s` and says hello with `token` (the server's own when empty).
 func dialBridge(t *testing.T, s mcpServer, token string) *fakeBridge {
 	t.Helper()
-	conn, err := net.Dial("unix", s.env(pagemcp.McpSocketEnv))
+	conn, err := net.Dial("unix", s.env(pagetools.McpSocketEnv))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	if token == "" {
-		token = s.env(pagemcp.McpTokenEnv)
+		token = s.env(pagetools.McpTokenEnv)
 	}
-	if _, err := io.WriteString(conn, pagemcp.BridgeHello(token)+"\n"); err != nil {
+	if _, err := io.WriteString(conn, pagetools.BridgeHello(token)+"\n"); err != nil {
 		t.Fatal(err)
 	}
 	b := &fakeBridge{conn: conn, reader: bufio.NewReader(conn)}
@@ -635,7 +635,7 @@ func dialBridge(t *testing.T, s mcpServer, token string) *fakeBridge {
 	if err != nil {
 		t.Fatalf("no answer to the hello: %v", err)
 	}
-	b.answer = pagemcp.ParseBridgeAnswer(line)
+	b.answer = pagetools.ParseBridgeAnswer(line)
 	return b
 }
 
@@ -876,5 +876,52 @@ func TestABridgeStartedAgainForTheSessionReplacesTheOlderOne(t *testing.T) {
 	p.send(map[string]any{"t": "mcp", "id": "s1", "line": `{"jsonrpc":"2.0","id":7,"result":{}}`})
 	if line, err := newer.line(); err != nil || !strings.Contains(line, `"id":7`) {
 		t.Fatalf("the newer bridge read %q, %v", line, err)
+	}
+}
+
+func TestAPageIsKeptToTheFoldersItWasGranted(t *testing.T) {
+	r := startRig(t, "cat")
+	allowed, elsewhere := t.TempDir(), t.TempDir()
+	r.sessions.o.Folders = func(origin string) ([]string, error) {
+		if origin != page {
+			t.Errorf("folders asked for %q, want the page's origin", origin)
+		}
+		return []string{allowed}, nil
+	}
+	p := mustDial(t, r.port)
+	if opened := p.open("s1"); opened["cwd"] != allowed {
+		t.Fatalf("the agent started in %v, want the granted folder %s", opened["cwd"], allowed)
+	}
+	newSession := func(id int, cwd string) string {
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "session/new", "params": map[string]any{"cwd": cwd}})
+		return string(b)
+	}
+	p.send(map[string]any{"t": "write", "id": "s1", "line": newSession(1, filepath.Join(allowed, "project"))})
+	p.send(map[string]any{"t": "write", "id": "s1", "line": newSession(2, elsewhere)})
+	waitFor(t, "an echo and an error", wait, func() bool {
+		count := 0
+		for _, m := range p.all() {
+			if frameOf("out")(m) {
+				count++
+			}
+		}
+		return count == 2
+	})
+	var echoed, refused string
+	for _, m := range p.all() {
+		if !frameOf("out")(m) {
+			continue
+		}
+		if data, _ := m["data"].(string); strings.Contains(data, `"method"`) {
+			echoed = data
+		} else {
+			refused = data
+		}
+	}
+	if !strings.Contains(echoed, `"id":1`) {
+		t.Errorf("the request inside the folder should reach the agent, got %q", echoed)
+	}
+	if !strings.Contains(refused, `"id":2`) || !strings.Contains(refused, "outside the folders you allowed") {
+		t.Errorf("the request outside should be answered with an error, got %q", refused)
 	}
 }

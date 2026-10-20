@@ -27,7 +27,7 @@ const (
 )
 
 const (
-	// LaunchdLabel is the launchd label of the user's service; tray/service.go and the app's CLI takeover use it too.
+	// LaunchdLabel is the launchd label of the user's service; app/service.go and the app's CLI takeover use it too.
 	LaunchdLabel = "com.agentd.daemon"
 	// SystemdUnitName is the name of the user's systemd unit.
 	SystemdUnitName = "agentd"
@@ -75,9 +75,14 @@ func fileName(manager ManagerName, name string) string {
 // seams of the tests (AGENTD_*), the XDG directories and the variables that name the user's screen (the tray program
 // needs them to find it) are copied into its definition. AGENTD_RESTART, the service seams themselves and
 // AGENTD_CONSENT are not: a seam that answers the consent dialog, left in a shell that installs the service, would let
-// every page in without asking the user.
+// every page in without asking the user. Nor is what belongs to one run or one secret: the definition is a file other
+// users of the machine can read, and a descriptor, a pairing code or a session token means nothing to the next start.
 func copiedIntoService(name string) bool {
 	if name == "AGENTD_RESTART" || name == "AGENTD_MANAGED" || name == "AGENTD_CONSENT" || strings.HasPrefix(name, "AGENTD_SERVICE_") {
+		return false
+	}
+	switch name {
+	case "AGENTD_UI_FD", "AGENTD_PAIR_CODE", "AGENTD_MCP_SOCKET", "AGENTD_MCP_TOKEN":
 		return false
 	}
 	switch name {

@@ -21,7 +21,7 @@ import (
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
 
 	"github.com/nguyenvanduocit/agentd/contract"
-	"github.com/nguyenvanduocit/agentd/hub"
+	"github.com/nguyenvanduocit/agentd/sdk/goserver"
 )
 
 // Runs the real Claude adapter through the daemon and a fake app. It costs a little money (two short turns), so it only
@@ -29,8 +29,8 @@ import (
 //
 //	RUN_REAL_CLAUDE=1 go test -count=1 -run Real -v ./daemon/run/
 
-// realAdapter is the Claude ACP adapter the agent/ package installs.
-const realAdapter = "../../agent/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+// realAdapter is the Claude ACP adapter the adapters/ package installs.
+const realAdapter = "../../adapters/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
 
 // realClaude skips the test unless a real Claude run is asked for and possible. It returns the command line of the
 // "claude" agent (the AGENTD_AGENT_CLAUDE seam) and the environment a real run needs on top of the sandbox's.
@@ -44,7 +44,7 @@ func realClaude(t *testing.T) (command string, env map[string]string) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(adapter); err != nil {
-		t.Skipf("the Claude adapter is not installed at %s (run bun install in agent/): %v", adapter, err)
+		t.Skipf("the Claude adapter is not installed at %s (run bun install in adapters/): %v", adapter, err)
 	}
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -121,9 +121,9 @@ func startAppWithMcp(t *testing.T) *fakeApp {
 	t.Helper()
 	a := &fakeApp{token: testToken}
 	opts := socket.DefaultServerOptions()
-	opts.SetMaxHttpBufferSize(hub.MaxMessageBytes)
+	opts.SetMaxHttpBufferSize(goserver.MaxMessageBytes)
 	a.io = socket.NewServer(nil, opts)
-	ns := a.io.Of(hub.Namespace, nil)
+	ns := a.io.Of(goserver.Namespace, nil)
 	ns.Use(func(sock *socket.Socket, next func(*socket.ExtendedError)) {
 		if role, _ := sock.Handshake().Auth["role"].(string); role == "mcp" {
 			if token, _ := sock.Handshake().Auth["token"].(string); token == a.token {

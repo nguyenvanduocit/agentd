@@ -7,7 +7,7 @@ import (
 )
 
 // ReleaseMessage is the bytes a release signature covers: the version and the tarball's sha256, after a prefix that
-// keeps a signature of anything else by the same key from ever verifying here. scripts/sign-daemon.ts signs these bytes.
+// keeps a signature of anything else by the same key from ever verifying here. cmd/sign-daemon signs these bytes.
 func ReleaseMessage(version, sha256 string) []byte {
 	return []byte("agentd\n" + version + "\n" + sha256 + "\n")
 }

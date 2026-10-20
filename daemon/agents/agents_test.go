@@ -85,7 +85,7 @@ func TestAgentTable(t *testing.T) {
 }
 
 func TestPinnedVersionsFollowAgentPackageJSON(t *testing.T) {
-	text, err := os.ReadFile("../../agent/package.json")
+	text, err := os.ReadFile("../../adapters/package.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestPinnedVersionsFollowAgentPackageJSON(t *testing.T) {
 	for _, name := range AdapterOrder {
 		a := Adapters[name]
 		if pkg.Dependencies[a.Pkg] != a.Version {
-			t.Errorf("%s: agent/package.json has %q, the table %q", a.Pkg, pkg.Dependencies[a.Pkg], a.Version)
+			t.Errorf("%s: adapters/package.json has %q, the table %q", a.Pkg, pkg.Dependencies[a.Pkg], a.Version)
 		}
 	}
 }

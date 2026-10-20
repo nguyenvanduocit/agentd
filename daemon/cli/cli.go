@@ -91,19 +91,21 @@ func (Service) command() {}
 func (Version) command() {}
 func (Help) command()    {}
 
-// Usage is the help text, printed for --help and after a parse error.
+// Usage is the help text, printed for help, --help and -h (to stdout, exit 0) and after a parse error (to stderr, exit 2).
 const Usage = `agentd: runs your agents for the apps you allow
 
 usage:
-  agentd pair --app <url> [--code <code>]     pair this machine with an app; code is read from stdin if omitted
-  agentd [run] [--app <url>] [--dir <dir>]    connect and serve agents (default command)
-  agentd apps [list]                         the apps and web pages this machine is connected to
-  agentd apps remove <origin>                disconnect one of them (service restart applies it)
-  agentd service install [--dir <dir>]       start at login and restart when it dies (launchd, systemd)
-  agentd service start|restart               start it again after a Stop from the web UI; restart it
-  agentd service uninstall|status
-  agentd service logs [-n <lines>] [-f]      the daemon's log
-  agentd version
+  agentd pair --app <url> [--code <code>]   pair this machine with an app; code is read from stdin if omitted
+  agentd [run] [--app <url>] [--dir <dir>]  connect and serve agents (default command)
+  agentd apps [list]                        the apps and web pages this machine is connected to
+  agentd apps remove <origin>               disconnect one of them; a running agentd drops it within seconds
+  agentd service install [--dir <dir>]      start at login and restart when it dies (launchd, systemd)
+  agentd service start|restart              start it again after a Stop from the web UI; restart it
+  agentd service uninstall                  stop it and remove its login service
+  agentd service status                     whether it is running, stopped or restarting
+  agentd service logs [-n <lines>] [-f]     the daemon's log
+  agentd help                               this text
+  agentd version                            the version
 
 options:
   --app <url>      the app, by its origin (default: every app saved by pair)
@@ -111,6 +113,13 @@ options:
   --config <file>  the config file (default: <config dir>/agentd/daemon.json)
   -n, --lines <n>  service logs: how many lines (default 100)
   -f, --follow     service logs: keep printing
+  -h, --help       this text
+  -v, --version    the version
+
+examples:
+  agentd pair --app https://app.example.com --code 123456
+  agentd apps remove https://app.example.com
+  agentd service install
 `
 
 // Parse reads the arguments after the program name. A mistake is an error whose text says what is wrong; the entry
@@ -122,6 +131,9 @@ func Parse(argv []string) (Command, error) {
 	}
 	if v.help {
 		return Help{}, nil
+	}
+	if v.version {
+		return Version{}, nil
 	}
 	var name, rest, extra *string
 	for i, slot := range []**string{&name, &rest, &extra} {
@@ -154,6 +166,8 @@ func build(name, rest, extra *string, v flagValues) (Command, error) {
 	switch *name {
 	case "run":
 		return Run{App: v.app, Dir: v.dir, Config: v.config}, nil
+	case "help":
+		return Help{}, nil
 	case "version":
 		return Version{}, nil
 	case "pair":

@@ -8,10 +8,9 @@ import (
 
 	"github.com/nguyenvanduocit/agentd/contract"
 	"github.com/nguyenvanduocit/agentd/daemon/agents"
-	"github.com/nguyenvanduocit/agentd/daemon/consent"
 	"github.com/nguyenvanduocit/agentd/daemon/gateway"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
-	"github.com/nguyenvanduocit/agentd/daemon/pagemcp"
+	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -37,7 +36,7 @@ func (d *daemon) hello() contract.Hello {
 }
 
 // pageHello is what the daemon tells a page when its socket opens.
-func (d *daemon) pageHello() pagemcp.Hello { return pagemcp.NewHello(home.Version, d.statuses()) }
+func (d *daemon) pageHello() pagetools.Hello { return pagetools.NewHello(home.Version, d.statuses()) }
 
 func (d *daemon) agentInfos() []contract.AgentInfo { return d.hello().Agents }
 
@@ -45,12 +44,12 @@ func (d *daemon) agentInfos() []contract.AgentInfo { return d.hello().Agents }
 func (d *daemon) gatewayDeps() gateway.Deps {
 	return gateway.Deps{
 		Version:  home.Version,
-		Agents:   func() []pagemcp.AgentInfo { return d.pageHello().Agents },
+		Agents:   func() []pagetools.AgentInfo { return d.pageHello().Agents },
 		Registry: func() (registry.Registry, error) { return registry.Load(d.file) },
-		Ask:      func(q consent.Question) consent.Answer { return consent.Ask(q, d.env, consent.TimeoutS) },
+		Ask:      d.ask,
 		Linked:   d.hub.Has,
-		ConnectServer: func(server, code string) error {
-			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.CurrentMachine(), server, code, d.file)
+		ConnectServer: func(server, code string, folders []string) error {
+			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.CurrentMachine(), server, code, d.file, folders)
 			if err != nil {
 				return err
 			}
@@ -58,9 +57,9 @@ func (d *daemon) gatewayDeps() gateway.Deps {
 			d.hub.Detach(server, true)
 			return d.hub.Add(app)
 		},
-		GrantBrowser: func(origin string) error {
+		GrantBrowser: func(origin string, folders []string) error {
 			_, err := registry.Update(d.file, func(r registry.Registry) registry.Registry {
-				return r.AddBrowser(origin, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+				return r.AddBrowser(origin, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), folders)
 			})
 			return err
 		},

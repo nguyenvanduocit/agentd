@@ -9,8 +9,9 @@ import (
 const origin = "https://app.example.com"
 
 var (
-	serverText  = ConsentText(Question{Origin: origin, Mode: ModeServer, Agents: []string{"claude", "codex"}})
-	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}})
+	agentTitles = []string{"Claude Code", "Codex"}
+	serverText  = ConsentText(Question{Origin: origin, Mode: ModeServer, Agents: []string{"claude", "codex"}, Titles: agentTitles})
+	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}, Titles: agentTitles})
 )
 
 func has(found ...string) func(string) bool {
@@ -26,16 +27,44 @@ func mustContain(t *testing.T, s string, parts ...string) {
 	}
 }
 
-func TestConsentTextNamesTheOriginAndTheAgents(t *testing.T) {
+func TestConsentTextNamesTheOriginAndTheAgentsAsAUserReadsThem(t *testing.T) {
 	for _, text := range []Text{serverText, browserText} {
 		mustContain(t, text.Title, origin)
-		mustContain(t, text.Body, origin, "claude, codex")
+		mustContain(t, text.Body, origin, "Claude Code and Codex")
+		if strings.Contains(text.Body, "claude") || strings.Contains(text.Body, "codex") {
+			t.Errorf("the body shows an internal agent name: %q", text.Body)
+		}
+	}
+}
+
+func TestConsentTextListsTheAgentsInPlainEnglish(t *testing.T) {
+	for titles, want := range map[string]string{
+		"":                         "No agent is ready yet.",
+		"Claude Code":              "start Claude Code here",
+		"Claude Code|Codex":        "start Claude Code and Codex here",
+		"Claude Code|Codex|Grok":   "start Claude Code, Codex and Grok here",
+		"Claude Code|Codex|Grok|Q": "start Claude Code, Codex, Grok and Q here",
+	} {
+		var list []string
+		if titles != "" {
+			list = strings.Split(titles, "|")
+		}
+		mustContain(t, ConsentText(Question{Origin: origin, Mode: ModeServer, Titles: list}).Body, want)
 	}
 }
 
 func TestConsentTextSaysAllowIsFullAccess(t *testing.T) {
 	for _, text := range []Text{serverText, browserText} {
-		mustContain(t, text.Body, "run as you", "any of your files", "run any program")
+		mustContain(t, text.Body, "run as you", "any of your files", "outside those folders", "run any program")
+	}
+}
+
+func TestConsentTextSaysTheFoldersOnlyAreWhereAgentsStart(t *testing.T) {
+	for _, text := range []Text{serverText, browserText} {
+		mustContain(t, text.Body, "You choose the folders it may start agents in.", "only where they start")
+		if strings.Contains(text.Body, "Next you choose") || strings.Contains(text.Body, "keeps the app to those folders") {
+			t.Errorf("the body still promises more than the folders give: %q", text.Body)
+		}
 	}
 }
 
@@ -47,14 +76,38 @@ func TestConsentTextServerKeepsAccessWithNoPageOpen(t *testing.T) {
 	}
 }
 
-func TestConsentTextSaysHowToTakeTheAccessBack(t *testing.T) {
-	for _, text := range []Text{serverText, browserText} {
-		mustContain(t, text.Body, "menu bar", "agentd apps remove "+origin)
+func TestConsentTextUsesTheWordsOfTheProduct(t *testing.T) {
+	for _, text := range []Text{serverText, browserText, ConsentText(Question{Origin: origin, Mode: ModeServer})} {
+		for _, word := range []string{"daemon", "engine", "origin", "server"} {
+			if strings.Contains(strings.ToLower(text.Title+" "+text.Body), word) {
+				t.Errorf("%q is a word of the code, not of the user: %q", word, text.Body)
+			}
+		}
 	}
 }
 
-func TestConsentTextSaysWhenNoAgentIsReady(t *testing.T) {
-	mustContain(t, ConsentText(Question{Origin: origin, Mode: ModeServer}).Body, "no agent is ready yet")
+func TestConsentTextSaysHowToTakeTheAccessBack(t *testing.T) {
+	for _, text := range []Text{serverText, browserText} {
+		mustContain(t, text.Body, "agentd icon in the menu bar", "Only allow sites you trust.")
+		if strings.Contains(text.Body, "agentd apps remove") {
+			t.Errorf("the window's words carry a terminal command: %q", text.Body)
+		}
+	}
+}
+
+func TestDialogTextIsTheSameWordsPlusTheTerminalCommand(t *testing.T) {
+	q := Question{Origin: origin, Mode: ModeBrowser, Titles: agentTitles}
+	window, dialog := ConsentText(q), DialogText(q)
+	if window.Title != dialog.Title {
+		t.Errorf("titles differ: %q vs %q", window.Title, dialog.Title)
+	}
+	mustContain(t, dialog.Body, "agentd icon in the menu bar", "agentd apps remove "+origin, "Only allow sites you trust.")
+	if strings.Contains(window.Body, "agentd apps remove") {
+		t.Errorf("the window's words carry a terminal command: %q", window.Body)
+	}
+	if strings.ReplaceAll(dialog.Body, " or in a terminal with: agentd apps remove "+origin, ".") != window.Body {
+		t.Errorf("the dialog says more than the terminal command:\n%q\n%q", dialog.Body, window.Body)
+	}
 }
 
 // scripts are the arguments that follow a -e.
@@ -114,6 +167,9 @@ func TestPlanLinuxZenityThenKdialogElseNothing(t *testing.T) {
 	}
 	if !slices.Contains(z.Args, "--no-markup") || !slices.Contains(z.Args, "--timeout=60") {
 		t.Errorf("zenity args = %q", z.Args)
+	}
+	if !slices.Contains(z.Args, "--default-cancel") {
+		t.Errorf("zenity does not give Deny the focus: %q", z.Args)
 	}
 	if k, ok := Plan("linux", has("kdialog"), serverText, 60); !ok || k.File != "kdialog" {
 		t.Errorf("kdialog plan = %+v", k)
