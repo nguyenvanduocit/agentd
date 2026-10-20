@@ -82,6 +82,9 @@ type AppHub struct {
 	// is not empty while one is. (At start, a refused token detaches the first app while the second is still having
 	// its wrapper written; counting only the entries made that look like "the last app left" and ended the daemon.)
 	adding int
+	// dropped is why the hub let an app go, for the rest of this run: the menu shows every saved app, and a dropped
+	// one is linked again only at the next start. Adding the app again, or detaching it for the user, forgets it.
+	dropped map[string]droppedApp
 	// afterWrapper, when set (tests), runs in Add between writing the wrapper and putting the app in the hub.
 	afterWrapper func()
 }
@@ -92,7 +95,48 @@ func NewAppHub(o AppHubOptions) *AppHub {
 	if log == nil {
 		log = proc.NewLogger(io.Discard, io.Discard)
 	}
-	return &AppHub{o: o, log: log}
+	return &AppHub{o: o, log: log, dropped: map[string]droppedApp{}}
+}
+
+// Drop is why the hub let an app go.
+type Drop string
+
+// The reasons an app is dropped.
+const (
+	// DropStopped: the app's server sent Stop.
+	DropStopped Drop = "stopped"
+	// DropRefused: the app's server refused the token, which it has revoked or no longer knows.
+	DropRefused Drop = "refused"
+	// DropIncompatible: the app speaks a protocol this daemon does not.
+	DropIncompatible Drop = "incompatible"
+)
+
+type droppedApp struct {
+	why    Drop
+	detail string
+}
+
+// AppStatus is what the hub knows of one app now.
+type AppStatus struct {
+	// Linked: the hub has a link to the app (connected, or trying again). Connected: the link is up.
+	Linked, Connected bool
+	// Dropped says why the hub let the app go; empty while it is linked or was never dropped. Detail is a plain
+	// sentence for DropIncompatible, naming both protocols.
+	Dropped Drop
+	Detail  string
+}
+
+// Status is what the hub knows of the app at server. A saved app that is neither linked nor dropped has not been
+// linked yet.
+func (h *AppHub) Status(server string) AppStatus {
+	h.mu.Lock()
+	e := h.find(server)
+	d := h.dropped[server]
+	h.mu.Unlock()
+	if e == nil {
+		return AppStatus{Dropped: d.why, Detail: d.detail}
+	}
+	return AppStatus{Linked: true, Connected: e.link.Connected()}
 }
 
 func (h *AppHub) snapshot() []*entry {
@@ -202,6 +246,7 @@ func (h *AppHub) Add(app registry.App) error {
 		return nil
 	}
 	h.entries = append(h.entries, e)
+	delete(h.dropped, app.Server) // linked again (paired again, or the daemon started anew): no longer dropped
 	h.mu.Unlock()
 	link.Start()
 	return nil
@@ -220,7 +265,7 @@ func (h *AppHub) eventsOf(e *entry) Events {
 		},
 		OnRejected: func(message string) {
 			h.log.Warn(fmt.Sprintf("%s refused this daemon (%s): the token is revoked or wrong, so this app stays stopped. To use it again: agentd pair --app %s --code <code>, then agentd service start", server, message, server))
-			h.detachInBackground(server, false)
+			h.dropInBackground(server, droppedApp{why: DropRefused})
 		},
 	}
 }
@@ -257,7 +302,7 @@ func (a handler) HandleRestart(context.Context) error {
 
 func (a handler) HandleStop(context.Context) error {
 	a.h.log.Say(fmt.Sprintf("stop requested by the server %s: disconnecting it", a.e.app.Server))
-	a.h.detachInBackground(a.e.app.Server, false)
+	a.h.dropInBackground(a.e.app.Server, droppedApp{why: DropStopped})
 	return nil
 }
 
@@ -294,16 +339,17 @@ func (h *AppHub) sayHello(e *entry) {
 		return
 	}
 	if !home.SpeaksProtocol(reply.Protocol) {
-		h.log.Warn(fmt.Sprintf("%s speaks protocol %s, this daemon speaks %s: disconnecting it. Update the daemon or the app.", e.app.Server, strconv.FormatFloat(reply.Protocol, 'f', -1, 64), home.ProtocolRangeText(home.ProtocolMin, home.ProtocolMax)))
-		h.detachInBackground(e.app.Server, false)
+		theirs, ours := strconv.FormatFloat(reply.Protocol, 'f', -1, 64), home.ProtocolRangeText(home.ProtocolMin, home.ProtocolMax)
+		h.log.Warn(fmt.Sprintf("%s speaks protocol %s, this daemon speaks %s: disconnecting it. Update the daemon or the app.", e.app.Server, theirs, ours))
+		h.dropInBackground(e.app.Server, droppedApp{why: DropIncompatible, detail: fmt.Sprintf("The app speaks protocol %s and agentd on this computer speaks %s: one of them needs an update.", theirs, ours)})
 		return
 	}
 	h.log.Say(fmt.Sprintf("connected to %s (protocol %s); agents: %s", e.app.Server, strconv.FormatFloat(reply.Protocol, 'f', -1, 64), describeAgents(hello.Agents)))
 }
 
-// detachInBackground runs Detach on its own goroutine, which Shutdown waits for. Once the hub is closed Shutdown has
-// the app already and there is nothing to start.
-func (h *AppHub) detachInBackground(server string, quiet bool) {
+// dropInBackground lets the app go for the reason given, on its own goroutine, which Shutdown waits for. Once the hub
+// is closed Shutdown has the app already and there is nothing to start.
+func (h *AppHub) dropInBackground(server string, why droppedApp) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -313,17 +359,29 @@ func (h *AppHub) detachInBackground(server string, quiet bool) {
 	h.mu.Unlock()
 	go func() {
 		defer h.detaches.Done()
-		h.Detach(server, quiet)
+		h.detach(server, false, &why)
 	}()
 }
 
 // Detach ends this app's sessions and closes its link for good; it calls OnEmpty when no app is left, unless quiet.
-func (h *AppHub) Detach(server string, quiet bool) {
+// It is what the user's Disconnect and the registry's removal of an app do, so the hub forgets any reason it had
+// for dropping the app: the app is gone, not dropped.
+func (h *AppHub) Detach(server string, quiet bool) { h.detach(server, quiet, nil) }
+
+// detach is Detach; with why, the hub remembers the reason for the rest of the run, so that the menu can still show the
+// app, and say why it is not linked.
+func (h *AppHub) detach(server string, quiet bool, why *droppedApp) {
 	h.mu.Lock()
 	e := h.find(server)
+	if why == nil {
+		delete(h.dropped, server)
+	}
 	if e == nil {
 		h.mu.Unlock()
 		return
+	}
+	if why != nil {
+		h.dropped[server] = *why
 	}
 	h.entries = removeEntry(h.entries, e)
 	h.mu.Unlock()
