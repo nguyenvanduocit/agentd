@@ -1,5 +1,5 @@
 // Command agentd runs your agents for the apps you allow: `agentd pair`, `agentd run` (the default), `agentd apps`,
-// `agentd service`, `agentd mcp` and `agentd version`. The exit codes of `run` are its protocol with whatever restarts
+// `agentd acp`, `agentd service`, `agentd mcp` and `agentd version`. The exit codes of `run` are its protocol with whatever restarts
 // it: 0 stays stopped, 75 starts again (daemon/home/exit.go).
 package main
 
@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/nguyenvanduocit/agentd/daemon/acpauth"
 	"github.com/nguyenvanduocit/agentd/daemon/cli"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/mcpbridge"
@@ -68,6 +69,8 @@ func dispatchWith(command cli.Command, host home.Host, p process) (int, error) {
 	switch cmd := command.(type) {
 	case cli.Apps:
 		return registry.RunApps(cmd, host, p.log)
+	case cli.ACP:
+		return acpauth.RunACP(cmd, acpauth.Deps{Home: home.AgentdHome(host), Stdout: p.stdout, Stderr: p.stderr}), nil
 	case cli.Pair:
 		return registry.RunPair(context.Background(), cmd, registry.PairDeps{
 			Client: http.DefaultClient, Machine: registry.CurrentMachine(), Host: host, Log: p.log, Stdin: p.stdin, Prompt: p.stderr,

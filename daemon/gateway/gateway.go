@@ -52,6 +52,12 @@ type Deps struct {
 	// Upgrade serves the WebSocket upgrade of a browser-granted origin on /v1/session, and returns when the socket
 	// is done (BrowserSessions.Upgrade). Without it every upgrade is refused.
 	Upgrade func(origin string, w http.ResponseWriter, r *http.Request)
+	// Acp serves the WebSocket upgrade of a checked request on the standard ACP endpoint /acp (AcpSessions.Serve), and
+	// returns when the connection is done. Without it /acp does not exist.
+	Acp func(t AcpTarget, w http.ResponseWriter, r *http.Request)
+	// AcpToken is the token a program with no Origin header must present to use /acp (acpauth). It is asked for at each
+	// request, so a new token takes effect at once. Empty means there is none, and then no such program can connect.
+	AcpToken func() string
 }
 
 // Options are what Start takes besides the deps and the port.
@@ -60,6 +66,9 @@ type Options struct {
 	Gate *consent.PeerGate
 	// Now is the clock of the cooldown, the lockout and the age of a page's grant; nil is time.Now.
 	Now func() time.Time
+	// Say is told, in a plain line, of the refusals worth a line in the log; nil says nothing. It is never given a
+	// token, a query string or anything else a client sent.
+	Say func(line string)
 }
 
 // Gateway is the running server.
@@ -335,6 +344,8 @@ type server struct {
 	deps   Deps
 	gate   *consent.PeerGate
 	port   int
+	// acpRefused writes the log line of a program that came to /acp without the token.
+	acpRefused *refusalLog
 }
 
 type connKey struct{}
@@ -348,6 +359,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			send(w, refuse(http.StatusForbidden, ReasonPeer), nil)
 		}
+		return
+	}
+	if isAcpPath(req) {
+		s.serveAcp(w, req)
 		return
 	}
 	if upgrading {
@@ -455,7 +470,8 @@ func Start(deps Deps, port int, o Options) (*Gateway, error) {
 	}
 	bound := l.Addr().(*net.TCPAddr).Port
 	srv := &http.Server{
-		Handler:           &server{routes: newRoutes(deps, now), deps: deps, gate: o.Gate, port: bound},
+		Handler: &server{routes: newRoutes(deps, now), deps: deps, gate: o.Gate, port: bound,
+			acpRefused: newRefusalLog(o.Say, now, acpRefusedEvery)},
 		ReadHeaderTimeout: time.Minute,
 		IdleTimeout:       5 * time.Second,
 		ErrorLog:          log.New(io.Discard, "", 0),

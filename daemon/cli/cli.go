@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Command is what the command line asks for: Run, Pair, MCP, PageMCP, Apps, Service, Version or Help.
+// Command is what the command line asks for: Run, Pair, MCP, PageMCP, Apps, ACP, Service, Version or Help.
 // An optional string flag is a *string: nil when the flag was not given, so an empty `--dir=` stays distinguishable.
 type Command interface{ command() }
 
@@ -50,6 +50,14 @@ type Apps struct {
 	Config *string
 }
 
+// ACP prints the address a standard ACP client (an editor, a script) connects to. Agent is the one agent asked for, or
+// empty for every agent that is ready. Token prints the token alone; Rotate makes a new one first.
+type ACP struct {
+	Agent  string
+	Token  bool
+	Rotate bool
+}
+
 // ServiceAction is what `agentd service` does.
 type ServiceAction string
 
@@ -87,6 +95,7 @@ func (Pair) command()    {}
 func (MCP) command()     {}
 func (PageMCP) command() {}
 func (Apps) command()    {}
+func (ACP) command()     {}
 func (Service) command() {}
 func (Version) command() {}
 func (Help) command()    {}
@@ -99,6 +108,7 @@ usage:
   agentd [run] [--app <url>] [--dir <dir>]  connect and serve agents (default command)
   agentd apps [list]                        the apps and web pages this machine is connected to
   agentd apps remove <origin>               disconnect one of them; a running agentd drops it within seconds
+  agentd acp [<agent>] [--rotate] [--token] the address that ACP apps (editors, scripts) connect to, with its token
   agentd service install [--dir <dir>]      start at login and restart when it dies (launchd, systemd)
   agentd service start|restart              start it again after a Stop from the web UI; restart it
   agentd service uninstall                  stop it and remove its login service
@@ -111,6 +121,8 @@ options:
   --app <url>      the app, by its origin (default: every app saved by pair)
   --dir <dir>      working directory of the agents (default: the current directory; service install: your home)
   --config <file>  the config file (default: <config dir>/agentd/daemon.json)
+  --rotate         acp: make a new token first; the old one stops working at once
+  --token          acp: print the token alone
   -n, --lines <n>  service logs: how many lines (default 100)
   -f, --follow     service logs: keep printing
   -h, --help       this text
@@ -119,6 +131,7 @@ options:
 examples:
   agentd pair --app https://app.example.com --code 123456
   agentd apps remove https://app.example.com
+  agentd acp claude
   agentd service install
 `
 
@@ -156,6 +169,13 @@ func build(name, rest, extra *string, v flagValues) (Command, error) {
 	}
 	if name != nil && *name == "apps" {
 		return apps(rest, extra, v)
+	}
+	if name != nil && *name == "acp" {
+		agent := ""
+		if rest != nil {
+			agent = *rest
+		}
+		return ACP{Agent: agent, Token: v.token, Rotate: v.rotate}, nil
 	}
 	if rest != nil {
 		return nil, errors.New(`unexpected argument "` + *rest + `"`)

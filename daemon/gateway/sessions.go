@@ -43,25 +43,42 @@ type pageSocket struct {
 	conn *websocket.Conn
 	wake chan struct{} // a message is queued
 	done chan struct{} // closed with the socket
+	// writeTimeout, when set before the first message, is how long one message may take to be written: a peer that
+	// leaves the socket unread longer than that is cut loose. Zero waits for ever.
+	writeTimeout time.Duration
 
 	mu       sync.Mutex
 	queue    [][]byte
 	buffered int
 	closed   bool
+	ending   *socketEnd    // a close frame to send once what is queued has gone out
 	room     chan struct{} // set while the agents wait; closed when they may go on
 }
 
-func newPageSocket(conn *websocket.Conn) *pageSocket {
-	p := &pageSocket{conn: conn, wake: make(chan struct{}, 1), done: make(chan struct{})}
+// socketEnd is the close frame of a socket that ends in order.
+type socketEnd struct {
+	code   int
+	reason string
+}
+
+func newPageSocket(conn *websocket.Conn) *pageSocket { return newPageSocketWithin(conn, 0) }
+
+// newPageSocketWithin is a page socket whose messages must each be written within writeTimeout; zero waits for ever.
+func newPageSocketWithin(conn *websocket.Conn, writeTimeout time.Duration) *pageSocket {
+	p := &pageSocket{conn: conn, wake: make(chan struct{}, 1), done: make(chan struct{}), writeTimeout: writeTimeout}
 	go p.writeLoop()
 	return p
 }
 
 // send queues m; a closed socket drops it.
 func (p *pageSocket) send(m pagetools.FromDaemon) {
-	data := []byte(pagetools.Encode(m))
+	p.sendText([]byte(pagetools.Encode(m)))
+}
+
+// sendText queues data as one text message; a socket that is closed or ending drops it.
+func (p *pageSocket) sendText(data []byte) {
 	p.mu.Lock()
-	if p.closed {
+	if p.closed || p.ending != nil {
 		p.mu.Unlock()
 		return
 	}
@@ -108,6 +125,9 @@ func (p *pageSocket) writeLoop() {
 			if !ok {
 				break
 			}
+			if p.writeTimeout > 0 {
+				_ = p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout))
+			}
 			err := p.conn.WriteMessage(websocket.TextMessage, data)
 			p.sent(len(data))
 			if err != nil {
@@ -115,7 +135,38 @@ func (p *pageSocket) writeLoop() {
 				return
 			}
 		}
+		if end := p.takeEnd(); end != nil {
+			_ = p.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(end.code, end.reason), time.Now().Add(time.Second))
+			p.close()
+			return
+		}
 	}
+}
+
+// finish ends the socket in order: what is queued goes out, then a close frame with code and reason. The first call
+// wins; messages sent after it are dropped.
+func (p *pageSocket) finish(code int, reason string) {
+	p.mu.Lock()
+	if p.closed || p.ending != nil {
+		p.mu.Unlock()
+		return
+	}
+	p.ending = &socketEnd{code, reason}
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// takeEnd is the close frame to send when nothing is queued; nil while there is more to send or no close was asked.
+func (p *pageSocket) takeEnd() *socketEnd {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.queue) > 0 {
+		return nil
+	}
+	return p.ending
 }
 
 // backlog is nil while the socket has room, else a channel that is closed once it has room again.

@@ -87,6 +87,18 @@ func TestGuardPageLineRefusesTheBridgeWhenTheSessionHasNone(t *testing.T) {
 	}
 }
 
+// The standard ACP endpoint has no bridge to a page's tools and checks a page's lines against the zero PageBridge: an
+// entry that equals it field for field (an empty command, empty values) must not slip through as "the session's own".
+func TestGuardPageLineWithNoBridgeRefusesAnEntryThatLooksLikeTheEmptyOne(t *testing.T) {
+	empty := `{"name":"x","command":"","args":[],"env":[{"name":"AGENTD_MCP_SOCKET","value":""},{"name":"AGENTD_MCP_TOKEN","value":""}]}`
+	for _, servers := range []string{`[` + empty + `]`, `[{"name":"x","command":"","args":[],"env":[]}]`, `[{}]`, `[{"name":"x"}]`} {
+		line := newRequest("session/new", `{"cwd":"/work","mcpServers":`+servers+`}`)
+		if _, _, refused := GuardPageLine(PageBridge{}, line); !refused {
+			t.Errorf("mcpServers %s passed with no bridge", servers)
+		}
+	}
+}
+
 func TestGuardPageLineRefusesMcpServersOnAnySessionRequest(t *testing.T) {
 	foreign := `{"cwd":"/work","sessionId":"s","mcpServers":[{"name":"x","command":"/bin/sh","args":[]}]}`
 	for _, method := range []string{"session/new", "session/load", "session/resume", "session/fork", "session/prompt", "session/set_mode", "session/anything_new"} {

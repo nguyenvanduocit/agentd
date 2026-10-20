@@ -35,6 +35,17 @@ type State struct {
 	// Updates is the setting "install updates automatically"; Updatable: whether this daemon can update itself at all.
 	Updates   bool `json:"updates"`
 	Updatable bool `json:"updatable"`
+	// Acp is how a program on this computer reaches the standard ACP endpoint; absent while there is no endpoint.
+	Acp *AcpState `json:"acp,omitempty"`
+}
+
+// AcpState is the address of the standard ACP endpoint and the token that goes with it: the app copies
+// Base+agent+"?token="+Token for the user to paste into another app. It carries the token, so it goes only to the
+// channel the daemon shares with its own app or tray, and is never written to a log.
+type AcpState struct {
+	Base   string   `json:"base"`
+	Token  string   `json:"token"`
+	Agents []string `json:"agents"`
 }
 
 // Facts are what a State is made of.
@@ -51,6 +62,8 @@ type Facts struct {
 	Agents    []pagetools.AgentInfo
 	Updates   bool
 	Updatable bool
+	// Acp is the address of the ACP endpoint with its token; nil when there is none.
+	Acp *AcpState
 }
 
 // NewState is the state message for the facts. The lists are never null on the wire.
@@ -67,6 +80,7 @@ func NewState(f Facts) State {
 		Agents:     nonNil(f.Agents),
 		Updates:    f.Updates,
 		Updatable:  f.Updatable,
+		Acp:        f.Acp,
 	}
 }
 

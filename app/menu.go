@@ -23,6 +23,17 @@ type State struct {
 	// installed and has a release server); the setting changes nothing otherwise.
 	Updates   bool `json:"updates"`
 	Updatable bool `json:"updatable"`
+	// Acp is how another program reaches the standard ACP endpoint; absent while there is none. It holds the token:
+	// it is copied for the user and never drawn, logged or reported back.
+	Acp *AcpAccess `json:"acp,omitempty"`
+}
+
+// AcpAccess is the address of the standard ACP endpoint (Base, ending in a slash) and its token, with the agents that
+// are ready to be reached at Base+agent.
+type AcpAccess struct {
+	Base   string   `json:"base"`
+	Token  string   `json:"token"`
+	Agents []string `json:"agents"`
 }
 
 // Agent is an agent the daemon can start; Reason says why it cannot when it is not Ready.
@@ -81,6 +92,42 @@ func ActionLine(id string) []byte {
 		ID string `json:"id"`
 	}{"action", id})
 	return b
+}
+
+// CopyACPPrefix starts the id of a choice to copy the address of an agent: the app handles it itself, the clipboard is
+// the app's, and the token stays between the daemon and the app.
+const CopyACPPrefix = "copy-acp:"
+
+// acpAgent is a ready agent and what to call it on screen.
+type acpAgent struct{ Name, Title string }
+
+// AcpReady are the agents whose address can be copied, in the daemon's order.
+func AcpReady(s State) []acpAgent {
+	if s.Acp == nil || s.Acp.Base == "" || s.Acp.Token == "" {
+		return nil
+	}
+	var ready []acpAgent
+	for _, name := range s.Acp.Agents {
+		title := name
+		for _, a := range s.Agents {
+			if a.Name == name && a.Title != "" {
+				title = a.Title
+			}
+		}
+		ready = append(ready, acpAgent{name, title})
+	}
+	return ready
+}
+
+// AcpAddress is the address to give another program for an agent that is ready: the endpoint, the agent, and the
+// token in the query. Anything but a ready agent has none, so an id made up by a caller reaches nothing.
+func AcpAddress(s State, agent string) (string, bool) {
+	for _, a := range AcpReady(s) {
+		if a.Name == agent {
+			return strings.TrimSuffix(s.Acp.Base, "/") + "/" + agent + "?token=" + s.Acp.Token, true
+		}
+	}
+	return "", false
 }
 
 // gatewayOffText is what the window and the menu say when no port was free for the local gateway.
@@ -164,6 +211,13 @@ func BuildMenu(s State, h Host) []Entry {
 	}
 	if len(s.Apps)+len(s.Pages) > 0 {
 		menu = append(menu, Entry{Separator: true})
+	}
+	if ready := AcpReady(s); len(ready) > 0 {
+		group := Entry{Label: "Other ACP apps"}
+		for _, a := range ready {
+			group.Children = append(group.Children, Entry{ID: CopyACPPrefix + a.Name, Label: "Copy ACP address: " + a.Title})
+		}
+		menu = append(menu, group, Entry{Separator: true})
 	}
 	menu = append(menu, Entry{ID: SettingsID, Label: "Settings…"})
 	if h.App {

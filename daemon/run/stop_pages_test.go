@@ -10,6 +10,26 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
+// Who the daemon stays up for when the last app has left, and the words the log gets (the end-to-end case, a real
+// program connected over /acp, is in acp_stay_test.go).
+func TestWhoTheDaemonStaysUpForWhenTheLastAppHasLeft(t *testing.T) {
+	for _, c := range []struct {
+		pages bool
+		acp   int
+		want  string
+	}{
+		{false, 0, ""},
+		{true, 0, "the web pages that may connect"},
+		{false, 1, "the programs connected over /acp"},
+		{false, 5, "the programs connected over /acp"},
+		{true, 2, "the web pages that may connect and the programs connected over /acp"},
+	} {
+		if got := stayUpNote(c.pages, c.acp); got != c.want {
+			t.Errorf("stayUpNote(%v, %d) = %q, want %q", c.pages, c.acp, got, c.want)
+		}
+	}
+}
+
 // The last app leaving ends the daemon, unless a page may still come and ask: a grant that has lapsed is not a page
 // that may.
 func TestTheLastAppLeavingStopsTheDaemonUnlessAPageGrantIsLive(t *testing.T) {

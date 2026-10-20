@@ -203,3 +203,20 @@ func TestPairReadsTheCodeFromStdin(t *testing.T) {
 		t.Fatalf("the server got %v", body())
 	}
 }
+
+// `agentd acp` is a command of the entry: it reads agentd's own home, prints addresses to stdout and the rest to stderr.
+func TestAcpCommandReadsAgentdsHome(t *testing.T) {
+	sandbox(t)
+	if r := execute(t, "", "acp"); r.code != 1 || r.stdout != "" || !strings.Contains(r.stderr, "has not run on this computer yet") {
+		t.Fatalf("before agentd has run: %+v", r)
+	}
+	r := execute(t, "", "acp", "--rotate", "--token")
+	token := strings.TrimSpace(r.stdout)
+	if r.code != 0 || len(token) != 43 {
+		t.Fatalf("acp --rotate --token: %+v", r)
+	}
+	r = execute(t, "", "acp", "claude")
+	if r.code != 0 || !strings.HasSuffix(r.stdout, "/acp/claude?token="+token+"\n") || !strings.Contains(r.stderr, "agentd is not running") {
+		t.Fatalf("acp claude: %+v (token %s)", r, token)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nguyenvanduocit/agentd/daemon/acpauth"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -141,6 +142,21 @@ func newSandbox(t *testing.T) *sandbox {
 func (b *sandbox) configFile() string { return filepath.Join(b.config, "agentd", "daemon.json") }
 
 func (b *sandbox) sessionsFile() string { return filepath.Join(b.state, "agentd", "sessions.json") }
+
+// agentdHome is the daemon's own home in the sandbox (AGENTD_HOME): where its token and its ACP address are kept.
+func (b *sandbox) agentdHome() string { return filepath.Join(b.root, "mc") }
+
+// acpToken is the token the daemon made, once it has.
+func (b *sandbox) acpToken(t *testing.T) string {
+	t.Helper()
+	var token string
+	waitFor(t, "the daemon's ACP token", func() bool {
+		var err error
+		token, err = acpauth.Load(b.agentdHome())
+		return err == nil
+	})
+	return token
+}
 
 // writeApps saves these apps (and browser grants), in this order.
 func (b *sandbox) writeApps(t *testing.T, apps []registry.App, browsers []registry.BrowserGrant) {

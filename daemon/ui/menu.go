@@ -61,7 +61,10 @@ type MenuDeps struct {
 	Updatable bool
 	// SetUpdates saves the updates setting and turns the checks on or off.
 	SetUpdates func(on bool) error
-	Log        *proc.Logger
+	// Acp is the address of the standard ACP endpoint with its token, asked for at each refresh; false while there is
+	// no endpoint or no token. Nil: the daemon has no such endpoint.
+	Acp func() (AcpState, bool)
+	Log *proc.Logger
 
 	// Optional: GOOS defaults to runtime.GOOS, Opener to a detached start of the command, Refresh to two seconds, Now
 	// (the clock that tells which page grants have lapsed) to time.Now.
@@ -156,6 +159,12 @@ func StartMenu(d MenuDeps) (end func()) {
 				pages = append(pages, b.Origin)
 			}
 		}
+		var acp *AcpState
+		if d.Acp != nil {
+			if state, ok := d.Acp(); ok {
+				acp = &state
+			}
+		}
 		link.Update(NewState(Facts{
 			Version:     hello.Version,
 			Apps:        apps,
@@ -167,6 +176,7 @@ func StartMenu(d MenuDeps) (end func()) {
 			Agents:      hello.Agents,
 			Updates:     d.Updates(),
 			Updatable:   d.Updatable,
+			Acp:         acp,
 		}))
 	}
 	link = d.Open(func(action Action) { d.act(action, push) })

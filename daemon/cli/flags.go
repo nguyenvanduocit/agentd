@@ -32,6 +32,8 @@ var flagSpecs = []flagSpec{
 	{name: "page", kind: boolFlag},
 	{name: "lines", short: 'n', kind: stringFlag},
 	{name: "follow", short: 'f', kind: boolFlag},
+	{name: "rotate", kind: boolFlag},
+	{name: "token", kind: boolFlag},
 	{name: "help", short: 'h', kind: boolFlag},
 	{name: "version", short: 'v', kind: boolFlag},
 }
@@ -65,6 +67,7 @@ func isStringFlag(short rune) bool {
 type flagValues struct {
 	app, dir, config, code, session, lines *string
 	page, follow, help, version            bool
+	rotate, token                          bool
 }
 
 func (v *flagValues) store(name string, value *string) {
@@ -85,6 +88,10 @@ func (v *flagValues) store(name string, value *string) {
 		v.page = true
 	case "follow":
 		v.follow = true
+	case "rotate":
+		v.rotate = true
+	case "token":
+		v.token = true
 	case "help":
 		v.help = true
 	case "version":

@@ -52,7 +52,7 @@ func (d *daemon) startTray(open func(onAction func(ui.Action)) ui.Link) func() {
 	if d.layout != nil {
 		logFile = d.layout.LogFile
 	}
-	sessions := func() int { return d.hub.Size() + d.browsers.Size() }
+	sessions := d.running
 	port := 0
 	if d.gateway != nil {
 		port = d.gateway.Port
@@ -77,6 +77,7 @@ func (d *daemon) startTray(open func(onAction func(ui.Action)) ui.Link) func() {
 			d.updates.turn(on)
 			return nil
 		},
+		Acp: d.acpAccess,
 		Log: d.Log,
 	})
 }

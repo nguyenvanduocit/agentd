@@ -8,6 +8,8 @@ type Settings struct {
 	State State
 	Host  Host
 	send  func(id string)
+	// Notice is the sentence under the addresses to copy: what the last copy did.
+	Notice string
 }
 
 // View builds the window from the state, for every frame. In agentd.app it also says why an engine that does not run
@@ -27,6 +29,7 @@ func (w *Settings) View(c *ui.Context) {
 		})
 		w.connected(c)
 		w.agents(c)
+		w.acp(c)
 		if w.Host.App {
 			w.login(c)
 		} else {
@@ -135,6 +138,33 @@ func (w *Settings) agents(c *ui.Context) {
 					ui.Text(c, a.Reason).TextColor(c.Theme().TextMuted)
 				}
 			})
+		}
+	})
+}
+
+// acpIntro is the sentence over the addresses another program can connect to.
+const acpIntro = "Apps that speak ACP, such as editors, can connect to agentd on this computer. Copy an address and paste it where the app asks for an ACP agent URL."
+
+// acp offers the address of each ready agent to copy for another program. The address holds a token, so it is copied
+// and never drawn: a window can be seen over a shoulder, in a screen share and in a screenshot.
+func (w *Settings) acp(c *ui.Context) {
+	ready := AcpReady(w.State)
+	if len(ready) == 0 {
+		return
+	}
+	ui.Column(c).Gap(8).Children(func() {
+		heading(c, "Use agentd from other apps")
+		ui.Text(c, acpIntro)
+		for _, a := range ready {
+			ui.Row(c.Key("acp-" + a.Name)).Gap(12).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.Title).Grow(1)
+				if ui.Button(c, "Copy address").Label("Copy ACP address for " + a.Title).Clicked() {
+					w.send(CopyACPPrefix + a.Name)
+				}
+			})
+		}
+		if w.Notice != "" {
+			ui.Text(c, w.Notice).FontSize(11).TextColor(c.Theme().TextMuted)
 		}
 	})
 }

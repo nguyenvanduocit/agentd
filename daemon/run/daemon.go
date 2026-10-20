@@ -67,6 +67,8 @@ type daemon struct {
 	layout   *home.Layout
 	updates  *updates
 	browsers *gateway.BrowserSessions
+	acp      *gateway.AcpSessions // the standard ACP endpoint's connections (/acp)
+	acp0     acpState             // its token and the record of where it is (acp.go)
 	hub      *link.AppHub
 	gateway  *gateway.Gateway
 	stopTray func()
@@ -144,7 +146,10 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 		return 0, err
 	}
 	d.startHub()
-	d.store.OnChange(func() { d.hub.AgentsChanged(d.agentInfos()) })
+	d.store.OnChange(func() {
+		d.hub.AgentsChanged(d.agentInfos())
+		d.writeAcpInfo()
+	})
 	for _, app := range apps {
 		if err := d.hub.Add(app); err != nil {
 			return 0, err
@@ -153,6 +158,7 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 	if d.gateway, err = d.startGateway(port); err != nil {
 		return 0, err
 	}
+	d.publishAcp()
 	d.announce(len(apps))
 	if err := d.startExtras(); err != nil {
 		return 0, err
@@ -174,6 +180,9 @@ func (d *daemon) shutdown() {
 	if d.hub != nil {
 		d.hub.Drain()
 	}
+	if d.acp != nil {
+		d.acp.Drain()
+	}
 	var ending sync.WaitGroup
 	if d.hub != nil {
 		ending.Add(1)
@@ -189,6 +198,13 @@ func (d *daemon) shutdown() {
 			d.browsers.Shutdown(shutdownGrace)
 		}()
 	}
+	if d.acp != nil {
+		ending.Add(1)
+		go func() {
+			defer ending.Done()
+			d.acp.Shutdown(shutdownGrace)
+		}()
+	}
 	if d.store != nil {
 		d.store.Stop()
 	}
@@ -197,6 +213,7 @@ func (d *daemon) shutdown() {
 	if d.gateway != nil {
 		_ = d.gateway.Close()
 	}
+	d.removeAcpInfo()
 	if d.state != nil {
 		d.state.Clear()
 	}
@@ -327,8 +344,15 @@ func (d *daemon) startBrowserSessions() error {
 		BridgeCommand: filepath.Join(binDir, home.WrapperFileName(runtime.GOOS)),
 		Folders:       d.browserFolders,
 	})
+	// The standard ACP endpoint has no bridge to a page's tools; its agents get the same wrapper directory because
+	// every agent's PATH starts with one.
+	d.acp = gateway.NewAcpSessions(gateway.AcpOptions{Fleet: fleet, Folders: d.browserFolders})
+	d.setupAcp()
 	return nil
 }
+
+// running is the number of agents running for apps, for web pages and for ACP connections: what ending the daemon ends.
+func (d *daemon) running() int { return d.hub.Size() + d.browsers.Size() + d.acp.Size() }
 
 // browserFolders are the folders the user allowed the page origin; the registry is read each time, so a grant that
 // is made or removed applies to sockets that are already open.
@@ -370,20 +394,39 @@ func (d *daemon) startHub() {
 		Folders:     d.appFolders,
 		Hello:       d.hello,
 		OnEmpty:     func(code int) { d.stopUnlessPagesMayConnect(code) },
-		OnRestart:   func(server string) { d.restartRequested(server, d.hub.Size()) },
+		OnRestart:   func(server string) { d.restartRequested(server, d.running()) },
 		Log:         d.Log,
 	})
 }
 
-// stopUnlessPagesMayConnect: a page that may still ask to connect keeps the daemon up; without one an app that left has
-// nothing to wait for.
+// stopUnlessPagesMayConnect: a page that may still ask to connect keeps the daemon up, and so does a program that is
+// connected over /acp right now (an editor must not be cut off in the middle of a session); without either, an app that
+// left has nothing to wait for.
 func (d *daemon) stopUnlessPagesMayConnect(code int) {
 	reg, err := registry.Load(d.file)
-	if err == nil && reg.HasLiveBrowsers(time.Now()) {
-		d.Log.Say("the last app left; staying up for the web pages that may connect")
+	acpAgents := 0
+	if d.acp != nil {
+		acpAgents = d.acp.Size()
+	}
+	if note := stayUpNote(err == nil && reg.HasLiveBrowsers(time.Now()), acpAgents); note != "" {
+		d.Log.Say("the last app left; staying up for " + note)
 		return
 	}
 	d.stop(code)
+}
+
+// stayUpNote is who the daemon stays up for when the last app has left, in words for the log; empty when for nobody.
+func stayUpNote(pagesMayConnect bool, acpAgents int) string {
+	const pages, programs = "the web pages that may connect", "the programs connected over /acp"
+	switch {
+	case pagesMayConnect && acpAgents > 0:
+		return pages + " and " + programs
+	case pagesMayConnect:
+		return pages
+	case acpAgents > 0:
+		return programs
+	}
+	return ""
 }
 
 // restartRequested ends the daemon with the code that starts it again, when a service does; otherwise it says why not.
@@ -398,7 +441,7 @@ func (d *daemon) restartRequested(server string, sessions int) {
 }
 
 func (d *daemon) startGateway(port int) (*gateway.Gateway, error) {
-	gw, err := gateway.Start(d.gatewayDeps(), port, gateway.Options{Gate: consent.NewPeerGate(consent.SystemOwners(), os.Getuid(), d.Log.Warn)})
+	gw, err := gateway.Start(d.gatewayDeps(), port, gateway.Options{Gate: consent.NewPeerGate(consent.SystemOwners(), os.Getuid(), d.Log.Warn), Say: d.Log.Say})
 	if errors.Is(err, gateway.ErrPortsTaken) {
 		return nil, nil
 	}
@@ -450,7 +493,7 @@ func (d *daemon) updateSwitch() (*updates, error) {
 		layout:    *d.layout,
 		base:      base,
 		interval:  releaseCheckInterval(d.Host.Env),
-		idle:      func() bool { return d.hub.Size()+d.browsers.Size() == 0 },
+		idle:      func() bool { return d.running() == 0 },
 		exit:      d.stop,
 		log:       d.Log,
 	}, nil

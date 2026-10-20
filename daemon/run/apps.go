@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/contract"
@@ -66,6 +67,9 @@ func (d *daemon) gatewayDeps() gateway.Deps {
 		},
 		Revoke:  d.disconnectOrigin,
 		Upgrade: d.browsers.Upgrade,
+		Acp:     d.acp.Serve,
+		// The token a program on this computer presents to use /acp, read at each request.
+		AcpToken: d.acpToken,
 	}
 }
 
@@ -76,6 +80,7 @@ func (d *daemon) disconnectOrigin(origin string) error {
 		return err
 	}
 	d.browsers.EndOrigin(origin)
+	d.acp.EndOrigin(origin)
 	d.hub.Detach(origin, true)
 	return nil
 }
@@ -101,10 +106,27 @@ func (d *daemon) newRegistryFollower() *registryFollower {
 		log:     d.Log,
 		now:     time.Now,
 		servers: d.hub.Servers,
-		pages:   d.browsers.Origins,
-		endPage: d.browsers.EndOrigin,
+		pages:   d.pageOrigins,
+		endPage: d.endPageOrigin,
 		endApp:  func(server string) { d.hub.Detach(server, true) },
 	}
+}
+
+// pageOrigins are the web pages with an open socket of either kind (/v1/session or /acp).
+func (d *daemon) pageOrigins() []string {
+	origins := d.browsers.Origins()
+	for _, o := range d.acp.Origins() {
+		if !slices.Contains(origins, o) {
+			origins = append(origins, o)
+		}
+	}
+	return origins
+}
+
+// endPageOrigin ends the sockets of a web page of either kind.
+func (d *daemon) endPageOrigin(origin string) {
+	d.browsers.EndOrigin(origin)
+	d.acp.EndOrigin(origin)
 }
 
 func (f *registryFollower) check() {

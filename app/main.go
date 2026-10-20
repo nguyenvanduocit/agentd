@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -39,6 +40,8 @@ type app struct {
 	reply func(line []byte)
 	// consent is the window of the question being asked, if any.
 	consent *Consent
+	// copy puts text on the clipboard; nil is the system's (a test replaces it).
+	copy func(text string)
 }
 
 func (a *app) choose(id string) {
@@ -46,10 +49,38 @@ func (a *app) choose(id string) {
 		a.showSettings()
 		return
 	}
+	if agent, ok := strings.CutPrefix(id, CopyACPPrefix); ok {
+		a.copyAcp(agent)
+		return
+	}
 	if a.own != nil && a.own(id) {
 		return
 	}
 	a.report(id)
+}
+
+// copyAcp puts the address of an agent on the clipboard, for the user to paste into another app. The address holds the
+// token, so it goes nowhere else: not to the daemon, not to a log, not onto the screen.
+func (a *app) copyAcp(agent string) {
+	address, ok := AcpAddress(a.settings.State, agent)
+	if !ok {
+		a.settings.Notice = "agentd has no address to copy yet. Try again in a moment."
+		a.refresh()
+		return
+	}
+	if a.copy != nil {
+		a.copy(address)
+	} else {
+		mygo.Clipboard.WriteText(address)
+	}
+	title := agent
+	for _, r := range AcpReady(a.settings.State) {
+		if r.Name == agent {
+			title = r.Title
+		}
+	}
+	a.settings.Notice = "Copied the address for " + title + ". Paste it where the app asks for an ACP agent URL."
+	a.refresh()
 }
 
 func (a *app) toItems(entries []Entry) []*mygo.MenuItem {
