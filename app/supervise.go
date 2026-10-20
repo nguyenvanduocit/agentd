@@ -10,6 +10,9 @@ import (
 const (
 	exitStopped = 0
 	exitRestart = 75
+	// An engine that stops with 0 sooner than this after it started was not stopped by anyone: it found another agentd on
+	// the home (the engine takes a lock per home, daemon/run/instance.go) and left, as it is told to, with 0.
+	quickStop = 3 * time.Second
 	// An engine that ran this long before it crashed was working: its crash starts the count again.
 	quickRun   = 10 * time.Second
 	maxCrashes = 5
@@ -32,6 +35,9 @@ func AfterExit(code int, ranFor time.Duration, crashes int) (Next, int) {
 	case exitRestart:
 		return Next{Restart: true}, 0
 	case exitStopped:
+		if ranFor < quickStop {
+			return Next{Note: "agentd did not start here: another agentd is already running on this computer. Open its menu-bar icon, or quit it first."}, 0
+		}
 		return Next{Note: "agentd was stopped"}, 0
 	}
 	if ranFor >= quickRun {

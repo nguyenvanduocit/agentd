@@ -87,6 +87,12 @@ func Daemon(ctx context.Context, cmd cli.Run, deps Deps) int {
 	if deps.Tracker == nil {
 		deps.Tracker = proc.NewTracker()
 	}
+	deps.Log.StampLines()
+	lock, stayOut := takeHome(deps, time.Now())
+	if stayOut {
+		return home.ExitStopped
+	}
+	defer func() { _ = lock.Close() }() // after the shutdown below: the home is free only once the agents are gone
 	d := &daemon{Deps: deps, stopCh: make(chan int, 1)}
 	d.bgCtx, d.bgCancel = context.WithCancel(context.Background())
 	defer d.bgCancel()

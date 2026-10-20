@@ -35,6 +35,7 @@ func TestLayoutOfHangsEveryPathOffTheHome(t *testing.T) {
 		LoopPidFile:  "/h/.agentd/run/loop.pid",
 		AdaptersDir:  "/h/.agentd/adapters",
 		LastExitFile: "/h/.agentd/run/last-exit",
+		LockFile:     "/h/.agentd/run/daemon.lock",
 	}
 	if l != want {
 		t.Errorf("LayoutOf = %+v, want %+v", l, want)

@@ -174,6 +174,26 @@ when a chat session opens, so no timeout of a chat can cut an install.
   web UI, a SIGTERM from the service manager, a revoked token), `75` starts again now (a Restart from the web UI, an
   update in place; the launcher starts it at once, without the throttle), any other code is a crash and restarts
   after the throttle. `service status` tells "stopped" (last exit 0) from "restarting after a crash".
+- **One daemon per home.** `agentd run` takes an exclusive lock on `<home>/run/daemon.lock` before it does anything else
+  (before it reads `daemon.json`, starts a link or the gateway, or writes a file of the home). A second daemon on the same
+  home finds it held, prints one line, starts nothing, writes nothing and exits **0**:
+  `agentd is already running on this computer (pid 4242, started by the app, 3 minutes ago): not starting a second one. Use that one, or quit it first.`
+  Two daemons on one home would hold the same apps' tokens and flap against each other for ever (an app's server replaces
+  a daemon's first socket when it connects again), and every agent would run twice. The code is 0 and not a new one
+  because the exit codes are the protocol with the service manager (above): 0 stays stopped, so launchd, systemd and the
+  launcher's loop leave it alone, while any other code would be started again at once and counted as a crash, and two quick
+  crashes make the launcher roll a good version back. agentd.app shows "agentd did not start here: another agentd is
+  already running on this computer" for an engine that stops with 0 within three seconds of its start. The lock is an
+  operating-system lock (`flock`), not a pid file: the system releases it when the process ends in any way, a `kill -9`
+  included, so there is never a stale lock to clean up, and it is not inherited by the agents and the tray program the
+  daemon starts (close-on-exec), so one that outlives a killed daemon does not keep the next one out. The file also
+  holds `{"pid","startedAt","kind"}` (`app`, `service` or `terminal`), written once the lock is held and used only to
+  word the message above. A restart through exit 75 finds the lock free: the old process has exited first. A home where
+  the lock cannot be made (a file system without locks, a file where `run/` should be) is told in one line and the daemon
+  runs without it. Different homes (`AGENTD_HOME`) are independent daemons. `agentd service install` or `start` while
+  agentd.app holds the home starts a service engine that says so and exits 0: it is not started again, and
+  `service status` reads "stopped". On Windows the lock is a share-nothing open of the file, compile-checked only (the
+  daemon is not a Windows product: use WSL).
 - **Service.** macOS: LaunchAgent `~/Library/LaunchAgents/com.agentd.daemon.plist` (`RunAtLoad`,
   `KeepAlive = {SuccessfulExit = false}`, `ThrottleInterval` 5 s). Linux: systemd user unit
   `~/.config/systemd/user/agentd.service` (`Restart=on-failure`, `RestartSec=5`). Both set
@@ -231,7 +251,7 @@ when a chat session opens, so no timeout of a chat can cut an install.
 ## Files
 
 - `~/.agentd` (`$AGENTD_HOME`): `node/` (a downloaded Node.js), `daemon/<version>/`, `daemon/current`,
-  `daemon/previous`, `daemon/rejected`, `daemon/crashes`, `bin/agentd`, `logs/daemon.log`, `run/loop.pid`, `acp/token` (the
+  `daemon/previous`, `daemon/rejected`, `daemon/crashes`, `bin/agentd`, `logs/daemon.log`, `run/loop.pid`, `run/daemon.lock` (the lock of the one daemon that runs on this home, with who holds it), `acp/token` (the
   token of the standard ACP endpoint, mode 0600 in a directory of 0700) and `acp/acp.json` (where the endpoint is; present while the daemon runs).
   Remove it all with `agentd service uninstall && rm -rf ~/.agentd`.
 - Config `{apps:[{server, token}], browsers:[{origin, grantedAt}]}`, mode 0600, written through a temporary file and a rename: `$XDG_CONFIG_HOME` or `~/.config` + `/agentd/daemon.json` (Linux, macOS);

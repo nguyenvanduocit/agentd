@@ -24,6 +24,8 @@ type Layout struct {
 	AdaptersDir string
 	// LastExitFile is the exit code of the last daemon run under the restart loop; it tells a Stop (0) from a crash.
 	LastExitFile string
+	// LockFile is held by the one daemon that runs on this home (see AcquireInstanceLock).
+	LockFile string
 }
 
 // LayoutOf is the layout under `home`. It always uses "/" separators, as the installer and the launcher do.
@@ -42,6 +44,7 @@ func LayoutOf(home string) Layout {
 		LoopPidFile:  path.Join(home, "run", "loop.pid"),
 		AdaptersDir:  path.Join(home, "adapters"),
 		LastExitFile: path.Join(home, "run", "last-exit"),
+		LockFile:     path.Join(home, "run", "daemon.lock"),
 	}
 }
 
