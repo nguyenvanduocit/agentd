@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/nguyenvanduocit/agentd/contract"
@@ -119,7 +120,25 @@ func (l *Link) dispatch(c *conn, ln *lanes, name string, args []json.RawMessage,
 				return l.h.HandleMcpOut(c.ctx, line)
 			})
 		})
+	default:
+		refuseUnknown(c, name, ack)
 	}
+}
+
+// refuseUnknown answers a call of the server that this daemon does not know (a newer server's), at once: its caller
+// would wait out the acknowledgement timeout otherwise. A call that wants no answer is reported on the error event, as
+// the failures of the known ones are. Events that begin with "__" are the library's (the server's own error event),
+// not the contract's: answering one would be an answer to an answer.
+func refuseUnknown(c *conn, name string, ack func(...any)) {
+	if strings.HasPrefix(name, "__") || c.ctx.Err() != nil {
+		return
+	}
+	failure := contract.NewRpcError(contract.CodeInvalidArgument, fmt.Sprintf("this agentd does not know %s: update agentd", name), name, nil)
+	if ack != nil {
+		ack(failure)
+		return
+	}
+	_ = c.notify(contract.RPCErrorEvent, failure)
 }
 
 // sessionKey is the lane of a call: its session id (the first argument), or the shared lane when it has none.

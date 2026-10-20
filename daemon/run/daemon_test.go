@@ -49,16 +49,16 @@ func TestMachineWithoutNpmAndGrokReportsWhy(t *testing.T) {
 		t.Fatalf("agents = %+v", agents)
 	}
 	for _, a := range agents[:2] {
-		title := map[string]string{"claude": "Claude", "codex": "Codex"}[a.Name]
-		want := regexp.MustCompile(`^(installing the ` + title + ` adapter|cannot install the ` + title + ` adapter: npm not found: install Node\.js \(it comes with npm\); retrying in \d+ s)`)
+		title := map[string]string{"claude": "Claude Code", "codex": "Codex"}[a.Name]
+		want := regexp.MustCompile(`^(` + title + ` is setting up|` + title + ` could not be set up: npm not found: install Node\.js \(it comes with npm\)\. It will try again in \d+ (second|minute)s?\.)`)
 		if a.Ready || !want.MatchString(a.Reason) {
 			t.Fatalf("%s = %+v, want a reason that matches %s", a.Name, a, want)
 		}
 	}
-	if want := (contract.AgentInfo{Name: "grok", Title: "Grok", Ready: false, Reason: "grok not found in PATH"}); agents[2] != want {
+	if want := (contract.AgentInfo{Name: "grok", Title: "Grok", Ready: false, Reason: "Grok is not installed on this computer."}); agents[2] != want {
 		t.Fatalf("grok = %+v, want %+v", agents[2], want)
 	}
-	if _, err := r.app.open(t, "s1", "grok"); err == nil || !strings.Contains(err.Error(), "agent grok is not ready: grok not found in PATH") {
+	if _, err := r.app.open(t, "s1", "grok"); err == nil || !strings.Contains(err.Error(), "Grok is not installed on this computer.") {
 		t.Fatalf("open grok: %v", err)
 	}
 }

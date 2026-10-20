@@ -11,9 +11,20 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 )
+
+// BrowserGrantTTL is how long a web page's grant lasts, counted from the day it was made: after it the page asks the
+// user again. An app's grant has no end: its server is the user's own choice and runs without the user there.
+const BrowserGrantTTL = 30 * 24 * time.Hour
+
+// grantStampLayout is how grantedAt is written: the form `new Date().toISOString()` gave in the Node daemon's file.
+const grantStampLayout = "2006-01-02T15:04:05.000Z"
+
+// GrantStamp is grantedAt for a grant made at `at`.
+func GrantStamp(at time.Time) string { return at.UTC().Format(grantStampLayout) }
 
 // App is a server app this daemon is paired with: it dials out to Server with Token. Folders are the folders the user
 // allowed it (see agents.GuardLine); none is no limit, as for an app paired from the command line.
@@ -24,11 +35,27 @@ type App struct {
 }
 
 // BrowserGrant is a web page origin the user allowed to run agents through the local gateway, in Folders (none is no
-// limit, as for a grant that was made before folders existed).
+// limit, as for a grant that was made before folders existed), until BrowserGrantTTL after GrantedAt.
 type BrowserGrant struct {
 	Origin    string   `json:"origin"`
 	GrantedAt string   `json:"grantedAt"`
 	Folders   []string `json:"folders,omitempty"`
+}
+
+// ExpiresAt is when the grant lapses; false when GrantedAt cannot be read as a time, which a grant cannot be told
+// young by.
+func (g BrowserGrant) ExpiresAt() (time.Time, bool) {
+	at, err := time.Parse(time.RFC3339Nano, g.GrantedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at.Add(BrowserGrantTTL), true
+}
+
+// Live reports whether the grant has not lapsed at now. A grant whose time cannot be read has.
+func (g BrowserGrant) Live(now time.Time) bool {
+	end, ok := g.ExpiresAt()
+	return ok && now.Before(end)
 }
 
 // Registry is what daemon.json holds. The two lists are never nil in a value this package returns.
@@ -165,12 +192,19 @@ func (r Registry) AddApp(app App) Registry {
 	return Registry{Apps: apps, Browsers: r.Browsers}
 }
 
-// AddBrowser grants the origin its folders; an origin that is already granted keeps its first grantedAt and folders.
-func (r Registry) AddBrowser(origin, grantedAt string, folders []string) Registry {
-	if r.HasBrowser(origin) {
+// AddBrowser grants the origin its folders, from `at`. An origin whose grant is still live at `at` keeps its first time
+// and folders; one that lapsed gets the new time and the new folders in the place of the old grant.
+func (r Registry) AddBrowser(origin string, at time.Time, folders []string) Registry {
+	if r.HasBrowser(origin, at) {
 		return r
 	}
-	browsers := append(slices.Clone(r.Browsers), BrowserGrant{Origin: origin, GrantedAt: grantedAt, Folders: folders})
+	grant := BrowserGrant{Origin: origin, GrantedAt: GrantStamp(at), Folders: folders}
+	browsers := slices.Clone(r.Browsers)
+	if i := slices.IndexFunc(browsers, func(g BrowserGrant) bool { return g.Origin == origin }); i >= 0 {
+		browsers[i] = grant
+	} else {
+		browsers = append(browsers, grant)
+	}
 	return Registry{Apps: r.Apps, Browsers: browsers}
 }
 
@@ -195,9 +229,20 @@ func (r Registry) HasApp(server string) bool {
 	return slices.ContainsFunc(r.Apps, func(a App) bool { return a.Server == server })
 }
 
-// HasBrowser reports whether the registry grants this page origin.
-func (r Registry) HasBrowser(origin string) bool {
+// HasBrowser reports whether the registry grants this page origin at now: it has a grant that has not lapsed.
+func (r Registry) HasBrowser(origin string, now time.Time) bool {
+	return slices.ContainsFunc(r.Browsers, func(g BrowserGrant) bool { return g.Origin == origin && g.Live(now) })
+}
+
+// HasGrant reports whether the registry holds a grant of this page origin, lapsed or not: what `agentd apps remove`
+// can forget.
+func (r Registry) HasGrant(origin string) bool {
 	return slices.ContainsFunc(r.Browsers, func(g BrowserGrant) bool { return g.Origin == origin })
+}
+
+// HasLiveBrowsers reports whether any page origin is granted at now.
+func (r Registry) HasLiveBrowsers(now time.Time) bool {
+	return slices.ContainsFunc(r.Browsers, func(g BrowserGrant) bool { return g.Live(now) })
 }
 
 // AppFolders are the folders of the app with this server origin; none is no limit.
@@ -210,7 +255,8 @@ func (r Registry) AppFolders(server string) []string {
 	return nil
 }
 
-// BrowserFolders are the folders of the page origin's grant; none is no limit.
+// BrowserFolders are the folders of the page origin's grant, lapsed or not: a session that is still open when its grant
+// lapses stays inside them until the daemon ends it. None is no limit.
 func (r Registry) BrowserFolders(origin string) []string {
 	for _, g := range r.Browsers {
 		if g.Origin == origin {
@@ -226,9 +272,9 @@ type Ended struct {
 	Pages []string
 }
 
-// Withdrawn is what still runs for an origin that r no longer has, as `agentd apps remove` leaves it: of the linked
-// app servers and the origins with open pages, those to end.
-func (r Registry) Withdrawn(linked, pages []string) Ended {
+// Withdrawn is what still runs for an origin that r no longer has at now, as `agentd apps remove` leaves it or a lapsed
+// grant: of the linked app servers and the origins with open pages, those to end.
+func (r Registry) Withdrawn(linked, pages []string, now time.Time) Ended {
 	out := Ended{Apps: []string{}, Pages: []string{}}
 	for _, s := range linked {
 		if !r.HasApp(s) {
@@ -236,7 +282,7 @@ func (r Registry) Withdrawn(linked, pages []string) Ended {
 		}
 	}
 	for _, o := range pages {
-		if !r.HasBrowser(o) {
+		if !r.HasBrowser(o, now) {
 			out.Pages = append(out.Pages, o)
 		}
 	}

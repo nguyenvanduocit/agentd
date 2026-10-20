@@ -98,7 +98,7 @@ func pagesOf(m map[string]any) []any {
 func startAppMode(t *testing.T) (*sandbox, *daemonProc, *appChannel, string) {
 	t.Helper()
 	box := newSandbox(t)
-	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: "2026-10-19T00:00:00.000Z"}})
+	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: registry.GrantStamp(time.Now())}})
 	marker := filepath.Join(box.root, "tray-started")
 	d, app := startWithApp(t, box, map[string]string{"AGENTD_TRAY": sh("touch " + marker + "; sleep 60")})
 	return box, d, app, marker
@@ -161,4 +161,17 @@ func TestATrayProgramOfItsOwnStartsWhenThereIsNoAppAndEndsWithTheDaemon(t *testi
 	}
 	// its stdin closes with the daemon
 	waitFor(t, "the tray program to end", func() bool { _, err := os.Stat(ended); return err == nil })
+}
+
+// agentd.app runs the engine from its bundle and updates itself: the log must not tell its user to run an installer.
+func TestAppModeDoesNotBlameTheInstallerForUpdatesBeingOff(t *testing.T) {
+	_, d, app, _ := startAppMode(t)
+	app.state(t, "a state on fd 3", func(map[string]any) bool { return true })
+	waitFor(t, "the log to say who updates", func() bool { return d.says("updates are off") })
+	if d.says("the installer does that") {
+		t.Errorf("an engine run by agentd.app was told to be installed by the installer:\n%s", d.out.String())
+	}
+	if !d.says("agentd.app updates itself") {
+		t.Errorf("the log does not say that agentd.app updates the engine:\n%s", d.out.String())
+	}
 }

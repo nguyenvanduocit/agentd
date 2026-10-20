@@ -236,7 +236,8 @@ type UpdaterOptions struct {
 	Server string
 	// Running is the version this process runs.
 	Running string
-	// ReleaseKey is the release public key (base64 SPKI DER, home.ReleaseKey) every update must be signed with; empty refuses every update.
+	// ReleaseKey is the release public key set (home.ReleaseKey: base64 SPKI DER, comma-separated) an update must be
+	// signed by one key of; empty refuses every update.
 	ReleaseKey string
 	// Idle reports whether no agent session is running.
 	Idle func() bool

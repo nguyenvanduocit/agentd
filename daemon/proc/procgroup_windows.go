@@ -7,3 +7,5 @@ import "os/exec"
 func Detach(*exec.Cmd) {}
 
 func SignalGroup(int, bool) {}
+
+func GroupAlive(int) bool { return false }

@@ -166,21 +166,36 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 	}
 }
 
-// shutdown ends what runs, in order: the adapter installs, the extras (tray, updates, registry checks), the pages'
-// sockets, the gateway, the apps' links. Whatever did not start is skipped.
+// shutdown ends what runs. The apps stop taking opens first. Their agents and the pages' sessions then end side by
+// side, while the adapter installs and the extras (tray, updates, registry checks) stop; the gateway closes after
+// both, and the record of the agents is cleared last (it stays when an agent still runs, for the next start). Whatever
+// did not start is skipped.
 func (d *daemon) shutdown() {
+	if d.hub != nil {
+		d.hub.Drain()
+	}
+	var ending sync.WaitGroup
+	if d.hub != nil {
+		ending.Add(1)
+		go func() {
+			defer ending.Done()
+			d.hub.Shutdown(shutdownGrace)
+		}()
+	}
+	if d.browsers != nil {
+		ending.Add(1)
+		go func() {
+			defer ending.Done()
+			d.browsers.Shutdown(shutdownGrace)
+		}()
+	}
 	if d.store != nil {
 		d.store.Stop()
 	}
 	d.stopExtras()
-	if d.browsers != nil {
-		d.browsers.Shutdown(shutdownGrace)
-	}
+	ending.Wait()
 	if d.gateway != nil {
 		_ = d.gateway.Close()
-	}
-	if d.hub != nil {
-		d.hub.Shutdown(shutdownGrace)
 	}
 	if d.state != nil {
 		d.state.Clear()
@@ -254,7 +269,17 @@ func (d *daemon) startUpdates() {
 		d.keepLogSmall(l)
 		return
 	}
-	d.Log.Say("updates are off: this daemon is not installed under ~/.agentd/daemon (the installer does that)")
+	_, managedByApp, _ := ui.UIFd(d.env)
+	d.Log.Say(updatesOffNote(managedByApp))
+}
+
+// updatesOffNote says, in the log, why this daemon does not update itself: agentd.app keeps its own engine current, and
+// any other daemon updates only when it is installed under ~/.agentd/daemon.
+func updatesOffNote(managedByApp bool) string {
+	if managedByApp {
+		return "updates are off in the engine: agentd.app updates itself"
+	}
+	return "updates are off: this daemon is not installed under ~/.agentd/daemon (the installer does that)"
 }
 
 // keepLogSmall keeps the log file of a service under its size limit: only when this process writes its stdout into
@@ -354,7 +379,7 @@ func (d *daemon) startHub() {
 // nothing to wait for.
 func (d *daemon) stopUnlessPagesMayConnect(code int) {
 	reg, err := registry.Load(d.file)
-	if err == nil && len(reg.Browsers) > 0 {
+	if err == nil && reg.HasLiveBrowsers(time.Now()) {
 		d.Log.Say("the last app left; staying up for the web pages that may connect")
 		return
 	}
@@ -403,7 +428,7 @@ func (d *daemon) startExtras() error {
 	if open != nil {
 		d.stopTray = d.startTray(open)
 	}
-	d.every(registryCheckEvery, d.followRegistry)
+	d.every(registryCheckEvery, d.newRegistryFollower().check)
 	return nil
 }
 

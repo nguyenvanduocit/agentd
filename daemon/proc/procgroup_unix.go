@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -19,6 +20,16 @@ func Detach(cmd *exec.Cmd) {
 // gone is not an error.
 func SignalGroup(pgid int, hard bool) {
 	signalGroup(syscall.Kill, pgid, hard)
+}
+
+// GroupAlive is whether the process group led by pgid has a member left. A member that has ended but is not yet
+// reaped still counts.
+func GroupAlive(pgid int) bool {
+	if pgid <= 1 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func signalGroup(kill func(pid int, sig syscall.Signal) error, pgid int, hard bool) {

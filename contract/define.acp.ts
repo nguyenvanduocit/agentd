@@ -28,10 +28,15 @@ export interface Hello {
   agents: AgentInfo[]
   // true when a service restarts the daemon after it exits (not started with --foreground)
   managed: boolean
+  // the oldest and the newest protocol this daemon speaks; a daemon older than the range (0.6) sends neither, and speaks
+  // exactly the protocol it was built with (1)
+  protocolMin: number
+  protocolMax: number
 }
 
-// What the app's server answers to hello: the protocol version it speaks. The daemon refuses an app whose protocol it does
-// not know. Updates are not part of this contract: the daemon takes them from the release server.
+// What the app's server answers to hello: the protocol version it speaks. The daemon refuses an app whose protocol is
+// outside the range it speaks, and the server marks a daemon whose range does not hold its protocol as incompatible.
+// Updates are not part of this contract: the daemon takes them from the release server.
 export interface HelloReply {
   protocol: number
 }

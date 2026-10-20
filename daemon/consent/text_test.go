@@ -11,7 +11,7 @@ const origin = "https://app.example.com"
 var (
 	agentTitles = []string{"Claude Code", "Codex"}
 	serverText  = ConsentText(Question{Origin: origin, Mode: ModeServer, Agents: []string{"claude", "codex"}, Titles: agentTitles})
-	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}, Titles: agentTitles})
+	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}, Titles: agentTitles, GrantDays: 30})
 )
 
 func has(found ...string) func(string) bool {
@@ -83,6 +83,22 @@ func TestConsentTextUsesTheWordsOfTheProduct(t *testing.T) {
 				t.Errorf("%q is a word of the code, not of the user: %q", word, text.Body)
 			}
 		}
+	}
+}
+
+// The access of an app has no end of its own, a page's has: both are said, because a person who allows something
+// should know whether it lasts.
+func TestConsentTextSaysHowLongTheAccessLasts(t *testing.T) {
+	mustContain(t, serverText.Body, "The access lasts until you disconnect it")
+	mustContain(t, browserText.Body, "The access lasts 30 days; then the site has to ask again.", "disconnect it sooner")
+	if strings.Contains(serverText.Body, "days") || strings.Contains(browserText.Body, "until you disconnect it") {
+		t.Errorf("an app's access has no end of its own and a page's does:\nserver: %q\nbrowser: %q", serverText.Body, browserText.Body)
+	}
+	if text := ConsentText(Question{Origin: origin, Mode: ModeBrowser}); !strings.Contains(text.Body, "The access lasts for a limited time;") {
+		t.Errorf("a page's grant without a number of days must still say that it ends: %q", text.Body)
+	}
+	if text := ConsentText(Question{Origin: origin, Mode: ModeBrowser, GrantDays: 1}); !strings.Contains(text.Body, "The access lasts 1 day;") {
+		t.Errorf("one day is not 1 days: %q", text.Body)
 	}
 }
 

@@ -68,10 +68,10 @@ func TestAgentTable(t *testing.T) {
 	})
 
 	t.Run("no adapter command exists before the adapter is installed; npx is never the command", func(t *testing.T) {
-		if msg := commandError(t, "codex", nil, noAdapter); msg != "the codex adapter is not installed" {
+		if msg := commandError(t, "codex", nil, noAdapter); msg != "Codex is not set up yet." {
 			t.Fatal(msg)
 		}
-		if msg := commandError(t, "codex", nil, inState(AdapterState{Kind: AdapterInstalling})); !strings.Contains(msg, "not installed") {
+		if msg := commandError(t, "codex", nil, inState(AdapterState{Kind: AdapterInstalling})); !strings.Contains(msg, "not set up yet") {
 			t.Fatal(msg)
 		}
 	})
@@ -108,11 +108,11 @@ func TestReadiness(t *testing.T) {
 		if got := Status("claude", nil, noPrograms, readyAdapter("claude")); got != (AgentStatus{Name: "claude", Title: "Claude Code", Ready: true}) {
 			t.Fatalf("got %+v", got)
 		}
-		installing := AgentStatus{Name: "codex", Title: "Codex", Reason: "installing the Codex adapter (first run only, this can take several minutes)"}
+		installing := AgentStatus{Name: "codex", Title: "Codex", Reason: "Codex is setting up (first run only, a few minutes)."}
 		if got := Status("codex", nil, everything, noAdapter); got != installing {
 			t.Fatalf("got %+v", got)
 		}
-		reason := "cannot install the Codex adapter: offline; retrying in 60 s"
+		reason := "Codex could not be set up: offline. It will try again in 1 minute."
 		failed := inState(AdapterState{Kind: AdapterFailed, Reason: reason})
 		if got := Status("codex", nil, everything, failed); got != (AgentStatus{Name: "codex", Title: "Codex", Reason: reason}) {
 			t.Fatalf("got %+v", got)
@@ -131,7 +131,7 @@ func TestReadiness(t *testing.T) {
 	})
 
 	t.Run("grok needs grok", func(t *testing.T) {
-		if got := Status("grok", nil, noPrograms, noAdapter); got != (AgentStatus{Name: "grok", Title: "Grok", Reason: "grok not found in PATH"}) {
+		if got := Status("grok", nil, noPrograms, noAdapter); got != (AgentStatus{Name: "grok", Title: "Grok", Reason: "Grok is not installed on this computer."}) {
 			t.Fatalf("got %+v", got)
 		}
 		has := func(p string) (string, bool) { return "/x/grok", p == "grok" }
@@ -158,7 +158,7 @@ func TestReadiness(t *testing.T) {
 		if Status("claude", home.Env{"AGENTD_AGENT_CLAUDE": "  "}, noPrograms, noAdapter).Ready {
 			t.Fatal("blank seam is unset")
 		}
-		if msg := commandError(t, "claude", home.Env{"AGENTD_AGENT_CLAUDE": ""}, noAdapter); !strings.Contains(msg, "not installed") {
+		if msg := commandError(t, "claude", home.Env{"AGENTD_AGENT_CLAUDE": ""}, noAdapter); !strings.Contains(msg, "not set up yet") {
 			t.Fatal(msg)
 		}
 	})
@@ -174,7 +174,7 @@ func TestOpenRefusal(t *testing.T) {
 	}
 
 	t.Run("an adapter that is still installing says so, and nothing else", func(t *testing.T) {
-		const want = "the codex adapter is still installing on this machine"
+		const want = "Codex is still setting up on this computer."
 		if got := refusal("codex", nil, everything, noAdapter); got != want {
 			t.Fatal(got)
 		}
@@ -184,13 +184,13 @@ func TestOpenRefusal(t *testing.T) {
 	})
 
 	t.Run("a failed install gives the reason; a ready agent gives none", func(t *testing.T) {
-		if got := refusal("claude", nil, everything, inState(AdapterState{Kind: AdapterFailed, Reason: "offline"})); got != "agent claude is not ready: offline" {
+		if got := refusal("claude", nil, everything, inState(AdapterState{Kind: AdapterFailed, Reason: "Claude Code could not be set up: offline. It will try again in 1 minute."})); got != "Claude Code could not be set up: offline. It will try again in 1 minute." {
 			t.Fatal(got)
 		}
 		if got := refusal("claude", nil, everything, readyAdapter("claude")); got != "<none>" {
 			t.Fatal(got)
 		}
-		if got := refusal("grok", nil, noPrograms, noAdapter); got != "agent grok is not ready: grok not found in PATH" {
+		if got := refusal("grok", nil, noPrograms, noAdapter); got != "Grok is not installed on this computer." {
 			t.Fatal(got)
 		}
 	})

@@ -174,3 +174,59 @@ func TestFindEngineTakesTheEngineAndNodeNamedByTheEnvironment(t *testing.T) {
 		t.Fatal("an engine that is not there is found")
 	}
 }
+
+// What the person reads when agentd does not start: one plain sentence, whatever went wrong. The error as it came goes
+// to the log.
+func TestWhyAgentdDidNotStartIsOnePlainSentence(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, noEngine := FindEngine(t.TempDir(), "/Users/ann", func(string) string { return "" })
+	_, noLog := StartEngine(EngineFiles{Engine: fakeEngine, Log: filepath.Join(notADir, "logs", "daemon.log")}, t.TempDir(), os.Getenv("PATH"), func([]byte) {})
+	_, noStart := StartEngine(EngineFiles{Engine: filepath.Join(t.TempDir(), "no-such-engine"), Log: filepath.Join(t.TempDir(), "daemon.log")}, t.TempDir(), os.Getenv("PATH"), func([]byte) {})
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"the app carries no engine", noEngine, "This copy of agentd is incomplete. Download agentd.app again."},
+		{"the log cannot be written", noLog, "agentd cannot write its log in ~/.agentd. Check that folder, then choose Start."},
+		{"the program does not start", noStart, "agentd could not start. Open the log for details."},
+		{"anything else", fmt.Errorf("something nobody foresaw"), "agentd could not start. Open the log for details."},
+	}
+	for _, c := range cases {
+		if c.err == nil {
+			t.Errorf("%s: the setup produced no error", c.name)
+			continue
+		}
+		got := PlainReason(c.err)
+		if got != c.want {
+			t.Errorf("%s: got %q, want %q (raw error %q)", c.name, got, c.want, c.err)
+		}
+		for _, word := range []string{"engine", "daemon", "adapter", "origin", "fork/exec", "looked for", "no such file"} {
+			if strings.Contains(strings.ToLower(got), word) {
+				t.Errorf("%s: the sentence says %q", c.name, word)
+			}
+		}
+	}
+}
+
+func TestTheRawErrorGoesToTheLogTheOpenLogEntryShows(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "logs", "daemon.log")
+	NoteInLog(file, "agentd.app could not start agentd: boom")
+	NoteInLog(file, "second")
+	NoteInLog("", "nowhere to write") // no log path known yet: nothing to do, and no panic
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], " agentd.app could not start agentd: boom") || !strings.HasSuffix(lines[1], " second") {
+		t.Fatalf("log %q", b)
+	}
+	if ts := strings.SplitN(lines[0], " ", 2)[0]; len(ts) != len("2006-01-02T15:04:05.000Z") || !strings.HasSuffix(ts, "Z") {
+		t.Errorf("the timestamp %q is not the daemon's", ts)
+	}
+}

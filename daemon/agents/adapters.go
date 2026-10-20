@@ -117,17 +117,70 @@ func AdaptersDisabled(env home.Env) bool {
 	return env["AGENTD_ADAPTERS"] == "off"
 }
 
+// The reasons below are shown to the person at the keyboard (the window, and the app's own page), so they are sentences
+// with the agent's title, and none of them says "adapter" or "npm error".
+
 // DisabledReason is the reason of an agent whose adapter install is off.
-const DisabledReason = "adapter install is disabled"
+const DisabledReason = "Setting up agents is turned off on this computer."
+
+// agentTitle is what a person calls the agent this adapter runs: Claude Code, where the adapter is "Claude".
+func agentTitle(a Adapter) string {
+	if title, ok := titles[AgentName(a.Name)]; ok {
+		return title
+	}
+	return a.Title
+}
 
 // InstallingReason is the reason of an agent whose adapter is being installed.
 func InstallingReason(a Adapter) string {
-	return fmt.Sprintf("installing the %s adapter (first run only, this can take several minutes)", a.Title)
+	return agentTitle(a) + " is setting up (first run only, a few minutes)."
 }
 
-// FailedReason is the reason of an agent whose adapter could not be installed.
+// whyLength is how much of npm's explanation the reason keeps.
+const whyLength = 160
+
+// FailedReason is the reason of an agent whose adapter could not be installed: the one line of the error that says
+// why, and when the daemon tries again.
 func FailedReason(a Adapter, detail string, retry time.Duration) string {
-	return fmt.Sprintf("cannot install the %s adapter: %s; retrying in %d s", a.Title, detail, int(math.Round(retry.Seconds())))
+	wait := unitsOf(retry)
+	why := whyLine(detail)
+	if why == "" {
+		return fmt.Sprintf("%s could not be set up. It will try again in %s.", agentTitle(a), wait)
+	}
+	if !strings.HasSuffix(why, ".") && !strings.HasSuffix(why, "…") {
+		why += "."
+	}
+	return fmt.Sprintf("%s could not be set up: %s It will try again in %s.", agentTitle(a), why, wait)
+}
+
+// whyLine is the last line of the error that explains it, from the ` | `-joined tail NpmTail makes: without npm's
+// own prefix, and without the pointer to npm's log, which says nothing about the cause. "" when there is none.
+func whyLine(detail string) string {
+	why := ""
+	for _, line := range strings.Split(detail, " | ") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "npm error "), "npm ERR! "))
+		if line != "" && !strings.Contains(line, "A complete log of this run") {
+			why = line
+		}
+	}
+	if r := []rune(why); len(r) > whyLength {
+		why = string(r[:whyLength]) + "…"
+	}
+	return why
+}
+
+// unitsOf says a wait the way a person would: seconds below a minute, then whole minutes.
+func unitsOf(d time.Duration) string {
+	seconds := int(math.Round(d.Seconds()))
+	n, unit := seconds, "second"
+	if seconds >= 60 {
+		n, unit = int(math.Round(float64(seconds)/60)), "minute"
+	}
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, unit)
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }
 
 // NpmTail is the last lines of npm's stderr: what the user needs to see, not the whole log.

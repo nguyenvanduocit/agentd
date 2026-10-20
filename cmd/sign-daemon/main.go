@@ -4,10 +4,12 @@
 //	sign-daemon keygen <key>                    a new private key (PKCS8 PEM, mode 0600); an existing one is kept
 //	sign-daemon public <key>                    its public key, SPKI PEM (what daemon/release.pub holds)
 //	sign-daemon public-b64 <key>                its public key as the daemon bakes it in: base64 of the SPKI DER
+//	sign-daemon b64 <public>                    a public key file (daemon/release.pub, daemon/release-backup.pub) as the daemon bakes it in
 //	sign-daemon sign <key> <version> <sha256>   the base64 signature latest.json carries, and a newline
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -23,7 +25,7 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/update"
 )
 
-const usage = "usage: sign-daemon keygen <key> | public <key> | public-b64 <key> | sign <key> <version> <sha256>\n"
+const usage = "usage: sign-daemon keygen <key> | public <key> | public-b64 <key> | b64 <public> | sign <key> <version> <sha256>\n"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -67,6 +69,8 @@ func command(args []string) (string, error) {
 			return "", err
 		}
 		return publicKeyBase64(key)
+	case name == "b64" && len(args) == 2:
+		return publicFileBase64(file)
 	case name == "sign" && len(args) == 4:
 		key, err := readPrivateKey(file)
 		if err != nil {
@@ -124,6 +128,30 @@ func publicKeyBase64(key ed25519.PrivateKey) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(der), nil
+}
+
+// publicFileBase64 reads a public key file, one PUBLIC KEY block of an Ed25519 key and nothing else, and returns the key
+// as the daemon bakes it in (home.ReleaseKey): base64 of the SPKI DER on one line.
+func publicFileBase64(file string) (string, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return "", fmt.Errorf("%s holds no PUBLIC KEY PEM block", file)
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return "", fmt.Errorf("%s holds more than one public key", file)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("%s is not a public key: %w", file, err)
+	}
+	if _, ok := parsed.(ed25519.PublicKey); !ok {
+		return "", fmt.Errorf("the public key in %s is %T, not Ed25519", file, parsed)
+	}
+	return base64.StdEncoding.EncodeToString(block.Bytes), nil
 }
 
 // signRelease is the base64 Ed25519 signature of update.ReleaseMessage(version, sha256). It is checked against the

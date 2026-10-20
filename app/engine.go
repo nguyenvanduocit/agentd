@@ -34,6 +34,51 @@ func (f EngineFiles) NodeBin() string {
 	return filepath.Dir(f.Node)
 }
 
+// Why the engine does not start. The error that reaches the log says it in full; what the person reads is PlainReason.
+var (
+	errNoEngine = errors.New("this app carries no engine")
+	errChannel  = errors.New("the engine's channel")
+	errLog      = errors.New("the engine's log")
+	errStart    = errors.New("start the engine")
+)
+
+// couldNotStart is what the person reads for every reason below that has no sentence of its own: the log has the rest.
+const couldNotStart = "agentd could not start. Open the log for details."
+
+// plainReasons are the sentences for the reasons a person can act on. The words are the person's: agentd, this copy of
+// it, the folder it keeps its files in; never the engine, a path or the error of the system.
+var plainReasons = []struct {
+	because error
+	say     string
+}{
+	{errNoEngine, "This copy of agentd is incomplete. Download agentd.app again."},
+	{errLog, "agentd cannot write its log in ~/.agentd. Check that folder, then choose Start."},
+}
+
+// PlainReason is the one sentence the menu and the window show for an engine that did not start.
+func PlainReason(err error) string {
+	for _, r := range plainReasons {
+		if errors.Is(err, r.because) {
+			return r.say
+		}
+	}
+	return couldNotStart
+}
+
+// NoteInLog appends a line to the engine's log, the file Open log shows, so the error behind a plain sentence can be
+// found there. It does nothing without a path or when the log cannot be written: the standard log has the error too.
+func NoteInLog(file, text string) {
+	if file == "" {
+		return
+	}
+	f, err := openLog(file)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), text)
+}
+
 // FindEngine finds what the app carries in its resources: engine/agentd, and node/bin/node for the adapters. Both are
 // merged into the app's resources by mygo build from the platform's directory, and stay in a directory of their own
 // under go run, so each is looked for in the resources and then in the platform's.
@@ -52,7 +97,7 @@ func FindEngine(resources, home string, env func(string) string) (EngineFiles, e
 		f.Node = carried(resources, "node", "bin", "node")
 	}
 	if f.Engine == "" || !exists(f.Engine) {
-		return f, fmt.Errorf("this app carries no engine (looked for %q)", cmp.Or(f.Engine, filepath.Join(resources, "engine", "agentd")))
+		return f, fmt.Errorf("%w (looked for %q)", errNoEngine, cmp.Or(f.Engine, filepath.Join(resources, "engine", "agentd")))
 	}
 	return f, nil
 }
@@ -89,7 +134,7 @@ type Engine struct {
 func StartEngine(f EngineFiles, home, path string, onLine func(line []byte)) (*Engine, error) {
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return nil, fmt.Errorf("the engine's channel: %w", err)
+		return nil, fmt.Errorf("%w: %w", errChannel, err)
 	}
 	theirs := os.NewFile(uintptr(fds[1]), "agentd-ui-engine")
 	defer func() { _ = theirs.Close() }()
@@ -98,7 +143,7 @@ func StartEngine(f EngineFiles, home, path string, onLine func(line []byte)) (*E
 	ours, err := net.FileConn(file)
 	_ = file.Close()
 	if err != nil {
-		return nil, fmt.Errorf("the engine's channel: %w", err)
+		return nil, fmt.Errorf("%w: %w", errChannel, err)
 	}
 	logFile, err := openLog(f.Log)
 	if err != nil {
@@ -115,7 +160,7 @@ func StartEngine(f EngineFiles, home, path string, onLine func(line []byte)) (*E
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		_ = ours.Close()
-		return nil, fmt.Errorf("start the engine: %w", err)
+		return nil, fmt.Errorf("%w: %w", errStart, err)
 	}
 	e := &Engine{cmd: cmd, conn: ours, started: time.Now(), done: make(chan struct{})}
 	go e.read(onLine)
@@ -126,14 +171,14 @@ func StartEngine(f EngineFiles, home, path string, onLine func(line []byte)) (*E
 // openLog opens the engine's log for appending, after moving one that grew past maxLog to daemon.log.1.
 func openLog(file string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-		return nil, fmt.Errorf("the engine's log: %w", err)
+		return nil, fmt.Errorf("%w: %w", errLog, err)
 	}
 	if st, err := os.Stat(file); err == nil && st.Size() > maxLog {
 		_ = os.Rename(file, file+".1")
 	}
 	f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("the engine's log: %w", err)
+		return nil, fmt.Errorf("%w: %w", errLog, err)
 	}
 	return f, nil
 }

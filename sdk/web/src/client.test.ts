@@ -1,6 +1,6 @@
 import { ClientSideConnection, PROTOCOL_VERSION, client, ndJsonStream, type Client, type Stream } from "@agentclientprotocol/sdk"
 import { describe, expect, test } from "bun:test"
-import { connectBrowser, connectServer, detect, disconnect, openSession, reasonText, type Reason } from "./client.ts"
+import { SUPPORTED_PROTOCOLS, connectBrowser, connectServer, detect, disconnect, openSession, reasonText, type Reason } from "./client.ts"
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>
 const fetchWith = (handler: Handler): typeof fetch => ((input: RequestInfo | URL, init?: RequestInit) => Promise.resolve(handler(String(input), init))) as typeof fetch
@@ -17,6 +17,19 @@ describe("detect", () => {
     })
     expect(await detect({ fetch: f })).toEqual({ found: true, port: 47616, version: "1.2.3", granted: { server: false, browser: false }, agents: undefined })
     expect(seen).toContain("http://127.0.0.1:47615/v1/status")
+  })
+
+  test("carries the protocol a daemon states, and none from a daemon that states none", async () => {
+    const stated = await detect({ fetch: fetchWith(() => json(200, { ...STATUS, protocol: 1 })), ports: [47615] })
+    expect(stated).toMatchObject({ found: true, protocol: 1 })
+    const silent = await detect({ fetch: fetchWith(() => json(200, STATUS)), ports: [47615] })
+    expect(silent.found && "protocol" in silent).toBe(false)
+    const odd = await detect({ fetch: fetchWith(() => json(200, { ...STATUS, protocol: "1" })), ports: [47615] })
+    expect(odd.found && "protocol" in odd).toBe(false)
+  })
+
+  test("SUPPORTED_PROTOCOLS names the protocols this SDK speaks", () => {
+    expect(SUPPORTED_PROTOCOLS).toEqual([1])
   })
 
   test("every agent has a title: the daemon's, or its name from a daemon that sends none", async () => {
@@ -111,6 +124,22 @@ describe("connect", () => {
     await disconnect(found, { fetch: f })
     expect(method).toBe("DELETE")
     expect(got).toBe("http://127.0.0.1:47615/v1/connect")
+  })
+
+  test("disconnect says it worked when the daemon answers 200 (its body is {granted:false}: nothing is granted any more)", async () => {
+    const f = fetchWith(() => json(200, { granted: false }))
+    expect(await disconnect(found, { fetch: f })).toEqual({ disconnected: true })
+  })
+
+  test("disconnect says why it did not: the daemon's refusal, or an unreachable daemon", async () => {
+    const refused = fetchWith(() => json(500, { granted: false, reason: "error", message: "disk full" }))
+    expect(await disconnect(found, { fetch: refused })).toEqual({ disconnected: false, reason: "error", message: "disk full" })
+    const garbled = fetchWith(() => new Response("oops", { status: 502 }))
+    expect(await disconnect(found, { fetch: garbled })).toMatchObject({ disconnected: false, reason: "malformed" })
+    const gone = fetchWith(() => {
+      throw new TypeError("Failed to fetch")
+    })
+    expect(await disconnect(found, { fetch: gone })).toMatchObject({ disconnected: false, reason: "unreachable", message: "Failed to fetch" })
   })
 })
 

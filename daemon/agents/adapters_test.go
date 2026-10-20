@@ -147,13 +147,46 @@ func TestAdaptersDisabled(t *testing.T) {
 }
 
 func TestMessagesAndRetry(t *testing.T) {
-	t.Run("the reasons say what is going on", func(t *testing.T) {
-		if got := InstallingReason(Adapters[Codex]); got != "installing the Codex adapter (first run only, this can take several minutes)" {
+	t.Run("the reasons say what is going on in a person's words, with the agent's title", func(t *testing.T) {
+		if got := InstallingReason(Adapters[Codex]); got != "Codex is setting up (first run only, a few minutes)." {
 			t.Fatal(got)
 		}
-		got := FailedReason(Adapters[Claude], "ENOTFOUND registry.npmjs.org", 61_400*time.Millisecond)
-		if got != "cannot install the Claude adapter: ENOTFOUND registry.npmjs.org; retrying in 61 s" {
+		if got := InstallingReason(Adapters[Claude]); got != "Claude Code is setting up (first run only, a few minutes)." {
 			t.Fatal(got)
+		}
+		if DisabledReason != "Setting up agents is turned off on this computer." {
+			t.Fatal(DisabledReason)
+		}
+	})
+
+	t.Run("a failure names the one line that says why, not the whole of npm's stderr, and when it tries again", func(t *testing.T) {
+		const logPointer = "npm error A complete log of this run can be found in: /Users/ann/.npm/_logs/2026-10-20T00_00_00_000Z-debug-0.log"
+		for _, c := range []struct {
+			name   string
+			agent  Adapter
+			detail string
+			retry  time.Duration
+			want   string
+		}{
+			{"a plain detail", Adapters[Claude], "ENOTFOUND registry.npmjs.org", 61_400 * time.Millisecond,
+				"Claude Code could not be set up: ENOTFOUND registry.npmjs.org. It will try again in 1 minute."},
+			{"npm's tail: the line before the pointer to its log, without npm's prefix", Adapters[Codex],
+				"npm error code ENOTFOUND | npm error network request to https://registry.npmjs.org/x failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org | " + logPointer, 120 * time.Second,
+				"Codex could not be set up: network request to https://registry.npmjs.org/x failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org. It will try again in 2 minutes."},
+			{"npm's tail of an old npm", Adapters[Claude], "npm ERR! code ENOENT | npm ERR! enoent could not read x.tgz", 60 * time.Second,
+				"Claude Code could not be set up: enoent could not read x.tgz. It will try again in 1 minute."},
+			{"a detail that already ends a sentence", Adapters[Claude], "npm not found: install Node.js (it comes with npm).", 30 * time.Second,
+				"Claude Code could not be set up: npm not found: install Node.js (it comes with npm). It will try again in 30 seconds."},
+			{"no detail", Adapters[Codex], "", time.Second, "Codex could not be set up. It will try again in 1 second."},
+			{"only the pointer to npm's log", Adapters[Codex], logPointer, 1800 * time.Second, "Codex could not be set up. It will try again in 30 minutes."},
+		} {
+			if got := FailedReason(c.agent, c.detail, c.retry); got != c.want {
+				t.Errorf("%s:\n got  %q\n want %q", c.name, got, c.want)
+			}
+		}
+		long := FailedReason(Adapters[Codex], strings.Repeat("x", 1000), time.Minute)
+		if n := len([]rune(long)); n > 220 || !strings.HasPrefix(long, "Codex could not be set up: xxx") || !strings.HasSuffix(long, "… It will try again in 1 minute.") {
+			t.Errorf("a long detail is cut (%d runes): %q", n, long)
 		}
 	})
 

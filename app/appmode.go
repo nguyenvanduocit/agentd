@@ -83,11 +83,11 @@ func (d *desktop) ready() {
 	}
 	resources, _ := mygo.App.Path(mygo.PathResources)
 	files, err := FindEngine(resources, d.home, os.Getenv)
+	d.files = files // its log path is known even when the engine is not found
 	if err != nil {
-		d.stopped(err.Error())
+		d.failed(err)
 		return
 	}
-	d.files = files
 	// The login shell may take a moment: the main thread does not wait for it.
 	go func() {
 		path := EnginePath(files.NodeBin(), LoginPath())
@@ -125,7 +125,7 @@ func (d *desktop) start() {
 	}
 	e, err := d.launch(d.files, d.home, d.path, d.line)
 	if err != nil {
-		d.stopped(err.Error())
+		d.failed(err)
 		return
 	}
 	d.engine = e
@@ -135,6 +135,13 @@ func (d *desktop) start() {
 		<-e.Done()
 		mygo.RunOnMain(func() { d.ended(e) })
 	}()
+}
+
+// failed shows why the engine did not start in a sentence a person can use, and keeps the error as it came in the log.
+func (d *desktop) failed(err error) {
+	log.Printf("agentd could not start: %v", err)
+	NoteInLog(d.files.Log, "agentd.app could not start agentd: "+err.Error())
+	d.stopped(PlainReason(err))
 }
 
 func (d *desktop) stopped(note string) {

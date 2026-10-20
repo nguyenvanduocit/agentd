@@ -196,7 +196,7 @@ func startRig(t *testing.T, agent string) *rig {
 		GrantBrowser: func(origin string, folders []string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.reg = r.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z", folders)
+			r.reg = r.reg.AddBrowser(origin, time.Now(), folders)
 			return nil
 		},
 		Revoke: func(origin string) error {
@@ -322,10 +322,10 @@ func TestBrowserModeDetectConnectOpenWriteReadClose(t *testing.T) {
 	if f := <-frames; f.Kind != goclient.FrameOut || f.Data != `{"hello":"<world>"}` {
 		t.Fatalf("frame = %+v", f)
 	}
-	if err := s.Write("second"); err != nil {
+	if err := s.Write(`{"second":true}`); err != nil { // a page sends JSON-RPC lines: agentd refuses a line that is not one JSON object
 		t.Fatal(err)
 	}
-	if got := firstLine(t, stdout); got != "second\n" {
+	if got := firstLine(t, stdout); got != `{"second":true}`+"\n" {
 		t.Fatalf("read back %q", got)
 	}
 	if err := s.Close(); err != nil {
@@ -659,10 +659,10 @@ func TestThePagesToolsReachTheAgentThroughTheDaemonsBridge(t *testing.T) {
 		}
 	}
 	// The agent's stdin stayed its own: nothing of the MCP lines went there.
-	if err := s.Write("on stdin"); err != nil {
+	if err := s.Write(`{"on":"stdin"}`); err != nil {
 		t.Fatal(err)
 	}
-	if got := firstLine(t, s.Stdout()); got != "on stdin\n" {
+	if got := firstLine(t, s.Stdout()); got != `{"on":"stdin"}`+"\n" {
 		t.Fatalf("stdout = %q", got)
 	}
 }

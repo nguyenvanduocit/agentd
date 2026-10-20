@@ -11,6 +11,7 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/gateway"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
+	"github.com/nguyenvanduocit/agentd/daemon/proc"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -59,7 +60,7 @@ func (d *daemon) gatewayDeps() gateway.Deps {
 		},
 		GrantBrowser: func(origin string, folders []string) error {
 			_, err := registry.Update(d.file, func(r registry.Registry) registry.Registry {
-				return r.AddBrowser(origin, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), folders)
+				return r.AddBrowser(origin, time.Now(), folders)
 			})
 			return err
 		},
@@ -79,25 +80,58 @@ func (d *daemon) disconnectOrigin(origin string) error {
 	return nil
 }
 
-// followRegistry ends what still runs for an origin that another process removed from the registry (`agentd apps
-// remove`): its link and its pages' sockets, as Disconnect in the menu does. The daemon stays up.
-func (d *daemon) followRegistry() {
+// registryFollower ends what still runs for an origin that the registry no longer has, as it is now: removed by another
+// process (`agentd apps remove`), or a page's grant that lapsed. It ends their link and pages' sockets, as Disconnect
+// in the menu does, and the daemon stays up. It also tells a problem of the file once, not at every check.
+type registryFollower struct {
+	file    string
+	log     *proc.Logger
+	now     func() time.Time
+	servers func() []string // the linked app servers
+	pages   func() []string // the origins with an open page socket
+	endPage func(origin string)
+	endApp  func(server string)
+
+	problem string // the last problem of the file that was told, "" when it read fine
+}
+
+func (d *daemon) newRegistryFollower() *registryFollower {
+	return &registryFollower{
+		file:    d.file,
+		log:     d.Log,
+		now:     time.Now,
+		servers: d.hub.Servers,
+		pages:   d.browsers.Origins,
+		endPage: d.browsers.EndOrigin,
+		endApp:  func(server string) { d.hub.Detach(server, true) },
+	}
+}
+
+func (f *registryFollower) check() {
 	// What runs is taken before the file is read: an app or a page is saved before it is linked, so one linked by then
 	// is in the file unless it was removed, and one paired while the file is read is not judged on old content.
-	linked := d.hub.Servers()
-	pages := d.browsers.Origins()
-	reg, err := registry.Load(d.file)
+	linked := f.servers()
+	pages := f.pages()
+	reg, err := registry.Load(f.file)
 	if err != nil {
-		d.Log.Warn(fmt.Sprintf("cannot read %s: %s", d.file, err))
+		if text := err.Error(); text != f.problem {
+			f.problem = text
+			f.log.Warn(text)
+		}
 		return
 	}
-	gone := reg.Withdrawn(linked, pages)
+	f.problem = ""
+	gone := reg.Withdrawn(linked, pages, f.now())
 	for _, origin := range gone.Pages {
-		d.Log.Say(origin + " was disconnected: ending its pages' sessions")
-		d.browsers.EndOrigin(origin)
+		if reg.HasGrant(origin) {
+			f.log.Say(fmt.Sprintf("%s access lapsed after %d days: ending its pages' sessions", origin, int(registry.BrowserGrantTTL.Hours()/24)))
+		} else {
+			f.log.Say(origin + " was disconnected: ending its pages' sessions")
+		}
+		f.endPage(origin)
 	}
 	for _, server := range gone.Apps {
-		d.Log.Say(server + " was disconnected: ending its link and sessions")
-		d.hub.Detach(server, true)
+		f.log.Say(server + " was disconnected: ending its link and sessions")
+		f.endApp(server)
 	}
 }

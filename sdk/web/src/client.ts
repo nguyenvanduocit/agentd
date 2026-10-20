@@ -3,6 +3,9 @@
 export const DEFAULT_PORTS: readonly number[] = Array.from({ length: 10 }, (_, i) => 47615 + i)
 const DETECT_TIMEOUT_MS = 800
 
+/** The versions of the daemon's page protocol (`protocol` of GET /v1/status) this SDK speaks. */
+export const SUPPORTED_PROTOCOLS: readonly number[] = [1]
+
 export interface AgentInfo {
   name: string
   /** What to call the agent on screen ("Claude Code"); its name when the daemon gives none. */
@@ -16,7 +19,11 @@ export interface Granted {
   browser: boolean
 }
 
-export type Detected = { found: false } | { found: true; port: number; version: string; granted: Granted; agents: AgentInfo[] | undefined }
+/**
+ * What `detect` found. `protocol` is the version of the page protocol the daemon states; a daemon that predates the
+ * statement sends none, and the key is then absent.
+ */
+export type Detected = { found: false } | { found: true; port: number; version: string; granted: Granted; agents: AgentInfo[] | undefined; protocol?: number }
 
 export type Reason =
   | "denied"
@@ -73,10 +80,11 @@ async function probe(port: number, o: DetectOptions): Promise<Detected> {
   try {
     const res = await within(ms, (o.fetch ?? fetch)(statusUrl(port), { signal: AbortSignal.timeout(ms) }))
     if (!res.ok) return { found: false }
-    const body = (await res.json()) as { name?: unknown; version?: unknown; granted?: Granted; agents?: WireAgent[] }
+    const body = (await res.json()) as { name?: unknown; version?: unknown; granted?: Granted; agents?: WireAgent[]; protocol?: unknown }
     if (body.name !== "agentd" || typeof body.version !== "string") return { found: false }
     const agents = body.agents?.map(agentInfo)
-    return { found: true, port, version: body.version, granted: body.granted ?? { server: false, browser: false }, agents }
+    const protocol = typeof body.protocol === "number" ? { protocol: body.protocol } : {}
+    return { found: true, port, version: body.version, granted: body.granted ?? { server: false, browser: false }, agents, ...protocol }
   } catch {
     // Nothing listens there, the browser blocked the call, or the user said no to its prompt: all look the same.
     return { found: false }
@@ -115,9 +123,23 @@ export function connectBrowser(d: Daemon, o: FetchOptions = {}): Promise<Connect
   return connectRequest(d, post({ mode: "browser" }), "/v1/connect", o)
 }
 
-/** Takes back what this page was allowed: its browser grant and the app at its own origin. Open sessions end. */
-export async function disconnect(d: Daemon, o: FetchOptions = {}): Promise<void> {
-  await connectRequest(d, { method: "DELETE" }, "/v1/connect", o)
+/** Whether `disconnect` took the page's grant back; if not, the reason, as for a refused connection. */
+export type DisconnectResult = { disconnected: true } | { disconnected: false; reason: Reason; message?: string }
+
+/**
+ * Takes back what this page was allowed: its browser grant and the app at its own origin. Open sessions end. The
+ * daemon answers 200 when it is done (its body says nothing is granted any more, which is not a refusal), so success is
+ * the status, not `granted`.
+ */
+export async function disconnect(d: Daemon, o: FetchOptions = {}): Promise<DisconnectResult> {
+  try {
+    const res = await (o.fetch ?? fetch)(`${base(d)}/v1/connect`, { method: "DELETE" })
+    if (res.ok) return { disconnected: true }
+    const body = (await res.json().catch(() => ({}))) as { reason?: Reason; message?: string }
+    return { disconnected: false, reason: body.reason ?? "malformed", ...(body.message === undefined ? {} : { message: body.message }) }
+  } catch (e) {
+    return { disconnected: false, reason: "unreachable", message: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 const TEXT: Record<Reason, string> = {

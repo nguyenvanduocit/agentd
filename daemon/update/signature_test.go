@@ -95,6 +95,70 @@ func TestSignatureProblem(t *testing.T) {
 	})
 }
 
+// The release key is a set: the key the releases are signed with, and a backup key kept offline. A daemon takes an
+// update signed by either, so a lost or leaked primary key can be replaced by a release the backup key signs.
+func TestSignatureProblemWithAKeySet(t *testing.T) {
+	primary, backup, stranger := newKeyPair(t), newKeyPair(t), newKeyPair(t)
+	set := primary.key + "," + backup.key
+
+	t.Run("a release signed by either key of the set verifies", func(t *testing.T) {
+		for name, k := range map[string]keyPair{"primary": primary, "backup": backup} {
+			if got := SignatureProblem(set, k.signed("2.0.0", sigSHA)); got != "" {
+				t.Errorf("%s: %s", name, got)
+			}
+		}
+	})
+	t.Run("the order of the keys does not matter", func(t *testing.T) {
+		if got := SignatureProblem(backup.key+","+primary.key, primary.signed("2.0.0", sigSHA)); got != "" {
+			t.Error(got)
+		}
+	})
+	t.Run("a release signed by neither key is refused", func(t *testing.T) {
+		if got := SignatureProblem(set, stranger.signed("2.0.0", sigSHA)); !strings.Contains(got, "does not match") {
+			t.Error(got)
+		}
+	})
+	t.Run("a signature of the backup key does not carry over to another tarball or version", func(t *testing.T) {
+		s := backup.signed("2.0.0", sigSHA)
+		s.SHA256 = strings.Repeat("cd", 32)
+		if got := SignatureProblem(set, s); !strings.Contains(got, "does not match") {
+			t.Errorf("another sha256: %q", got)
+		}
+		s = backup.signed("2.0.0", sigSHA)
+		s.Version = "2.0.1"
+		if got := SignatureProblem(set, s); !strings.Contains(got, "does not match") {
+			t.Errorf("another version: %q", got)
+		}
+	})
+	t.Run("spaces around a key and an empty entry are ignored", func(t *testing.T) {
+		for _, c := range []struct {
+			list   string
+			signer keyPair
+		}{
+			{primary.key + ", " + backup.key + " ", backup},
+			{primary.key + ",," + backup.key, backup},
+			{primary.key + ",", primary},
+			{" " + backup.key, backup},
+		} {
+			if got := SignatureProblem(c.list, c.signer.signed("2.0.0", sigSHA)); got != "" {
+				t.Errorf("%q: %s", c.list, got)
+			}
+		}
+	})
+	t.Run("a key of the set that is not an Ed25519 public key refuses every offer, whoever signed it", func(t *testing.T) {
+		if got := SignatureProblem(primary.key+",bm90IGEga2V5", primary.signed("2.0.0", sigSHA)); !strings.Contains(got, "not an Ed25519 public key") {
+			t.Error(got)
+		}
+	})
+	t.Run("a list with no key is a daemon without a release key", func(t *testing.T) {
+		for _, list := range []string{"", " ", ",", " , "} {
+			if got := SignatureProblem(list, primary.signed("2.0.0", sigSHA)); !strings.Contains(got, "without a release key") {
+				t.Errorf("%q: %s", list, got)
+			}
+		}
+	})
+}
+
 // A signature made by scripts/sign-daemon.ts (`sign <key> 2.0.0 <sha256>`) verifies here: the two sides agree on
 // the bytes. Ed25519 is deterministic, so the vector never changes.
 func TestSignatureFromSignDaemonScript(t *testing.T) {

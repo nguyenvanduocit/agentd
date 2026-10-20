@@ -226,6 +226,7 @@ type SessionOptions struct {
 type pageEntry struct {
 	conn    *websocket.Conn
 	page    *pageSocket
+	sink    frameSink // what the fleet sends frames through; also the daemon's own answers to a page's request
 	fleet   *agents.Fleet
 	origin  string
 	opening sync.RWMutex
@@ -355,6 +356,7 @@ func (s *BrowserSessions) serve(conn *websocket.Conn, origin string) {
 	conn.SetReadLimit(maxPageMessageBytes)
 	e := &pageEntry{conn: conn, page: newPageSocket(conn), origin: origin, bridges: map[string]*pagetools.Binding{}, lanes: lanes{pending: map[string][]func(){}}}
 	sink := frameSink{p: e.page, opening: &e.opening}
+	e.sink = sink
 	fleet := s.o.Fleet
 	fleet.Sink = func() agents.FrameSink { return sink }
 	fleet.Ended = e.unbind
@@ -417,6 +419,15 @@ func (s *BrowserSessions) handle(e *pageEntry, text string) {
 		s.openSession(e, m.ID, m.Agent)
 	case pagetools.ToWrite:
 		e.lanes.run("write:"+m.ID, func() {
+			// A page is the ACP client of its agent, but agentd decides which program and options the agent gets.
+			if reply, why, refused := agents.GuardPageLine(s.pageBridge(e, m.ID), m.Line); refused {
+				if reply != "" {
+					e.sink.Send(m.ID, agents.FrameOut, reply, 0)
+				} else {
+					e.page.send(pagetools.NewError(m.ID, "not passed to the agent: "+why))
+				}
+				return
+			}
 			if !e.fleet.Write(m.ID, m.Line) {
 				e.page.send(pagetools.NewError(m.ID, fmt.Sprintf("session %s is not running", m.ID)))
 			}
@@ -445,6 +456,15 @@ func (s *BrowserSessions) openSession(e *pageEntry, id, agent string) {
 		return
 	}
 	e.page.send(pagetools.NewOpened(id, o.PID, o.Cwd, s.bridgeFor(e, id)))
+}
+
+// pageBridge is the one MCP server session `id` may list, as bridgeFor gave it to the page; zero when it has none.
+func (s *BrowserSessions) pageBridge(e *pageEntry, id string) agents.PageBridge {
+	b := e.binding(id)
+	if b == nil || s.o.Relay == nil {
+		return agents.PageBridge{}
+	}
+	return agents.PageBridge{Command: s.o.BridgeCommand, Socket: s.o.Relay.Path(), Token: b.Token()}
 }
 
 // bridgeFor is the stdio server through which session `id`'s agent reaches the page's MCP server: a token of its own,

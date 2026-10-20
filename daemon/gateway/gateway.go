@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
+	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
@@ -58,7 +59,7 @@ type Deps struct {
 type Options struct {
 	// Gate decides which connections are of the daemon's own OS user. Required.
 	Gate *consent.PeerGate
-	// Now is the clock of the cooldown and the lockout; nil is time.Now.
+	// Now is the clock of the cooldown, the lockout and the age of a page's grant; nil is time.Now.
 	Now func() time.Time
 }
 
@@ -104,10 +105,13 @@ type statusGranted struct {
 }
 
 type statusBody struct {
-	Name    string                 `json:"name"`
-	Version string                 `json:"version"`
-	Granted statusGranted          `json:"granted"`
-	Agents  *[]pagetools.AgentInfo `json:"agents,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// Protocol is the version of the daemon contract this daemon speaks (home.Protocol): a page reads it to know whether
+	// its SDK can talk to this daemon.
+	Protocol int                    `json:"protocol"`
+	Granted  statusGranted          `json:"granted"`
+	Agents   *[]pagetools.AgentInfo `json:"agents,omitempty"`
 }
 
 type grantedBody struct {
@@ -118,6 +122,7 @@ type grantedBody struct {
 // its own origin.
 type routes struct {
 	deps Deps
+	now  func() time.Time
 
 	mu       sync.Mutex // guards busy, cooldown and lockout
 	busy     bool
@@ -126,7 +131,7 @@ type routes struct {
 }
 
 func newRoutes(deps Deps, now func() time.Time) *routes {
-	return &routes{deps: deps, cooldown: NewCooldown(cooldownFor, now), lockout: NewLockout(lockoutRefusals, lockoutWindow, now)}
+	return &routes{deps: deps, now: now, cooldown: NewCooldown(cooldownFor, now), lockout: NewLockout(lockoutRefusals, lockoutWindow, now)}
 }
 
 func (r *routes) status(origin string) out {
@@ -134,8 +139,8 @@ func (r *routes) status(origin string) out {
 	if err != nil {
 		return failure(err)
 	}
-	granted := statusGranted{Server: reg.HasApp(origin) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin)}
-	body := statusBody{Name: "agentd", Version: r.deps.Version, Granted: granted}
+	granted := statusGranted{Server: reg.HasApp(origin) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin, r.now())}
+	body := statusBody{Name: "agentd", Version: r.deps.Version, Protocol: home.Protocol, Granted: granted}
 	if granted.Server || granted.Browser {
 		agents := append([]pagetools.AgentInfo{}, r.deps.Agents()...)
 		body.Agents = &agents
@@ -153,7 +158,7 @@ func (r *routes) connect(origin string, req *http.Request) out {
 		if err != nil {
 			return failure(err)
 		}
-		if reg.HasBrowser(origin) {
+		if reg.HasBrowser(origin, r.now()) {
 			return out{http.StatusOK, grantedBody{true}}
 		}
 	}
@@ -198,7 +203,11 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 			titles = append(titles, cmp.Or(a.Title, a.Name))
 		}
 	}
-	decision := r.deps.Ask(consent.Question{Origin: origin, Mode: want.Mode, Agents: ready, Titles: titles})
+	q := consent.Question{Origin: origin, Mode: want.Mode, Agents: ready, Titles: titles}
+	if want.Mode == consent.ModeBrowser {
+		q.GrantDays = int(registry.BrowserGrantTTL / (24 * time.Hour))
+	}
+	decision := r.deps.Ask(q)
 	answer := decision.Answer
 	if answer == consent.AnswerUnavailable {
 		return refuse(http.StatusServiceUnavailable, "no-dialog")
@@ -358,7 +367,7 @@ func (s *server) upgrade(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	reg, err := s.deps.Registry()
-	if err != nil || !reg.HasBrowser(origin) {
+	if err != nil || !reg.HasBrowser(origin, s.routes.now()) {
 		drop(w)
 		return
 	}

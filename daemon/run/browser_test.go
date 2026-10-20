@@ -165,7 +165,7 @@ func number(v any) int {
 func startBrowserDaemon(t *testing.T, agent string) *gatewayDaemon {
 	t.Helper()
 	box := newSandbox(t)
-	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: "2026-10-19T00:00:00.000Z"}})
+	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: registry.GrantStamp(time.Now())}})
 	return launchGatewayDaemon(t, box, agent)
 }
 
@@ -334,7 +334,7 @@ func flooded(report string) (pid, bytes int) {
 func TestBrowserAPageThatStopsReadingStopsItsAgentsOutputInsteadOfFillingTheDaemonAndResumesIt(t *testing.T) {
 	box := newSandbox(t)
 	report := filepath.Join(box.root, "flood.count")
-	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: "2026-10-19T00:00:00.000Z"}})
+	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: registry.GrantStamp(time.Now())}})
 	g := launchGatewayDaemon(t, box, binaries.helper+" flood "+report)
 	conn := stalledPage(t, g.port, message{"t": "open", "id": "s1", "agent": "claude"})
 	var pid int

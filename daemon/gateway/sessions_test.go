@@ -88,7 +88,7 @@ func startRig(t *testing.T, agent string) *rig {
 		Relay:         relay,
 		BridgeCommand: r.bridge,
 	})
-	r.world.reg = r.world.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
+	r.world.reg = r.world.reg.AddBrowser(page, time.Now(), nil)
 	r.world.sessions = r.sessions
 	deps := r.world.deps()
 	deps.Upgrade = r.sessions.Upgrade
@@ -278,13 +278,18 @@ func TestTheOpenedMessageComesBeforeTheFirstFrameOfTheSession(t *testing.T) {
 	}
 }
 
+// numbered is the i-th line of a test that checks order: a page writes JSON-RPC messages.
+func numbered(i int) string {
+	return `{"jsonrpc":"2.0","method":"tick","params":{"n":` + strconv.Itoa(i) + `}}`
+}
+
 func TestLinesWrittenByAPageReachTheAgentInOrder(t *testing.T) {
 	r := startRig(t, "cat")
 	p := mustDial(t, r.port)
 	p.open("s1")
 	const n = 300
 	for i := range n {
-		p.send(map[string]any{"t": "write", "id": "s1", "line": strconv.Itoa(i)})
+		p.send(map[string]any{"t": "write", "id": "s1", "line": numbered(i)})
 	}
 	waitFor(t, "every echo", wait, func() bool {
 		count := 0
@@ -298,7 +303,7 @@ func TestLinesWrittenByAPageReachTheAgentInOrder(t *testing.T) {
 	i := 0
 	for _, m := range p.all() {
 		if frameOf("out")(m) {
-			if m["data"] != strconv.Itoa(i) {
+			if m["data"] != numbered(i) {
 				t.Fatalf("echo %d is %v", i, m["data"])
 			}
 			i++
@@ -314,7 +319,7 @@ func TestAnUnknownAgentIsAnErrorMessageNotADeadSocket(t *testing.T) {
 	if e["id"] != "s1" || !strings.Contains(e["message"].(string), `unknown agent "rm -rf"`) {
 		t.Fatalf("error = %v", e)
 	}
-	p.send(map[string]any{"t": "write", "id": "nope", "line": "x"})
+	p.send(map[string]any{"t": "write", "id": "nope", "line": `{"jsonrpc":"2.0","method":"x"}`})
 	e = p.next("not running", func(m map[string]any) bool { return m["t"] == "error" && m["id"] == "nope" })
 	if e["message"] != "session nope is not running" {
 		t.Fatalf("error = %v", e)
@@ -490,7 +495,7 @@ func TestDeleteFromThePageEndsItsOpenSocketAndTheAgentsOnIt(t *testing.T) {
 
 func TestEndOriginClosesTheSocketsOfThatOriginOnly(t *testing.T) {
 	r := startRig(t, "cat")
-	r.world.reg = r.world.reg.AddBrowser(other, "2026-10-19T00:00:00.000Z", nil)
+	r.world.reg = r.world.reg.AddBrowser(other, time.Now(), nil)
 	a := mustDial(t, r.port)
 	b, err := dialPage(t, r.port, other, "")
 	if err != nil {
@@ -569,7 +574,7 @@ func TestARefusedUpgradeNeverGetsASocket(t *testing.T) {
 
 func TestAnUpgradeWithoutAnUpgradeHandlerIsRefused(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
 	g := startGateway(t, w.deps(), nil)
 	if err := dialSession(t, g.Port); err == nil {
 		t.Fatal("got a socket")

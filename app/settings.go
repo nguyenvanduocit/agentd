@@ -21,6 +21,9 @@ func (w *Settings) View(c *ui.Context) {
 		ui.Column(c).Gap(4).Children(func() {
 			ui.Text(c, Title(w.State)).FontSize(20).Bold()
 			ui.Text(c, Summary(w.State)).TextColor(c.Theme().TextMuted)
+			if note := GatewayNote(w.State); note != "" {
+				ui.Text(c, note)
+			}
 		})
 		w.connected(c)
 		w.agents(c)
@@ -84,11 +87,14 @@ func heading(c *ui.Context, s string) {
 const firstRunText = "agentd lets apps you approve run AI coding agents on this computer. Go back to the app that sent you here and choose Connect."
 
 // connected lists each app and web page with its own Disconnect, which ends its sessions and forgets it. With none, it
-// says what agentd is and where to go next.
+// says what agentd is and where to go next, unless web pages cannot reach agentd: the line under the summary says
+// that, and "choose Connect" would send the person to a page that cannot connect.
 func (w *Settings) connected(c *ui.Context) {
 	ui.Column(c).Gap(8).Children(func() {
 		if len(w.State.Apps)+len(w.State.Pages) == 0 {
-			ui.Text(c, firstRunText)
+			if GatewayNote(w.State) == "" {
+				ui.Text(c, firstRunText)
+			}
 			return
 		}
 		heading(c, "Connected")

@@ -250,15 +250,43 @@ func (f *Fleet) EndAll() {
 	}
 }
 
-// Shutdown ends every agent and returns once they are gone, or after `grace` (the stragglers are SIGKILLed anyway).
-// No session opens after this.
-func (f *Fleet) Shutdown(grace time.Duration) {
+// killWait is how long Shutdown waits, after it killed the stragglers, for their leaders to be gone: SIGKILL cannot
+// be ignored, so this is the time the kernel and Wait need.
+const killWait = time.Second
+
+// Drain refuses every open from now on and leaves the running agents as they are.
+func (f *Fleet) Drain() {
 	f.mu.Lock()
 	f.draining = true
 	f.mu.Unlock()
+}
+
+// Shutdown ends every agent and returns once they are gone. An agent that is still running after `grace` is
+// SIGKILLed at once and waited for (up to killWait), because the daemon may exit as soon as this returns and a timer
+// would die with it. No session opens after this.
+func (f *Fleet) Shutdown(grace time.Duration) {
+	f.Drain()
 	f.EndAll()
 	deadline := time.Now().Add(grace)
 	for f.Size() > 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
+	}
+	f.mu.Lock()
+	stragglers := make([]*Session, 0, len(f.sessions))
+	for _, s := range f.sessions {
+		stragglers = append(stragglers, s)
+	}
+	f.mu.Unlock()
+	for _, s := range stragglers {
+		s.Kill()
+	}
+	wait := time.NewTimer(killWait)
+	defer wait.Stop()
+	for _, s := range stragglers {
+		select {
+		case <-s.Dead():
+		case <-wait.C:
+			return
+		}
 	}
 }

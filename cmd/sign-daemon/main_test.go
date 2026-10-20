@@ -97,6 +97,38 @@ func TestTheReleaseKeyFileHasTheFormatPublicPrints(t *testing.T) {
 	}
 }
 
+// daemon/release-backup.pub is the second key of the set every release bakes in. Where the file exists it has the
+// format of release.pub and is another key: a build refuses a backup key that is the primary one.
+func TestTheBackupKeyFileWhereItExistsIsAnotherKeyInTheFormatOfReleasePub(t *testing.T) {
+	backup, err := os.ReadFile(filepath.Join("..", "..", "daemon", "release-backup.pub"))
+	if os.IsNotExist(err) {
+		t.Skip("no daemon/release-backup.pub yet: the backup key is made offline")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, err := os.ReadFile(filepath.Join("..", "..", "daemon", "release.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	var keys []string
+	for name, content := range map[string][]byte{"primary.pub": primary, "backup.pub": backup} {
+		file := filepath.Join(dir, name)
+		if err := os.WriteFile(file, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, stderr, code := do(t, "b64", file)
+		if code != 0 {
+			t.Fatalf("%s: %s", name, stderr)
+		}
+		keys = append(keys, out)
+	}
+	if keys[0] == keys[1] {
+		t.Fatal("daemon/release-backup.pub is the same key as daemon/release.pub")
+	}
+}
+
 // The release private key is git-ignored (.release-signing/): where it is present, its public half is the committed one.
 func TestTheReleasePrivateKeyMatchesReleasePub(t *testing.T) {
 	file := filepath.Join("..", "..", ".release-signing", "daemon-signing.key")
@@ -223,5 +255,57 @@ func TestPublicB64IsTheDERThePEMHolds(t *testing.T) {
 	block, _ := pem.Decode([]byte(golden(t, "public.pem")))
 	if base64.StdEncoding.EncodeToString(block.Bytes) != b64 {
 		t.Fatal("public.b64 is not the DER of public.pem")
+	}
+}
+
+// `b64` is for the public key files of the repository (daemon/release.pub, daemon/release-backup.pub): the key set a
+// release bakes into every engine is made of what it prints.
+func TestB64PrintsAPublicKeyFileAsTheDaemonBakesItIn(t *testing.T) {
+	stdout, stderr, code := do(t, "b64", filepath.Join("testdata", "public.pem"))
+	if code != 0 || stdout != golden(t, "public.b64") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want %q", code, stdout, stderr, golden(t, "public.b64"))
+	}
+	key := newKeyFile(t)
+	pub, _, _ := do(t, "public", key)
+	file := filepath.Join(t.TempDir(), "backup.pub")
+	if err := os.WriteFile(file, []byte(pub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want, _, _ := do(t, "public-b64", key)
+	if got, stderr, code := do(t, "b64", file); code != 0 || got != want {
+		t.Fatalf("exit %d, %q, stderr %q; want what public-b64 prints for the private key: %q", code, got, stderr, want)
+	}
+}
+
+func TestB64RefusesWhatIsNotOneEd25519PublicKey(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaDER, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := golden(t, "public.pem")
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"an RSA public key":         string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rsaDER})),
+		"a private key":             golden(t, "key.pem"),
+		"no PEM block":              "MCowBQYDK2VwAyEAYCTlYfCAVBX0YYKuaT7w/BrX+1PVg75ppSVQ3McmdeA=\n",
+		"two keys in one file":      good + good,
+		"something after the key":   good + "more\n",
+		"an empty file":             "",
+		"a block that is not a key": string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("not DER")})),
+	} {
+		file := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
+		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if stdout, stderr, code := do(t, "b64", file); code != 1 || stdout != "" || stderr == "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout, stderr)
+		}
+	}
+	if _, stderr, code := do(t, "b64", filepath.Join(dir, "none")); code != 1 || stderr == "" {
+		t.Errorf("a missing file: exit %d, stderr %q", code, stderr)
 	}
 }

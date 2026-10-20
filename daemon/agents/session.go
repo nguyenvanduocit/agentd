@@ -59,6 +59,7 @@ type Session struct {
 
 	readers sync.WaitGroup
 	cut     chan struct{} // closed when the pipes are cut after the leader is gone
+	dead    chan struct{} // closed once the leader has been reaped and the rest of its group killed
 
 	mu        sync.Mutex
 	killTimer *time.Timer
@@ -94,7 +95,7 @@ func startSession(id string, cmd *exec.Cmd, sink FrameSink, onEnd func(), maxLin
 		_ = stdin.Close()
 		return nil, err
 	}
-	s := &Session{id: id, cmd: cmd, sink: sink, onEnd: onEnd, pgid: cmd.Process.Pid, stdin: stdin, cut: make(chan struct{})}
+	s := &Session{id: id, cmd: cmd, sink: sink, onEnd: onEnd, pgid: cmd.Process.Pid, stdin: stdin, cut: make(chan struct{}), dead: make(chan struct{})}
 	if b, ok := sink.(BackloggedSink); ok {
 		s.room = b.Backlog
 	}
@@ -119,6 +120,7 @@ func (s *Session) PGID() int { return s.pgid }
 func (s *Session) wait(outR, errR *os.File) {
 	_ = s.cmd.Wait() // the exit status is read from ProcessState
 	proc.SignalGroup(s.pgid, true)
+	close(s.dead)
 	cutter := time.AfterFunc(pipeGrace, func() {
 		close(s.cut)
 		closeAll(outR, errR)
@@ -244,6 +246,13 @@ func (s *Session) Write(line string) bool {
 	_, err := io.WriteString(s.stdin, line+"\n")
 	return err == nil
 }
+
+// Dead is closed once the agent's leader is gone and SIGKILL has gone to what it left in the group. The pipes may
+// still be draining; the session ends after that.
+func (s *Session) Dead() <-chan struct{} { return s.dead }
+
+// Kill sends SIGKILL to the group at once: no agent ignores it.
+func (s *Session) Kill() { proc.SignalGroup(s.pgid, true) }
 
 // End sends SIGTERM to the group, and SIGKILL after a grace period: children may outlive a leader that ignores SIGTERM.
 func (s *Session) End() {

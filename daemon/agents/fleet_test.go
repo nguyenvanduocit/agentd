@@ -122,7 +122,7 @@ func TestFleetOpen(t *testing.T) {
 			{"", "claude", "empty session id"},
 			{"s1", "claude", "session s1 exists"},
 			{"s2", "rm", `unknown agent "rm": this daemon runs claude, codex, grok`},
-			{"s2", "codex", "the codex adapter is still installing on this machine"},
+			{"s2", "codex", "Codex is still setting up on this computer."},
 		} {
 			if _, err := f.Open(c.id, c.agent); err == nil || err.Error() != c.want {
 				t.Errorf("open %q %q: got %v, want %q", c.id, c.agent, err, c.want)

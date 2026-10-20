@@ -135,11 +135,23 @@ func (s *SessionState) Remove(pgid int) {
 	s.save()
 }
 
-// Clear is a clean exit: nothing is left to reap.
+// Clear is a clean exit: nothing is left to reap, unless the record lists a group that still runs (an agent that
+// ignored SIGTERM and was not yet killed). That group stays in the record: the next start finds it there and ends it,
+// and nothing else knows of it.
 func (s *SessionState) Clear() {
-	if s.enabled {
-		_ = os.Remove(s.file)
+	if !s.enabled {
+		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	running := slices.DeleteFunc(slices.Clone(s.state.Groups), func(g StateGroup) bool { return !GroupAlive(g.Pgid) })
+	if len(running) == 0 {
+		_ = os.Remove(s.file)
+		return
+	}
+	s.state.Groups = running
+	s.save()
+	s.log.Warn(fmt.Sprintf("%d agent group(s) still running at exit; the next start ends them", len(running)))
 }
 
 // save writes the record; the caller holds s.mu. The record is best effort: a full disk must not stop an agent from

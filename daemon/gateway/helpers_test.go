@@ -84,6 +84,14 @@ type world struct {
 	ask      func(consent.Question) consent.Answer
 	chosen   []string // the folders the user picks after an Allow; none by default means /work
 	sessions *BrowserSessions
+	now      func() time.Time // the clock of the grants it makes; nil is time.Now
+}
+
+func (w *world) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 func newWorld() *world {
@@ -139,7 +147,7 @@ func (w *world) deps() Deps {
 		GrantBrowser: func(origin string, folders []string) error {
 			w.mu.Lock()
 			defer w.mu.Unlock()
-			w.reg = w.reg.AddBrowser(origin, "2026-10-19T00:00:00.000Z", folders)
+			w.reg = w.reg.AddBrowser(origin, w.clock(), folders)
 			return nil
 		},
 		Revoke: func(origin string) error {
@@ -181,6 +189,17 @@ func startGateway(t *testing.T, deps Deps, owners consent.PeerOwners) *Gateway {
 		owners = ownOwners
 	}
 	g, err := Start(deps, 0, Options{Gate: gateFor(owners)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	return g
+}
+
+// startGatewayAt is startGateway on the clock now, which the gateway reads for how old a grant is.
+func startGatewayAt(t *testing.T, deps Deps, now func() time.Time) *Gateway {
+	t.Helper()
+	g, err := Start(deps, 0, Options{Gate: gateFor(ownOwners), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

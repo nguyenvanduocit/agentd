@@ -275,7 +275,7 @@ func (s *Store) run(a Adapter, attempt int) {
 	}
 	delay := home.BackoffDelay(attempt, s.o.Retry, nil)
 	reason := FailedReason(a, err.Error(), delay)
-	s.o.Log.Warn(reason)
+	s.o.Log.Warn(reason + " [" + err.Error() + "]") // the person reads the one plain line; the log keeps what npm said
 	s.set(a.Name, AdapterState{Kind: AdapterFailed, Reason: reason})
 	s.mu.Lock()
 	defer s.mu.Unlock()

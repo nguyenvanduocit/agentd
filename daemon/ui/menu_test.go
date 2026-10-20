@@ -95,6 +95,20 @@ func TestMenuShowsWhatTheDaemonServes(t *testing.T) {
 	}
 }
 
+// A page whose grant lapsed is not connected any more: it must not be listed with a Disconnect it does not need.
+func TestMenuListsOnlyThePagesWhoseGrantHasNotLapsed(t *testing.T) {
+	f := newMenu(t)
+	old := time.Now().Add(-registry.BrowserGrantTTL - time.Hour)
+	r := registry.Empty().AddBrowser("https://old.example", old, nil).AddBrowser(page, time.Now(), nil)
+	if err := registry.Save(f.file, r); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	if got := f.link.last(t).Pages; !reflect.DeepEqual(got, []string{page}) {
+		t.Fatalf("pages = %v, want only %s", got, page)
+	}
+}
+
 func TestMenuShowsNothingWhileTheRegistryCannotBeRead(t *testing.T) {
 	f := newMenu(t)
 	if err := writeFile(f.file, "{not json"); err != nil {

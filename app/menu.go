@@ -102,14 +102,20 @@ func Title(s State) string {
 	return "agentd " + s.Version
 }
 
-// Summary is the status line under the title. What stops web pages from reaching agentd comes before what is connected:
-// a person whose page cannot connect has nothing connected, and that is not the news.
+// GatewayNote is the line under the summary that says web pages cannot reach agentd; empty while they can, and before
+// the first state, which says nothing about the gateway yet. It is a line of its own because it does not change what
+// is connected: apps connect outbound and do not use the gateway.
+func GatewayNote(s State) string {
+	if s.Version != "" && s.GatewayOff {
+		return gatewayOffText
+	}
+	return ""
+}
+
+// Summary is the status line under the title: what is connected, and the agents running.
 func Summary(s State) string {
 	if s.Version == "" {
 		return "Starting…"
-	}
-	if s.GatewayOff {
-		return gatewayOffText
 	}
 	var parts []string
 	if n := len(s.Apps); n > 0 {
@@ -145,8 +151,11 @@ func BuildMenu(s State, h Host) []Entry {
 	menu := []Entry{
 		{Label: Title(s), Disabled: true},
 		{Label: Summary(s), Disabled: true},
-		{Separator: true},
 	}
+	if note := GatewayNote(s); note != "" {
+		menu = append(menu, Entry{Label: note, Disabled: true})
+	}
+	menu = append(menu, Entry{Separator: true})
 	for _, app := range s.Apps {
 		menu = append(menu, Entry{Label: app, Children: []Entry{{ID: "disconnect:" + app, Label: "Disconnect"}}})
 	}

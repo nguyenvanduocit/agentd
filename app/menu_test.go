@@ -29,9 +29,9 @@ func TestSummary(t *testing.T) {
 		{"apps and pages", State{Version: "1", Apps: []string{"https://a", "https://b"}, Pages: []string{"https://p"}}, "2 apps, 1 web page"},
 		{"sessions", State{Version: "1", Apps: []string{"https://a"}, Sessions: 1}, "1 app, 1 agent running"},
 		{"several sessions", State{Version: "1", Apps: []string{"https://a"}, Sessions: 3}, "1 app, 3 agents running"},
-		// A first-run person with nothing connected is the one whose page cannot reach agentd: the problem is said first.
-		{"gateway off, nothing connected", State{Version: "1", GatewayOff: true}, gatewayOffText},
-		{"gateway off, an app connected", State{Version: "1", Apps: []string{"https://a"}, GatewayOff: true}, gatewayOffText},
+		// Apps connect outbound, so a gateway that is off hides nothing from the count: its sentence is a line of its own.
+		{"gateway off, nothing connected", State{Version: "1", GatewayOff: true}, "Nothing connected"},
+		{"gateway off, an app connected", State{Version: "1", Apps: []string{"https://a"}, Sessions: 2, GatewayOff: true}, "1 app, 2 agents running"},
 	}
 	for _, c := range cases {
 		if got := Summary(c.s); got != c.want {
@@ -44,6 +44,31 @@ func TestTheGatewayOffSentenceIsPlainEnglish(t *testing.T) {
 	const want = "Web pages can't reach agentd: its ports are in use by another program."
 	if gatewayOffText != want {
 		t.Fatalf("got %q, want %q", gatewayOffText, want)
+	}
+}
+
+func TestTheGatewayOffNoteIsALineOfItsOwn(t *testing.T) {
+	if got := GatewayNote(State{Version: "1"}); got != "" {
+		t.Errorf("gateway on: got %q", got)
+	}
+	if got := GatewayNote(State{GatewayOff: true}); got != "" {
+		t.Errorf("before the first state nothing is known: got %q", got)
+	}
+	if got := GatewayNote(State{Version: "1", GatewayOff: true}); got != gatewayOffText {
+		t.Errorf("gateway off: got %q", got)
+	}
+
+	m := BuildMenu(State{Version: "1", Managed: true, Apps: []string{"https://a"}, Sessions: 1, GatewayOff: true}, Host{})
+	if got, want := labels(m)[:5], []string{"agentd 1", "1 app, 1 agent running", gatewayOffText, "---", "https://a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if note := m[2]; !note.Disabled || note.ID != "" || len(note.Children) != 0 {
+		t.Errorf("the note is a line to read, not an action: %+v", note)
+	}
+	for _, e := range BuildMenu(State{Version: "1"}, Host{}) {
+		if e.Label == gatewayOffText {
+			t.Error("the note is there with the gateway on")
+		}
 	}
 }
 

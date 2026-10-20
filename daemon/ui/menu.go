@@ -63,10 +63,12 @@ type MenuDeps struct {
 	SetUpdates func(on bool) error
 	Log        *proc.Logger
 
-	// Optional: GOOS defaults to runtime.GOOS, Opener to a detached start of the command, Refresh to two seconds.
+	// Optional: GOOS defaults to runtime.GOOS, Opener to a detached start of the command, Refresh to two seconds, Now
+	// (the clock that tells which page grants have lapsed) to time.Now.
 	GOOS    string
 	Opener  func(Command) error
 	Refresh time.Duration
+	Now     func() time.Time
 }
 
 // openDetached starts the command and leaves it running on its own; it is reaped when it ends.
@@ -145,8 +147,14 @@ func StartMenu(d MenuDeps) (end func()) {
 				apps = append(apps, a.Server)
 			}
 		}
+		now := time.Now
+		if d.Now != nil {
+			now = d.Now
+		}
 		for _, b := range r.Browsers {
-			pages = append(pages, b.Origin)
+			if b.Live(now()) {
+				pages = append(pages, b.Origin)
+			}
 		}
 		link.Update(NewState(Facts{
 			Version:     hello.Version,

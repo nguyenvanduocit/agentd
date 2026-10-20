@@ -93,6 +93,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	peers    map[string]*peer                // by daemon id: the connected daemons
+	refused  map[string]refused              // by daemon id: why its last hello was not accepted (protocol.go); outlives the connection
 	bridges  map[string]map[*bridge]struct{} // by daemon id: the MCP bridges its token opened
 	seq      uint64                          // the last peer.seq handed out
 	sessions map[string]*session             // by session id
@@ -116,7 +117,7 @@ func New(opts Options) *Server {
 		opts.MaxUnreadBytes = defaultMaxUnreadBytes
 	}
 	return &Server{
-		opts: opts, peers: map[string]*peer{}, bridges: map[string]map[*bridge]struct{}{}, sessions: map[string]*session{},
+		opts: opts, peers: map[string]*peer{}, refused: map[string]refused{}, bridges: map[string]map[*bridge]struct{}{}, sessions: map[string]*session{},
 		codes: map[string]*pairCode{}, failures: map[string][]time.Time{}, watchers: map[string]map[*watcher]struct{}{}, sent: map[string]List{},
 	}
 }
@@ -180,6 +181,7 @@ func (h *Server) connected(userID, daemonID string) (*peer, error) {
 	h.mu.Lock()
 	p := h.peers[daemonID]
 	ok := p != nil && p.userID == userID && p.ready
+	why := h.refused[daemonID].reason
 	h.mu.Unlock()
 	if ok {
 		return p, nil
@@ -187,6 +189,9 @@ func (h *Server) connected(userID, daemonID string) (*peer, error) {
 	name, known := h.Name(userID, daemonID)
 	if !known {
 		return nil, ErrUnknownDaemon
+	}
+	if why != "" {
+		return nil, IncompatibleError{Name: name, Reason: why}
 	}
 	return nil, OfflineError{Name: name}
 }
@@ -347,13 +352,24 @@ func (h *Server) connect(p *peer, rec Record) error {
 	return nil
 }
 
-// hello records what the daemon reported about itself and tells the user's tabs it is online.
+// hello records what the daemon reported about itself and tells the user's tabs it is online. A daemon whose protocols
+// do not include this app's is not online: the list says why, and Open fails with an IncompatibleError.
 func (h *Server) hello(p *peer, info contract.Hello) {
+	reason := incompatibility(Protocol, info.ProtocolMin, info.ProtocolMax)
 	h.mu.Lock()
 	if h.peers[p.id] != p {
 		h.mu.Unlock()
 		return
 	}
+	if reason != "" {
+		p.ready = false
+		h.refused[p.id] = refused{reason: reason, version: info.Version, hostname: info.Hostname, os: info.Os}
+		h.mu.Unlock()
+		h.touch(p.id)
+		h.publish(p.userID)
+		return
+	}
+	delete(h.refused, p.id)
 	h.seq++
 	p.info, p.ready, p.seq = info, true, h.seq
 	h.mu.Unlock()
@@ -467,6 +483,7 @@ func (h *Server) Revoke(userID, id string) (List, error) {
 	} else {
 		p = nil
 	}
+	delete(h.refused, id) // the token is gone: Delete above did not find another user's daemon, or it would have failed
 	var bridges []*bridge
 	for b := range h.bridges[id] {
 		if b.userID == userID {
@@ -552,6 +569,8 @@ func (h *Server) List(userID string) (List, error) {
 		if p := h.peers[rec.ID]; p != nil && p.ready {
 			info.State, info.Hostname, info.Version, info.OS = stateOnline, p.info.Hostname, p.info.Version, p.info.Os
 			info.Agents, info.Managed, info.Sessions = agentsOf(p.info.Agents), p.info.Managed, sessions[p]
+		} else if r, ok := h.refused[rec.ID]; ok {
+			info.Incompatible, info.Hostname, info.Version, info.OS = r.reason, r.hostname, r.version, r.os
 		}
 		list.Daemons = append(list.Daemons, info)
 	}

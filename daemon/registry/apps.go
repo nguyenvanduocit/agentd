@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/cli"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
@@ -19,9 +20,27 @@ func foldersNote(folders []string) string {
 	return ", in " + strings.Join(folders, ", ")
 }
 
-// RunApps is `apps [list]` and `apps remove <origin>`. It returns the exit code, meaningful when the error is nil.
-// Tokens are never printed.
+// browserNote is what a listing says of a page grant's time: when it was made and ends, or that it lapsed.
+func browserNote(g BrowserGrant, now time.Time) string {
+	end, ok := g.ExpiresAt()
+	switch {
+	case !ok:
+		return "expired"
+	case !g.Live(now):
+		return "expired " + end.UTC().Format(time.DateOnly)
+	}
+	day := []rune(g.GrantedAt)
+	return fmt.Sprintf("granted %s, expires %s", string(day[:min(len(day), grantedDateRunes)]), end.UTC().Format(time.DateOnly))
+}
+
+// RunApps is RunAppsAt at the present time.
 func RunApps(cmd cli.Apps, h home.Host, log *proc.Logger) (int, error) {
+	return RunAppsAt(cmd, h, log, time.Now())
+}
+
+// RunAppsAt is `apps [list]` and `apps remove <origin>` at time now. It returns the exit code, meaningful when the error
+// is nil. Tokens are never printed.
+func RunAppsAt(cmd cli.Apps, h home.Host, log *proc.Logger, now time.Time) (int, error) {
 	file := File(cmd.Config, h)
 	r, err := Load(file)
 	if err != nil {
@@ -36,8 +55,7 @@ func RunApps(cmd cli.Apps, h home.Host, log *proc.Logger) (int, error) {
 			log.Say(a.Server + "  app" + foldersNote(a.Folders))
 		}
 		for _, g := range r.Browsers {
-			day := []rune(g.GrantedAt)
-			log.Say(fmt.Sprintf("%s  browser, granted %s%s", g.Origin, string(day[:min(len(day), grantedDateRunes)]), foldersNote(g.Folders)))
+			log.Say(fmt.Sprintf("%s  browser, %s%s", g.Origin, browserNote(g, now), foldersNote(g.Folders)))
 		}
 		return 0, nil
 	}
@@ -45,7 +63,7 @@ func RunApps(cmd cli.Apps, h home.Host, log *proc.Logger) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !r.HasApp(origin) && !r.HasBrowser(origin) {
+	if !r.HasApp(origin) && !r.HasGrant(origin) {
 		log.Warn("not connected to " + origin)
 		return 1, nil
 	}

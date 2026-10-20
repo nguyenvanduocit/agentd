@@ -330,7 +330,7 @@ func TestAGrantedOriginGetsItsAnswerWhileALockoutHoldsEveryDialog(t *testing.T) 
 	for i := range 3 {
 		connectAs(t, g.Port, map[string]any{"mode": "browser"}, "http://localhost:"+strconv.Itoa(5170+i))
 	}
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
 	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 200, map[string]any{"granted": true})
 }
 
@@ -395,7 +395,7 @@ func TestStartNeedsAGate(t *testing.T) {
 func gatewayHere(t *testing.T, owners consent.PeerOwners) (*Gateway, *world) {
 	t.Helper()
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()
@@ -472,7 +472,7 @@ func TestALookupThatFailsIsLoggedOnce(t *testing.T) {
 
 func TestTheRealLookupLetsThisProcessInRoutesAnswerAndTheUpgradeGoesThrough(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, "2026-10-19T00:00:00.000Z", nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()

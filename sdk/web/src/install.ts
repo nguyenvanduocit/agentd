@@ -27,6 +27,35 @@ export function desktopDownloads(o: { agentd?: string } = {}): DesktopDownloads 
   }
 }
 
+/** How a person gets agentd on this computer: the disk image of agentd.app, the install command, or neither (Windows: use WSL). */
+export type InstallRecommendation = "dmg" | "script" | "unsupported"
+
+/** What the browser says about the computer it runs on; `arch` is reserved (both disk images are offered, so it does not change the answer). */
+export interface Platform {
+  /** `navigator.userAgentData.platform`, `navigator.platform` or the user agent: "macOS", "MacIntel", "Linux x86_64", "Win32" … */
+  os?: string
+  arch?: string
+}
+
+/** The platform the browser reports: `userAgentData.platform`, else `platform`, else the user agent. */
+function browserPlatform(): Platform {
+  const nav = (globalThis as { navigator?: { userAgentData?: { platform?: string }; platform?: string; userAgent?: string } }).navigator
+  return { os: nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "" }
+}
+
+/**
+ * Which way to install agentd on the computer this page is open on: "dmg" on a Mac (agentd.app), "script" on Linux (the
+ * command of `installCommand`), "unsupported" anywhere else (Windows: use WSL; phones and tablets have no daemon).
+ * Without an argument it reads the browser. A phone's user agent says Linux or Mac OS X, so those are refused first.
+ */
+export function recommendInstall(platform: Platform = browserPlatform()): InstallRecommendation {
+  const os = (platform.os ?? "").toLowerCase()
+  if (/android|iphone|ipad|ipod|cros/.test(os)) return "unsupported"
+  if (/mac|darwin/.test(os)) return "dmg"
+  if (/linux/.test(os)) return "script"
+  return "unsupported"
+}
+
 export interface InstallOptions {
   /** The releases page the installer comes from (default: agentd's on GitHub; a fork or a development server names its own). */
   agentd?: string

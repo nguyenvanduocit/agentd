@@ -50,6 +50,9 @@ type LocalState struct {
 	Error string
 	// CanConnect is whether a daemon is here and has not been allowed to serve this app (browser mode: this origin) yet.
 	CanConnect bool
+	// Incompatible is a sentence when the daemon states a protocol this client does not speak (Detected.Incompatible):
+	// Error repeats it and CanConnect is false. "" otherwise.
+	Incompatible string
 }
 
 // remote is the default LocalClient: the package's calls for one origin.
@@ -113,7 +116,11 @@ func (l *LocalDaemon) stateOf(found Detected, connecting bool, err string) Local
 	if l.mode == ModeBrowser {
 		granted = found.Granted.Browser
 	}
-	return LocalState{Found: found, Connecting: connecting, Error: err, CanConnect: found.Found && !granted}
+	incompatible := found.Incompatible()
+	if err == "" {
+		err = incompatible
+	}
+	return LocalState{Found: found, Connecting: connecting, Error: err, CanConnect: found.Found && !granted && incompatible == "", Incompatible: incompatible}
 }
 
 // State is the state now.
@@ -228,7 +235,7 @@ func (l *LocalDaemon) askBrowser(ctx context.Context, d Daemon) string {
 func (l *LocalDaemon) Connect(ctx context.Context) bool {
 	var daemon Detected
 	began := l.update(func(cur LocalState) (LocalState, bool) {
-		if !cur.Found.Found || cur.Connecting {
+		if !cur.Found.Found || cur.Connecting || cur.Found.Incompatible() != "" {
 			return cur, false
 		}
 		daemon = cur.Found
@@ -251,10 +258,29 @@ func (l *LocalDaemon) Connect(ctx context.Context) bool {
 	return true
 }
 
-// Disconnect takes back what this app was allowed (its browser grant and the app at its origin), then looks again.
+// Disconnect takes back what this app was allowed (its browser grant and the app at its origin), then looks again. A
+// daemon that did not confirm leaves State().Error saying so: a disconnect that failed must not look as if it worked.
 func (l *LocalDaemon) Disconnect(ctx context.Context) {
+	var problem string
 	if daemon := l.State().Found; daemon.Found {
-		_ = l.client.Disconnect(ctx, Daemon{Port: daemon.Port}) // looking again shows what is left
+		if err := l.client.Disconnect(ctx, Daemon{Port: daemon.Port}); err != nil {
+			problem = disconnectProblem(err)
+		}
 	}
-	l.Detect(ctx)
+	l.Detect(ctx) // shows what is left
+	if problem != "" {
+		l.update(func(cur LocalState) (LocalState, bool) { return l.stateOf(cur.Found, cur.Connecting, problem), true })
+	}
+}
+
+// disconnectProblem is why a Disconnect was not confirmed, in plain words.
+func disconnectProblem(err error) string {
+	var refusal *DisconnectError
+	if !errors.As(err, &refusal) {
+		return ReasonText(ReasonUnreachable)
+	}
+	if refusal.Reason == "" {
+		return ReasonText(ReasonMalformed)
+	}
+	return ReasonText(refusal.Reason)
 }

@@ -135,13 +135,13 @@ func TestLinkSendsTheAuthOnceAndHelloOnConnect(t *testing.T) {
 	if hs := s.handshakes(); len(hs) != 1 || hs[0]["role"] != "daemon" || hs[0]["token"] != "tok" || len(hs[0]) != 2 {
 		t.Fatalf("handshakes = %v, want one {role:daemon, token}", hs)
 	}
-	hello := contract.Hello{Version: "1.2.3", Hostname: "box", Os: "linux", Arch: "amd64", Managed: true, Agents: []contract.AgentInfo{{Name: "claude", Title: "Claude Code", Ready: true}}}
+	hello := contract.Hello{Version: "1.2.3", Hostname: "box", Os: "linux", Arch: "amd64", Managed: true, Agents: []contract.AgentInfo{{Name: "claude", Title: "Claude Code", Ready: true}}, ProtocolMin: 1, ProtocolMax: 1}
 	reply, err := l.Hello(context.Background(), hello)
 	if err != nil || reply.Protocol != 1 {
 		t.Fatalf("hello = %+v, %v", reply, err)
 	}
 	e := c.waitEvents("hello", 1)[0]
-	want := `42/agentd,0["hello",{"version":"1.2.3","hostname":"box","os":"linux","arch":"amd64","agents":[{"name":"claude","title":"Claude Code","ready":true,"reason":""}],"managed":true}]`
+	want := `42/agentd,0["hello",{"version":"1.2.3","hostname":"box","os":"linux","arch":"amd64","agents":[{"name":"claude","title":"Claude Code","ready":true,"reason":""}],"managed":true,"protocolMin":1,"protocolMax":1}]`
 	if e.raw != want {
 		t.Fatalf("hello went out as\n%s\nwant\n%s", e.raw, want)
 	}

@@ -16,13 +16,17 @@
 # https://github.com/<owner>/<repo>/releases (the default of a RELEASE=1 build), or the local stand-in's origin in development.
 #
 # Every build is signed (cmd/sign-daemon): `signature` is the Ed25519 signature of the version and the tarball's
-# sha256, and every engine bakes in the public key a daemon checks every update against. The private key is the file
+# sha256, and every engine bakes in the public key set a daemon checks every update against. The private key is the file
 # $DAEMON_SIGNING_KEY (PKCS8 PEM). Without it the dev key .dev-signing/daemon-signing.key is used, made on first use:
-# daemons built with it accept only updates built with it. RELEASE=1 requires $DAEMON_SIGNING_KEY and fails unless its
-# public key is daemon/release.pub, so a wrong key never ships daemons that installed ones refuse; and a build that is not
-# RELEASE=1 refuses that key, so a development build never carries the signature every installed daemon trusts.
+# daemons built with it accept only updates built with it.
+#
+# RELEASE=1 requires $DAEMON_SIGNING_KEY. The set it bakes is daemon/release.pub and, when the file exists,
+# daemon/release-backup.pub (the backup key, whose private half is kept offline); the signing key must be one of them,
+# so a wrong key never ships daemons that installed ones refuse, and a release signed by the backup key replaces a lost or
+# leaked primary key. A build that is not RELEASE=1 bakes only its own key and refuses both of the repository's keys, so a
+# development build never carries a signature every installed daemon trusts.
 # RELEASE_PUB_FILE names one more public key that a build that is not RELEASE=1 refuses (the tests use it, as the
-# release private key is not theirs to hold); a RELEASE=1 build ignores it and checks daemon/release.pub only.
+# release private key is not theirs to hold); a RELEASE=1 build ignores it and reads the repository's two files only.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:?usage: scripts/build-daemon.sh <outdir>}"
@@ -70,21 +74,42 @@ if [ ! -f "$KEY" ] || [ ! -r "$KEY" ]; then
 fi
 PUB="$("${SIGN[@]}" public "$KEY")"
 RELEASE_PUB="$ROOT/daemon/release.pub"
+BACKUP_PUB="$ROOT/daemon/release-backup.pub"
 if [ ! -f "$RELEASE_PUB" ]; then
   echo "$RELEASE_PUB is missing: it is the public key every daemon checks updates against" >&2
   exit 1
 fi
 is_public_key() { cmp -s <(printf '%s\n' "$PUB") "$1"; }
 if [ "${RELEASE:-}" = 1 ]; then
-  if ! is_public_key "$RELEASE_PUB"; then
-    echo "RELEASE=1: the public key of DAEMON_SIGNING_KEY is not daemon/release.pub; installed daemons would refuse this build" >&2
+  # A release bakes in the key set: daemon/release.pub and, when the file exists, daemon/release-backup.pub, and either
+  # key may have signed it. A release signed by the backup key is how a lost or leaked primary key is replaced.
+  RELEASE_KEY="$("${SIGN[@]}" b64 "$RELEASE_PUB")" || { echo "$RELEASE_PUB is not an Ed25519 public key" >&2; exit 1; }
+  SIGNED_BY="daemon/release.pub"
+  SIGNER_OK=0
+  is_public_key "$RELEASE_PUB" && SIGNER_OK=1
+  if [ -e "$BACKUP_PUB" ]; then
+    BACKUP_KEY="$("${SIGN[@]}" b64 "$BACKUP_PUB")" || { echo "$BACKUP_PUB is not an Ed25519 public key" >&2; exit 1; }
+    if [ "$BACKUP_KEY" = "$RELEASE_KEY" ]; then
+      echo "daemon/release-backup.pub is the same key as daemon/release.pub: a backup must be another key" >&2
+      exit 1
+    fi
+    RELEASE_KEY="$RELEASE_KEY,$BACKUP_KEY"
+    SIGNED_BY="daemon/release.pub (nor daemon/release-backup.pub)"
+    is_public_key "$BACKUP_PUB" && SIGNER_OK=1
+  fi
+  if [ "$SIGNER_OK" != 1 ]; then
+    echo "RELEASE=1: the public key of DAEMON_SIGNING_KEY is not $SIGNED_BY; installed daemons would refuse this build" >&2
     exit 1
   fi
-elif is_public_key "$RELEASE_PUB" || { [ -n "${RELEASE_PUB_FILE:-}" ] && is_public_key "$RELEASE_PUB_FILE"; }; then
-  echo "the release key signs only RELEASE=1 builds: a development build signed with it would be an update every installed daemon takes, and it points at a development server" >&2
-  exit 1
+else
+  for repo_key in "$RELEASE_PUB" "$BACKUP_PUB" "${RELEASE_PUB_FILE:-}"; do
+    if [ -n "$repo_key" ] && [ -e "$repo_key" ] && is_public_key "$repo_key"; then
+      echo "the release key signs only RELEASE=1 builds: a development build signed with it would be an update every installed daemon takes, and it points at a development server" >&2
+      exit 1
+    fi
+  done
+  RELEASE_KEY="$("${SIGN[@]}" public-b64 "$KEY")"
 fi
-RELEASE_KEY="$("${SIGN[@]}" public-b64 "$KEY")"
 
 # The releases page the daemon takes updates from, baked into the engine (AGENTD_RELEASE_URL overrides it at run time).
 # A release says it: a daemon that points at a development server would never update.

@@ -60,7 +60,7 @@ func writeRegistry(t *testing.T, file string, apps, pages []string) {
 		r.Apps = append(r.Apps, registry.App{Server: s, Token: "t"})
 	}
 	for _, p := range pages {
-		r.Browsers = append(r.Browsers, registry.BrowserGrant{Origin: p, GrantedAt: "2026-10-19T00:00:00.000Z"})
+		r.Browsers = append(r.Browsers, registry.BrowserGrant{Origin: p, GrantedAt: registry.GrantStamp(time.Now())})
 	}
 	if err := registry.Save(file, r); err != nil {
 		t.Fatal(err)

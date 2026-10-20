@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -49,7 +50,7 @@ func SeamVariable(name AgentName) string {
 // grok is the one agent that runs a program from the user's PATH; claude and codex run an adapter the daemon installs.
 const (
 	grokProgram = "grok"
-	grokMissing = "grok not found in PATH"
+	grokMissing = "Grok is not installed on this computer."
 )
 
 func grokArgs() []string {
@@ -121,7 +122,7 @@ func Command(name AgentName, env home.Env, adapter AdapterLookup, node string) (
 	}
 	state, ok := adapter(AdapterName(name))
 	if !ok || state.Kind != AdapterReady {
-		return AgentCommand{}, fmt.Errorf("the %s adapter is not installed", name)
+		return AgentCommand{}, errors.New(titles[name] + " is not set up yet.")
 	}
 	return AgentCommand{Command: node, Args: []string{state.Bin}}, nil
 }
@@ -158,10 +159,10 @@ func OpenRefusal(name AgentName, env home.Env, find Finder, adapter AdapterLooku
 	}
 	if !seamed(name, env) && name != Grok {
 		if state, ok := adapter(AdapterName(name)); !ok || state.Kind != AdapterFailed {
-			return fmt.Sprintf("the %s adapter is still installing on this machine", name), true
+			return titles[name] + " is still setting up on this computer.", true
 		}
 	}
-	return fmt.Sprintf("agent %s is not ready: %s", name, status.Reason), true
+	return status.Reason, true
 }
 
 // AllStatuses is the status of every agent, in AgentNames order.

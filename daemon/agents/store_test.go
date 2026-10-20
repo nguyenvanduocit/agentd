@@ -18,6 +18,24 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 )
 
+// syncedBuffer is a log destination that the store's goroutines and the test read and write at once.
+type syncedBuffer struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (b *syncedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.Write(p)
+}
+
+func (b *syncedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.String()
+}
+
 // newStore makes a store of a fresh home, stopped when the test ends.
 func newStore(t *testing.T, env home.Env) (*Store, home.Layout) {
 	t.Helper()
@@ -62,12 +80,12 @@ func TestADaemonWithItsAdapterInstalledInTheBackground(t *testing.T) {
 		f := fleetOf(t, s, env, sink)
 		s.Start()
 
-		want := AgentStatus{Name: "claude", Title: "Claude Code", Reason: "installing the Claude adapter (first run only, this can take several minutes)"}
+		want := AgentStatus{Name: "claude", Title: "Claude Code", Reason: "Claude Code is setting up (first run only, a few minutes)."}
 		if got := claudeStatus(s, env); got != want {
 			t.Fatalf("got %+v", got)
 		}
 		for _, id := range []string{"one", "two"} {
-			if _, err := f.Open(id, "claude"); err == nil || !strings.Contains(err.Error(), "the claude adapter is still installing on this machine") {
+			if _, err := f.Open(id, "claude"); err == nil || !strings.Contains(err.Error(), "Claude Code is still setting up on this computer.") {
 				t.Fatalf("open %s: %v", id, err)
 			}
 		}
@@ -142,18 +160,33 @@ func TestADaemonWithItsAdapterInstalledInTheBackground(t *testing.T) {
 		f := fleetOf(t, s, env, sink)
 		s.Start()
 		waitFor(t, "a reason", 30*time.Second, func() bool {
-			return strings.HasPrefix(claudeStatus(s, env).Reason, "cannot install the Claude adapter:")
+			return strings.HasPrefix(claudeStatus(s, env).Reason, "Claude Code could not be set up:")
 		})
 		got := claudeStatus(s, env)
-		if got.Ready || !regexp.MustCompile(`retrying in \d+ s$`).MatchString(got.Reason) || !strings.Contains(got.Reason, "npm error") {
+		if got.Ready || !regexp.MustCompile(`It will try again in \d+ (second|minute)s?\.$`).MatchString(got.Reason) || !strings.Contains(got.Reason, "enoent could not read") || strings.Contains(got.Reason, "npm error") {
 			t.Fatalf("got %+v", got)
 		}
 		_, err := f.Open("x", "claude")
-		if err == nil || !strings.Contains(err.Error(), "agent claude is not ready: cannot install the Claude adapter:") {
+		if err == nil || !strings.HasPrefix(err.Error(), "Claude Code could not be set up:") {
 			t.Fatalf("open: %v", err)
 		}
 		if got := sink.all(); len(got) != 0 {
 			t.Fatalf("frames: %v", got)
+		}
+	})
+
+	t.Run("the log keeps npm's own words when the reason shown to the person is one plain line", func(t *testing.T) {
+		env := npmEnv(t, "file:/definitely/not/here.tgz", nil)
+		var log syncedBuffer
+		s := NewStore(StoreOptions{Layout: home.LayoutOf(t.TempDir()), Env: env, Log: proc.NewLogger(&log, &log)})
+		t.Cleanup(s.Stop)
+		s.Start()
+		waitFor(t, "a reason", 30*time.Second, func() bool {
+			return strings.HasPrefix(claudeStatus(s, env).Reason, "Claude Code could not be set up:")
+		})
+		waitFor(t, "the failure in the log", 5*time.Second, func() bool { return strings.Contains(log.String(), "could not be set up") })
+		if strings.Contains(claudeStatus(s, env).Reason, "npm error") || !strings.Contains(log.String(), "npm error") {
+			t.Errorf("reason %q; log:\n%s", claudeStatus(s, env).Reason, log.String())
 		}
 	})
 
@@ -220,10 +253,10 @@ func TestAdaptersOff(t *testing.T) {
 		sink := &recordingSink{}
 		f := fleetOf(t, s, env, sink)
 		s.Start()
-		if got := claudeStatus(s, env); got != (AgentStatus{Name: "claude", Title: "Claude Code", Reason: "adapter install is disabled"}) {
+		if got := claudeStatus(s, env); got != (AgentStatus{Name: "claude", Title: "Claude Code", Reason: "Setting up agents is turned off on this computer."}) {
 			t.Fatalf("got %+v", got)
 		}
-		if _, err := f.Open("x", "claude"); err == nil || !strings.Contains(err.Error(), "agent claude is not ready: adapter install is disabled") {
+		if _, err := f.Open("x", "claude"); err == nil || err.Error() != "Setting up agents is turned off on this computer." {
 			t.Fatalf("open: %v", err)
 		}
 		time.Sleep(300 * time.Millisecond)

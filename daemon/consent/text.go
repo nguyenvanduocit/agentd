@@ -30,6 +30,9 @@ type Question struct {
 	// Titles are the same agents as a user reads them ("Claude Code"): the words of the question. Agents is what the
 	// consent window's line carries; Titles never leave the daemon but in the text.
 	Titles []string
+	// GrantDays is how many days an Allow for a page lasts (registry.BrowserGrantTTL): the gateway sets it for ModeBrowser.
+	// An app's access has no end of its own and ignores it.
+	GrantDays int
 }
 
 // Text is the dialog's title and body.
@@ -74,9 +77,16 @@ func text(q Question, terminal bool) Text {
 		who = fmt.Sprintf("The pages of %s want to run agents on this computer.", q.Origin)
 		when = fmt.Sprintf("If you allow it, its pages can start %s here whenever one of its pages is open.%s", agents, none)
 	}
-	disconnect := "You can disconnect it whenever you want, from the agentd icon in the menu bar."
+	var disconnect string
+	if q.Mode == ModeServer {
+		disconnect = "The access lasts until you disconnect it, which you can do from the agentd icon in the menu bar"
+	} else {
+		disconnect = lastsFor(q.GrantDays) + " You can disconnect it sooner, from the agentd icon in the menu bar"
+	}
 	if terminal {
-		disconnect = "You can disconnect it whenever you want, from the agentd icon in the menu bar or in a terminal with: agentd apps remove " + q.Origin
+		disconnect += " or in a terminal with: agentd apps remove " + q.Origin
+	} else {
+		disconnect += "."
 	}
 	return Text{
 		Title: "Let " + q.Origin + " run agents on this computer?",
@@ -85,6 +95,17 @@ func text(q Question, terminal bool) Text {
 			disconnect + "\n\n" +
 			"Only allow sites you trust.",
 	}
+}
+
+// lastsFor is the sentence that says a page's access ends: after `days` days the site has to ask again.
+func lastsFor(days int) string {
+	switch {
+	case days <= 0:
+		return "The access lasts for a limited time; then the site has to ask again."
+	case days == 1:
+		return "The access lasts 1 day; then the site has to ask again."
+	}
+	return fmt.Sprintf("The access lasts %d days; then the site has to ask again.", days)
 }
 
 // joinTitles is a list in English: "A", "A and B", "A, B and C".

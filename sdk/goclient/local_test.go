@@ -27,6 +27,8 @@ type fakeClient struct {
 	calls    []string
 	detected []goclient.Detected
 	connect  goclient.ConnectResult
+	// disconnectErr is what Disconnect answers; nil is a daemon that confirmed.
+	disconnectErr error
 }
 
 func (c *fakeClient) record(call string) {
@@ -78,7 +80,7 @@ func (c *fakeClient) ConnectBrowser(_ context.Context, d goclient.Daemon) goclie
 
 func (c *fakeClient) Disconnect(_ context.Context, d goclient.Daemon) error {
 	c.record(fmt.Sprintf("disconnect %d", d.Port))
-	return nil
+	return c.disconnectErr
 }
 
 type setupOptions struct {

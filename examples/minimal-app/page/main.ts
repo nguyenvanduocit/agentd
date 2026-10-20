@@ -1,4 +1,4 @@
-import { createLocalDaemon, desktopDownloads, installCommand } from "@agentd/client"
+import { createLocalDaemon, desktopDownloads, installCommand, recommendInstall } from "@agentd/client"
 
 interface DaemonInfo {
   id: string
@@ -32,13 +32,18 @@ const local = createLocalDaemon({
 function render(): void {
   const s = local.state
   const online = list.daemons.filter((d) => d.state === "online")
+  // The phase says where the connection stands: nothing is offered before the first look has ended, and a daemon this page cannot talk to is said so.
+  const looking = s.phase === "detecting"
+  const install = recommendInstall() // "dmg" on a Mac, "script" on Linux, "unsupported" elsewhere
   $("local").hidden = !s.canConnect
   $("local-error").textContent = s.error
+  $("local-incompatible").textContent = s.incompatible ?? ""
   $<HTMLButtonElement>("connect-local").disabled = s.connecting
   $("local-note").textContent = s.connecting ? "Answer the dialog that opened on this computer." : "The daemon asks you to confirm before it connects."
   $("install").hidden = list.pairing.code === ""
-  $("install-start").hidden = s.canConnect || list.pairing.code !== "" || online.length > 0
-  $("download").hidden = $("install-start").hidden || downloads === undefined
+  $("install-start").hidden = looking || install === "unsupported" || s.canConnect || list.pairing.code !== "" || online.length > 0
+  $("unsupported").hidden = looking || install !== "unsupported" || s.canConnect || online.length > 0
+  $("download").hidden = $("install-start").hidden || downloads === undefined || install !== "dmg"
   const command = list.pairing.code === "" ? undefined : installCommand({ agentd: config.agentdUrl, app: location.origin, code: list.pairing.code })
   $("install-command").textContent = command ?? ""
   $("daemons").replaceChildren(
@@ -64,8 +69,10 @@ $("ping").addEventListener("click", async () => {
   const res = (await post("/api/ping")) as { line?: string; error?: string }
   $("ping-result").textContent = res.line ?? `error: ${res.error ?? "unknown"}`
 })
-window.addEventListener("focus", () => void local.detect())
-
-await local.detect()
+// This page is the connection screen itself, so it looks for agentd as it opens (an app with other content starts
+// `watch` when its settings open: Chrome asks the user about the local network at the first request). It looks again
+// every few seconds while agentd is absent or not yet connected, so installing it and coming back needs no reload.
+local.watch()
 await refresh()
+render()
 setInterval(() => void refresh(), 1000)

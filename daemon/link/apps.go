@@ -28,6 +28,8 @@ const detachGrace = time.Second
 // CloseGrace is how long closing a Link waits for the connection to close.
 const CloseGrace = time.Second
 
+var errStopping = errors.New("this daemon is stopping")
+
 // AppHubOptions are what an AppHub needs.
 type AppHubOptions struct {
 	// Fleet is what every app's fleet shares: the working directory, the environment, the session record, the
@@ -72,6 +74,10 @@ type AppHub struct {
 	mu      sync.Mutex
 	entries []*entry // in the order the apps were added
 	n       int      // wrapper directories made so far
+	// closed is set when the daemon begins to stop: nothing opens and no app is added after that.
+	closed bool
+	// detaches are the Detach calls started in the background, which Shutdown waits for.
+	detaches sync.WaitGroup
 }
 
 // NewAppHub makes a hub that serves no app yet.
@@ -134,6 +140,10 @@ func (h *AppHub) Servers() []string {
 // Add connects to the app now; an app that has a link already is left as it is.
 func (h *AppHub) Add(app registry.App) error {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return errStopping
+	}
 	if h.find(app.Server) != nil {
 		h.mu.Unlock()
 		return nil
@@ -168,6 +178,10 @@ func (h *AppHub) Add(app registry.App) error {
 	e.link, e.fleet = link, agents.NewFleet(fleetOptions)
 
 	h.mu.Lock()
+	if h.closed { // the daemon began to stop while the wrapper was written
+		h.mu.Unlock()
+		return errStopping
+	}
 	if h.find(app.Server) != nil { // added by a concurrent Add while the wrapper was written
 		h.mu.Unlock()
 		return nil
@@ -191,7 +205,7 @@ func (h *AppHub) eventsOf(e *entry) Events {
 		},
 		OnRejected: func(message string) {
 			h.log.Warn(fmt.Sprintf("%s refused this daemon (%s): the token is revoked or wrong, so this app stays stopped. To use it again: agentd pair --app %s --code <code>, then agentd service start", server, message, server))
-			go h.Detach(server, false)
+			h.detachInBackground(server, false)
 		},
 	}
 }
@@ -228,7 +242,7 @@ func (a handler) HandleRestart(context.Context) error {
 
 func (a handler) HandleStop(context.Context) error {
 	a.h.log.Say(fmt.Sprintf("stop requested by the server %s: disconnecting it", a.e.app.Server))
-	go a.h.Detach(a.e.app.Server, false)
+	a.h.detachInBackground(a.e.app.Server, false)
 	return nil
 }
 
@@ -251,6 +265,7 @@ func describeAgents(list []contract.AgentInfo) string {
 // sayHello tells the app who this daemon is, and leaves the app when it speaks another protocol.
 func (h *AppHub) sayHello(e *entry) {
 	hello := h.o.Hello()
+	hello.ProtocolMin, hello.ProtocolMax = home.ProtocolMin, home.ProtocolMax
 	ctx, cancel := context.WithTimeout(context.Background(), helloTimeout)
 	defer cancel()
 	reply, err := e.link.Hello(ctx, hello)
@@ -263,12 +278,28 @@ func (h *AppHub) sayHello(e *entry) {
 		h.log.Warn(fmt.Sprintf("%s did not accept hello: %s", e.app.Server, message))
 		return
 	}
-	if reply.Protocol != home.Protocol {
-		h.log.Warn(fmt.Sprintf("%s speaks protocol %s, this daemon speaks %d: disconnecting it. Update the daemon or the app.", e.app.Server, strconv.FormatFloat(reply.Protocol, 'f', -1, 64), home.Protocol))
-		go h.Detach(e.app.Server, false)
+	if !home.SpeaksProtocol(reply.Protocol) {
+		h.log.Warn(fmt.Sprintf("%s speaks protocol %s, this daemon speaks %s: disconnecting it. Update the daemon or the app.", e.app.Server, strconv.FormatFloat(reply.Protocol, 'f', -1, 64), home.ProtocolRangeText(home.ProtocolMin, home.ProtocolMax)))
+		h.detachInBackground(e.app.Server, false)
 		return
 	}
 	h.log.Say(fmt.Sprintf("connected to %s (protocol %s); agents: %s", e.app.Server, strconv.FormatFloat(reply.Protocol, 'f', -1, 64), describeAgents(hello.Agents)))
+}
+
+// detachInBackground runs Detach on its own goroutine, which Shutdown waits for. Once the hub is closed Shutdown has
+// the app already and there is nothing to start.
+func (h *AppHub) detachInBackground(server string, quiet bool) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
+	h.detaches.Add(1)
+	h.mu.Unlock()
+	go func() {
+		defer h.detaches.Done()
+		h.Detach(server, quiet)
+	}()
 }
 
 // Detach ends this app's sessions and closes its link for good; it calls OnEmpty when no app is left, unless quiet.
@@ -311,8 +342,22 @@ func (h *AppHub) AgentsChanged(list []contract.AgentInfo) {
 	}
 }
 
-// Shutdown ends every agent of every app and closes every link. No session opens after this.
+// Drain is the first step of stopping: no session opens and no app is added from now on. The agents that run are left
+// to Shutdown.
+func (h *AppHub) Drain() {
+	h.mu.Lock()
+	h.closed = true
+	entries := append([]*entry(nil), h.entries...)
+	h.mu.Unlock()
+	for _, e := range entries {
+		e.fleet.Drain()
+	}
+}
+
+// Shutdown ends every agent of every app, closes every link and waits for the detaches that were already under way.
+// No session opens after this.
 func (h *AppHub) Shutdown(grace time.Duration) {
+	h.Drain()
 	h.mu.Lock()
 	all := h.entries
 	h.entries = nil
@@ -335,6 +380,7 @@ func (h *AppHub) Shutdown(grace time.Duration) {
 		}()
 	}
 	links.Wait()
+	h.detaches.Wait()
 }
 
 // installWrapper writes, in dir, the wrapper agents find as `agentd-mcp`: it runs `agentd mcp --config <file> --app

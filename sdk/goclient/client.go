@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,6 +95,30 @@ type Detected struct {
 	Granted Granted
 	// Agents is nil when the daemon sent none (it lists them for an origin it allowed only).
 	Agents []AgentInfo
+	// Protocol is the protocol the daemon states in its status; 0 when it states none (an older daemon).
+	Protocol int
+}
+
+// SupportedProtocols is the protocols of the daemon's gateway that this client speaks.
+func SupportedProtocols() []int { return []int{1} }
+
+// Incompatible is a sentence for a person when the daemon states a protocol this client does not speak, and which side
+// to update; "" when it states none, or one this client speaks.
+func (d Detected) Incompatible() string {
+	if !d.Found {
+		return ""
+	}
+	return incompatibility(d.Protocol, SupportedProtocols())
+}
+
+func incompatibility(protocol int, supported []int) string {
+	if protocol == 0 || slices.Contains(supported, protocol) {
+		return ""
+	}
+	if protocol < slices.Min(supported) {
+		return "This agentd is too old for this app. Update agentd."
+	}
+	return "This agentd is newer than this app understands. The app needs an update."
 }
 
 // Daemon is a daemon's gateway on this computer.
@@ -143,10 +168,11 @@ func agentInfo(a wireAgent) AgentInfo {
 }
 
 type wireStatus struct {
-	Name    string       `json:"name"`
-	Version *string      `json:"version"`
-	Granted *Granted     `json:"granted"`
-	Agents  *[]wireAgent `json:"agents"`
+	Name     string       `json:"name"`
+	Version  *string      `json:"version"`
+	Granted  *Granted     `json:"granted"`
+	Agents   *[]wireAgent `json:"agents"`
+	Protocol *float64     `json:"protocol"`
 }
 
 func get(ctx context.Context, c *http.Client, url, origin string) (*http.Response, error) {
@@ -176,6 +202,9 @@ func probe(ctx context.Context, port int, origin string, o options) Detected {
 		return Detected{}
 	}
 	found := Detected{Found: true, Port: port, Version: *body.Version}
+	if body.Protocol != nil {
+		found.Protocol = int(*body.Protocol)
+	}
 	if body.Granted != nil {
 		found.Granted = *body.Granted
 	}
@@ -290,15 +319,27 @@ func ConnectBrowser(ctx context.Context, d Daemon, origin string, opts ...Option
 	return connectRequest(ctx, d, origin, body, newOptions(opts))
 }
 
+// DisconnectError is the daemon's refusal of a Disconnect: it answered, and did not confirm.
+type DisconnectError struct {
+	Status  int
+	Reason  Reason
+	Message string
+}
+
+func (e *DisconnectError) Error() string {
+	return fmt.Sprintf("the daemon refused (HTTP %d, %s): %s", e.Status, e.Reason, e.Message)
+}
+
 // Disconnect takes back what this origin was allowed: its browser grant and the app at the origin. Open sessions end.
-// The error says why the daemon did not confirm (it did not answer, or answered with a refusal); nil when it did.
+// The error says why the daemon did not confirm: it did not answer, or it answered with a refusal (a *DisconnectError,
+// which errors.As finds); nil when it confirmed.
 func Disconnect(ctx context.Context, d Daemon, origin string, opts ...Option) error {
 	status, answer, err := connectCall(ctx, d, origin, http.MethodDelete, "", newOptions(opts))
 	if err != nil {
 		return fmt.Errorf("the daemon did not answer: %w", err)
 	}
 	if !ok(status) {
-		return fmt.Errorf("the daemon refused (HTTP %d, %s): %s", status, answer.Reason, answer.Message)
+		return &DisconnectError{Status: status, Reason: answer.Reason, Message: answer.Message}
 	}
 	return nil
 }

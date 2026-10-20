@@ -152,3 +152,53 @@ func TestSessionStateReapsAnOrphanGroup(t *testing.T) {
 		t.Fatalf("said %q", out.String())
 	}
 }
+
+// A clean exit clears the record, unless an agent's group is still running: the next start finds it in the record and
+// ends it. Clearing it anyway left an agent that ignores SIGTERM running with nothing that knew of it.
+func TestSessionStateClearKeepsTheGroupOfAnAgentThatStillRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no session state on Windows")
+	}
+	file := filepath.Join(t.TempDir(), "sessions.json")
+	var out bytes.Buffer
+	s := NewSessionState(file, "", NewLogger(&out, &out))
+	s.Start()
+
+	agent := exec.Command("sleep", "60")
+	Detach(agent)
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = agent.Process.Kill(); _ = agent.Wait() })
+	pgid := agent.Process.Pid
+	s.Add(pgid)
+
+	s.Clear()
+	data, err := os.ReadFile(file)
+	if err != nil || !strings.Contains(string(data), fmt.Sprintf(`"pgid":%d`, pgid)) {
+		t.Fatalf("the record of a running agent group was cleared: %q, %v", data, err)
+	}
+	if !strings.Contains(out.String(), "still running") {
+		t.Errorf("the log does not say an agent is still running: %q", out.String())
+	}
+
+	_ = agent.Process.Kill()
+	_ = agent.Wait()
+	s.Clear()
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Errorf("the record stayed although no group is left: %v", err)
+	}
+}
+
+func TestSessionStateClearOfAnEmptyRecordRemovesTheFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no session state on Windows")
+	}
+	file := filepath.Join(t.TempDir(), "sessions.json")
+	s := NewSessionState(file, "", NewLogger(&bytes.Buffer{}, &bytes.Buffer{}))
+	s.Start()
+	s.Clear()
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Errorf("an empty record stayed: %v", err)
+	}
+}

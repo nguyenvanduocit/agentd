@@ -27,14 +27,14 @@ func full() State {
 		Updatable: true,
 		Agents: []Agent{
 			{Name: "claude", Title: "Claude Code", Ready: true},
-			{Name: "codex", Title: "Codex", Reason: "installing the Codex adapter"},
+			{Name: "codex", Title: "Codex", Reason: "Codex is setting up (first run only, a few minutes)."},
 		},
 	}
 }
 
 func TestSettingsShowsWhatTheDaemonServes(t *testing.T) {
 	tt, _, _ := open(full())
-	for _, want := range []string{"agentd 1.2.3", "1 app, 1 web page, 2 agents running", "https://app.example", "http://localhost:5173", "Claude Code", "Ready", "Codex", "installing the Codex adapter", "Install updates automatically"} {
+	for _, want := range []string{"agentd 1.2.3", "1 app, 1 web page, 2 agents running", "https://app.example", "http://localhost:5173", "Claude Code", "Ready", "Codex", "Codex is setting up (first run only, a few minutes).", "Install updates automatically"} {
 		if !tt.HasText(want) {
 			t.Errorf("no %q in %q", want, tt.Texts())
 		}
@@ -66,10 +66,38 @@ func TestSettingsSaysAgentdIsStartingBeforeTheFirstState(t *testing.T) {
 	}
 }
 
-func TestSettingsSaysWhenWebPagesCannotReachAgentd(t *testing.T) {
+func count(texts []string, want string) int {
+	n := 0
+	for _, t := range texts {
+		if strings.Contains(t, want) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestSettingsSaysWhenWebPagesCannotReachAgentdAsALineOfItsOwn(t *testing.T) {
 	tt, _, _ := open(State{Version: "1", GatewayOff: true})
-	if !tt.HasText("Web pages can't reach agentd: its ports are in use by another program.") || tt.HasText("Nothing connected") {
-		t.Fatalf("texts %q", tt.Texts())
+	if n := count(tt.Texts(), gatewayOffText); n != 1 {
+		t.Fatalf("the sentence is on screen %d times, want once: %q", n, tt.Texts())
+	}
+	if !tt.HasText("Nothing connected") {
+		t.Errorf("what is connected is still said: %q", tt.Texts())
+	}
+	if tt.HasText("choose Connect") {
+		t.Errorf("the window sends the person to a Connect that cannot reach agentd: %q", tt.Texts())
+	}
+
+	apps := full()
+	apps.GatewayOff = true
+	tt, _, _ = open(apps)
+	for _, want := range []string{"1 app, 1 web page, 2 agents running", gatewayOffText, "https://app.example"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in %q", want, tt.Texts())
+		}
+	}
+	if n := count(tt.Texts(), gatewayOffText); n != 1 {
+		t.Errorf("the sentence is on screen %d times, want once", n)
 	}
 }
 

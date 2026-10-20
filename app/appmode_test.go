@@ -3,6 +3,10 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,5 +56,22 @@ func TestAStartThatFollowsTheWaitFindsTheEngineAlreadyRunning(t *testing.T) {
 	d.start()         // the countdown ran out
 	if *launched != 1 {
 		t.Fatalf("launched %d engines, want 1", *launched)
+	}
+}
+
+// An engine that does not start shows the person one sentence and the log gets the error as it came.
+func TestAnEngineThatDoesNotStartShowsAPlainSentenceAndLogsTheError(t *testing.T) {
+	d := &desktop{files: EngineFiles{Log: filepath.Join(t.TempDir(), "logs", "daemon.log")}}
+	d.launch = func(EngineFiles, string, string, func([]byte)) (*Engine, error) {
+		return nil, fmt.Errorf("start the engine: fork/exec /Applications/agentd.app/Contents/Resources/engine/agentd: operation not permitted")
+	}
+	d.start()
+
+	if d.settings.Host.Running || d.settings.Host.Note != "agentd could not start. Open the log for details." {
+		t.Errorf("running %v, note %q", d.settings.Host.Running, d.settings.Host.Note)
+	}
+	b, _ := os.ReadFile(d.files.Log)
+	if !strings.Contains(string(b), "operation not permitted") {
+		t.Errorf("the log lost the error: %q", b)
 	}
 }

@@ -38,6 +38,14 @@ func (e OfflineError) Error() string {
 
 func quote(s string) string { return `"` + s + `"` }
 
+// IncompatibleError means the daemon is paired and connected, but it and this app speak protocols that do not meet:
+// Reason says which of them to update, as a sentence for a person.
+type IncompatibleError struct{ Name, Reason string }
+
+func (e IncompatibleError) Error() string {
+	return "Your daemon " + quote(e.Name) + " cannot work with this app: " + e.Reason
+}
+
 // Conn is one agent process on the user's machine, seen from the app's server: the bytes of its stdin and stdout, and
 // the process behind them. The server speaks ACP over it as it would over a local pipe.
 type Conn interface {
@@ -100,6 +108,9 @@ type Info struct {
 	LastSeen int64   `json:"lastSeen"`
 	Sessions int     `json:"sessions"`
 	Managed  bool    `json:"managed"`
+	// Incompatible says why a daemon that connected is not online: it and this app speak protocols that do not meet
+	// (a sentence for a person, naming the side to update). Empty for every other daemon, and then absent from the JSON.
+	Incompatible string `json:"incompatible,omitempty"`
 }
 
 // Agent is an agent a daemon can start. Ready is false when its machine lacks what it needs; Reason says what.

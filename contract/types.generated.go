@@ -155,12 +155,14 @@ func (v *FrameKind) UnmarshalJSON(data []byte) error {
 }
 
 type Hello struct {
-	Version  string      `json:"version"`
-	Hostname string      `json:"hostname"`
-	Os       string      `json:"os"`
-	Arch     string      `json:"arch"`
-	Agents   []AgentInfo `json:"agents"`
-	Managed  bool        `json:"managed"`
+	Version     string      `json:"version"`
+	Hostname    string      `json:"hostname"`
+	Os          string      `json:"os"`
+	Arch        string      `json:"arch"`
+	Agents      []AgentInfo `json:"agents"`
+	Managed     bool        `json:"managed"`
+	ProtocolMin float64     `json:"protocolMin"`
+	ProtocolMax float64     `json:"protocolMax"`
 }
 
 // MarshalJSON normalizes the required slice and map fields whose Go zero

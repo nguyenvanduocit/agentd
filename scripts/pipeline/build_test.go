@@ -110,6 +110,13 @@ func TestBuildFillsInstallSh(t *testing.T) {
 func TestEveryEngineIsOfItsPlatformAndBakesTheRelease(t *testing.T) {
 	r := buildRelease(t, pipelineVersion)
 	entries := readTarball(t, r.tgz)
+	// A development build trusts the development key and no key of the repository.
+	var repoKeys []string
+	for _, file := range []string{"release.pub", "release-backup.pub"} {
+		if _, err := os.Stat(filepath.Join(rootDir, "daemon", file)); err == nil {
+			repoKeys = append(repoKeys, strings.TrimSpace(runOK(t, signer.bin, "b64", filepath.Join(rootDir, "daemon", file))))
+		}
+	}
 	for _, c := range []struct{ os, arch string }{{"darwin", "arm64"}, {"darwin", "amd64"}, {"linux", "arm64"}, {"linux", "amd64"}} {
 		name := "agentd-" + c.os + "-" + c.arch
 		body := entries["package/"+name].body
@@ -134,6 +141,11 @@ func TestEveryEngineIsOfItsPlatformAndBakesTheRelease(t *testing.T) {
 		for what, text := range map[string]string{"version": pipelineVersion, "release key": r.key, "releases page": r.url} {
 			if !bytes.Contains(body, []byte(text)) {
 				t.Errorf("%s does not carry the %s %q", name, what, text)
+			}
+		}
+		for _, key := range repoKeys {
+			if bytes.Contains(body, []byte(key)) {
+				t.Errorf("%s is a development build and carries the release key %q", name, key)
 			}
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/cli"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
@@ -36,16 +37,19 @@ func newAppsRig(t *testing.T, content string) appsRig {
 	return appsRig{host: h, out: out, errOut: errOut, log: proc.NewLogger(out, errOut), file: file}
 }
 
+// onDay2 is the day after the grants of these tests were made.
+var onDay2 = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+
 const twoAppsOneBrowser = `{"apps":[{"server":"https://a.example","token":"ta"},{"server":"https://b.example","token":"tb"}],` +
 	`"browsers":[{"origin":"https://c.example","grantedAt":"2026-10-19T00:00:00.000Z"}]}`
 
 func TestRunAppsListsEveryAppAndBrowserGrantWithoutTokens(t *testing.T) {
 	rig := newAppsRig(t, twoAppsOneBrowser)
-	exit, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log)
+	exit, err := RunAppsAt(cli.Apps{Action: cli.AppsList}, rig.host, rig.log, onDay2)
 	if err != nil || exit != 0 {
 		t.Fatalf("RunApps = %d, %v", exit, err)
 	}
-	want := "https://a.example  app, any folder\nhttps://b.example  app, any folder\nhttps://c.example  browser, granted 2026-10-19, any folder\n"
+	want := "https://a.example  app, any folder\nhttps://b.example  app, any folder\nhttps://c.example  browser, granted 2026-10-19, expires 2026-11-18, any folder\n"
 	if rig.out.String() != want {
 		t.Errorf("output = %q, want %q", rig.out.String(), want)
 	}
@@ -124,11 +128,48 @@ func TestRunAppsFailsOnABrokenRegistryAndABadOrigin(t *testing.T) {
 func TestRunAppsListsTheFoldersOfAGrant(t *testing.T) {
 	rig := newAppsRig(t, `{"apps":[{"server":"https://a.example","token":"ta","folders":["/work/a","/work/b"]}],`+
 		`"browsers":[{"origin":"https://c.example","grantedAt":"2026-10-19T00:00:00.000Z","folders":["/work/c"]}]}`)
-	if _, err := RunApps(cli.Apps{Action: cli.AppsList}, rig.host, rig.log); err != nil {
+	if _, err := RunAppsAt(cli.Apps{Action: cli.AppsList}, rig.host, rig.log, onDay2); err != nil {
 		t.Fatal(err)
 	}
-	want := "https://a.example  app, in /work/a, /work/b\nhttps://c.example  browser, granted 2026-10-19, in /work/c\n"
+	want := "https://a.example  app, in /work/a, /work/b\nhttps://c.example  browser, granted 2026-10-19, expires 2026-11-18, in /work/c\n"
 	if rig.out.String() != want {
 		t.Errorf("output = %q, want %q", rig.out.String(), want)
 	}
+}
+
+func TestRunAppsSaysWhenAPageGrantHasLapsed(t *testing.T) {
+	rig := newAppsRig(t, twoAppsOneBrowser)
+	lapsed := time.Date(2026, 11, 18, 0, 0, 1, 0, time.UTC)
+	if _, err := RunAppsAt(cli.Apps{Action: cli.AppsList}, rig.host, rig.log, lapsed); err != nil {
+		t.Fatal(err)
+	}
+	want := "https://a.example  app, any folder\nhttps://b.example  app, any folder\nhttps://c.example  browser, expired 2026-11-18, any folder\n"
+	if rig.out.String() != want {
+		t.Errorf("output = %q, want %q", rig.out.String(), want)
+	}
+}
+
+func TestRunAppsListsAGrantWithoutAReadableTimeAsExpired(t *testing.T) {
+	rig := newAppsRig(t, `{"apps":[],"browsers":[{"origin":"https://c.example","grantedAt":"yesterday"}]}`)
+	if _, err := RunAppsAt(cli.Apps{Action: cli.AppsList}, rig.host, rig.log, onDay2); err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://c.example  browser, expired, any folder\n"; rig.out.String() != want {
+		t.Errorf("output = %q, want %q", rig.out.String(), want)
+	}
+}
+
+// A lapsed grant is still in the file; the way to forget it is the way to forget any other.
+func TestRunAppsRemovesALapsedBrowserGrant(t *testing.T) {
+	rig := newAppsRig(t, twoAppsOneBrowser)
+	lapsed := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	exit, err := RunAppsAt(cli.Apps{Action: cli.AppsRemove, Origin: "https://c.example"}, rig.host, rig.log, lapsed)
+	if err != nil || exit != 0 {
+		t.Fatalf("RunApps = %d, %v; stderr %q", exit, err, rig.errOut.String())
+	}
+	saved, err := Load(rig.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEqual(t, saved.Browsers, []BrowserGrant{})
 }

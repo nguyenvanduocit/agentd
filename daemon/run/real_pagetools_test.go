@@ -93,7 +93,7 @@ func TestRealClaudeAgentCallsAToolThePageServesThroughAgentdMcpAndSaysWhatItRetu
 	server := &pageToolServer{word: "agentd" + hex.EncodeToString(raw)}
 
 	box := newSandbox(t)
-	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: "2026-10-19T00:00:00.000Z"}})
+	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: registry.GrantStamp(time.Now())}})
 	merged := map[string]string{"AGENTD_AGENT_CLAUDE": command}
 	for k, v := range env {
 		merged[k] = v
