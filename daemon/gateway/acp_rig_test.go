@@ -108,9 +108,10 @@ func startAcpRig(t *testing.T, o acpRigOptions) *acpRig {
 	if _, err := acpauth.Ensure(authHome); err != nil {
 		t.Fatal(err)
 	}
-	// The token is read from its file at each request, as the daemon does, so a rotation takes effect at once.
+	// The token is read from its file at each request, and made again when it is gone, as the daemon does (acpToken in
+	// daemon/run), so a rotation takes effect at once.
 	deps.AcpToken = func() string {
-		token, err := acpauth.Load(authHome)
+		token, err := acpauth.Ensure(authHome)
 		if err != nil {
 			return ""
 		}

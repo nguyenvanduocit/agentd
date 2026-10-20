@@ -1,6 +1,7 @@
 package acpauth
 
 import (
+	"crypto/subtle"
 	"strings"
 	"testing"
 )
@@ -76,4 +77,43 @@ func flip(c byte) string {
 		return "B"
 	}
 	return "A"
+}
+
+// Equal decides who is let in, and timing cannot be unit-tested reliably. So the test stands in for the comparison of
+// the bytes and checks that Equal's answer is that comparison's answer: a `==` between the strings, or any other way to
+// get the answer, would not follow the stand-in.
+func TestEqualIsWhatTheConstantTimeCompareSays(t *testing.T) {
+	want, other := New(), New()
+	calls := 0
+	answer := 0
+	constantTimeCompare = func(a, b []byte) int { calls++; return answer }
+	t.Cleanup(func() { constantTimeCompare = subtle.ConstantTimeCompare })
+
+	answer = 0
+	if Equal(want, want) {
+		t.Error("Equal said yes to the same token when the comparison said no")
+	}
+	answer = 1
+	if !Equal(want, other) {
+		t.Error("Equal said no to another token when the comparison said yes")
+	}
+	if calls != 2 {
+		t.Errorf("the comparison ran %d times for two tokens of the right length, want 2", calls)
+	}
+	// What is not even the shape of the answer never reaches the comparison.
+	before := calls
+	for name, c := range map[string][2]string{
+		"a shorter value": {want, want[:TokenLen-1]},
+		"a longer value":  {want, want + "x"},
+		"no value":        {want, ""},
+		"no token":        {"", ""},
+		"a bad token":     {"short", "short"},
+	} {
+		if Equal(c[0], c[1]) {
+			t.Errorf("%s: Equal said yes", name)
+		}
+	}
+	if calls != before {
+		t.Errorf("the comparison ran %d times for values that cannot be tokens, want 0", calls-before)
+	}
 }

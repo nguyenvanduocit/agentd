@@ -57,3 +57,40 @@ func TestUsageHasTheAcpCommand(t *testing.T) {
 		}
 	}
 }
+
+// --token and --rotate belong to `agentd acp`. Every other command used to accept and ignore them, so `agentd --token`
+// started a daemon: they are a mistake there, and the message says so.
+func TestTokenAndRotateOnlyWorkWithAcp(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--token"},
+		{"--rotate"},
+		{"run", "--token"},
+		{"run", "--rotate"},
+		{"apps", "--token"},
+		{"apps", "remove", "https://app.example.com", "--rotate"},
+		{"service", "status", "--token"},
+		{"pair", "--app", "https://app.example.com", "--code", "1", "--token"},
+		{"mcp", "--session", "s", "--rotate"},
+		{"help", "--token"},
+		{"version", "--rotate"},
+	} {
+		want := `--token only works with "agentd acp"`
+		if argv[len(argv)-1] == "--rotate" {
+			want = `--rotate only works with "agentd acp"`
+		}
+		if got := parseError(t, argv...); got != want {
+			t.Errorf("Parse(%q) error = %q, want %q", argv, got, want)
+		}
+	}
+	if got := parseError(t, "--token", "--rotate"); got != `--token only works with "agentd acp"` {
+		t.Errorf("both flags: %q", got)
+	}
+}
+
+// What `agentd acp` and the options that were never meant for it still do.
+func TestTokenAndRotateStillWorkWithAcpAndTheOtherOptionsStayWhereTheyWere(t *testing.T) {
+	mustParse(t, "acp", "--token")
+	mustParse(t, "acp", "claude", "--rotate")
+	mustParse(t, "--version", "--token") // a request for the version is answered whatever else is said
+	mustParse(t, "run", "--dir", "/x", "--follow")
+}

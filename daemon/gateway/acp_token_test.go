@@ -163,6 +163,11 @@ func TestAcpTheHeaderWinsOverTheQuery(t *testing.T) {
 		"a Basic header and the query right":        {"/acp/claude?token=" + tok, http.Header{"Authorization": {"Basic " + tok}}},
 		"two Authorization headers, one of them OK": {"/acp/claude", http.Header{"Authorization": {"Bearer " + acpauth.New(), "Bearer " + tok}}},
 		"the query repeated, one of them right":     {"/acp/claude?token=" + acpauth.New() + "&token=" + tok, nil},
+		// The right value first: a reader that takes the first of several would let these in.
+		"two Authorization headers, the right one first": {"/acp/claude", http.Header{"Authorization": {"Bearer " + tok, "Bearer " + acpauth.New()}}},
+		"two Authorization headers, both right":          {"/acp/claude", http.Header{"Authorization": {"Bearer " + tok, "Bearer " + tok}}},
+		"the query repeated, the right one first":        {"/acp/claude?token=" + tok + "&token=" + acpauth.New(), nil},
+		"the query repeated, both right":                 {"/acp/claude?token=" + tok + "&token=" + tok, nil},
 	} {
 		_, res, err := r.dialRaw(c.path, "", c.header)
 		if err == nil || res == nil || res.StatusCode != http.StatusUnauthorized {
@@ -286,7 +291,7 @@ func TestAcpARefusedProgramIsLoggedOnceAWhileWithoutAnythingItSent(t *testing.T)
 	advance(11 * time.Second)
 	r.getRaw(http.MethodGet, "/acp/claude", "", true, nil)
 	said = r.said.all()
-	if len(said) != 2 || !strings.HasPrefix(said[1], line) || !strings.Contains(said[1], "4 more") {
+	if len(said) != 2 || !strings.HasPrefix(said[1], line) || !strings.Contains(said[1], "4 more since the last line, 11 s ago") {
 		t.Fatalf("after the window the log got %q, want a second line that says 4 more were held back", said)
 	}
 	for _, l := range said {
@@ -349,4 +354,45 @@ func readReply(t *testing.T, res *http.Response) map[string]any {
 		t.Fatalf("body %q is not JSON: %v", data, err)
 	}
 	return body
+}
+
+// The daemon reads the token the way the rig does now, with Ensure: a token file that was deleted is made again at the
+// next request, the old token stops working, and the new one does.
+func TestAcpADeletedTokenFileIsMadeAgainAndTheOldTokenStopsWorking(t *testing.T) {
+	r := tokenRig(t)
+	old := r.token()
+	if err := os.Remove(acpauth.TokenFile(r.home)); err != nil {
+		t.Fatal(err)
+	}
+	if _, res, err := r.dialRaw("/acp/claude?token="+old, "", nil); err == nil || res == nil || res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the old token after the file was deleted: %v (response %v), want 401", err, res)
+	}
+	fresh := r.token()
+	if fresh == old || !acpauth.Valid(fresh) {
+		t.Fatalf("the token after the file was deleted is %q, want a new valid one other than the old", fresh)
+	}
+	if ws, res, err := r.dialRaw("/acp/claude?token="+fresh, "", nil); err != nil {
+		t.Fatalf("the new token: %v (response %v)", err, res)
+	} else if ws.id == "" {
+		t.Error("no connection id")
+	}
+}
+
+// The log line says how many refusals it stands for and since when: everything since the line before, not "in the last
+// ten seconds".
+func TestTheRefusalLineSaysHowManyAndSinceWhen(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	var said []string
+	log := newRefusalLog(func(l string) { said = append(said, l) }, func() time.Time { return now }, 10*time.Second)
+	log.refused("refused")
+	for i := 0; i < 5; i++ {
+		now = now.Add(time.Second)
+		log.refused("refused")
+	}
+	now = now.Add(37 * time.Second)
+	log.refused("refused")
+	want := []string{"refused", "refused (5 more since the last line, 42 s ago)"}
+	if len(said) != 2 || said[0] != want[0] || said[1] != want[1] {
+		t.Fatalf("the log got %q, want %q", said, want)
+	}
 }

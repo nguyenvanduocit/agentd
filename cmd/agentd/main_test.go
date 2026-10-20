@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
@@ -218,5 +219,25 @@ func TestAcpCommandReadsAgentdsHome(t *testing.T) {
 	r = execute(t, "", "acp", "claude")
 	if r.code != 0 || !strings.HasSuffix(r.stdout, "/acp/claude?token="+token+"\n") || !strings.Contains(r.stderr, "agentd is not running") {
 		t.Fatalf("acp claude: %+v (token %s)", r, token)
+	}
+}
+
+// `agentd --token` used to start a daemon: the flag was accepted and ignored. It is a mistake, told as one. The command
+// runs in a goroutine and is waited for a moment only: a parser that let it through would start a daemon that never
+// returns, and the test must fail, not hang.
+func TestTokenWithoutAcpIsAMistakeAndStartsNothing(t *testing.T) {
+	sandbox(t)
+	for _, args := range [][]string{{"--token"}, {"--rotate"}, {"run", "--token"}} {
+		done := make(chan result, 1)
+		go func() { done <- execute(t, "", args...) }()
+		select {
+		case r := <-done:
+			flag := args[len(args)-1]
+			if r.code != 2 || r.stdout != "" || !strings.HasPrefix(r.stderr, flag+` only works with "agentd acp"`+"\n\nagentd: runs your agents") {
+				t.Errorf("agentd %v: %+v", args, r)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("agentd %v did not return: it started a daemon", args)
+		}
 	}
 }

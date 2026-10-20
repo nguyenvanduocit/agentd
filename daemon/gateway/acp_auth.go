@@ -70,7 +70,7 @@ func newRefusalLog(say func(string), now func() time.Time, every time.Duration) 
 }
 
 // refused records one refusal: the line goes out at the first, and again once the window has passed, with the number
-// held back since.
+// held back since the line before and how long ago that was.
 func (l *refusalLog) refused(line string) {
 	if l == nil || l.say == nil {
 		return
@@ -82,11 +82,11 @@ func (l *refusalLog) refused(line string) {
 		l.mu.Unlock()
 		return
 	}
-	held := l.held
+	held, since := l.held, now.Sub(l.last)
 	l.last, l.held = now, 0
 	l.mu.Unlock()
 	if held > 0 {
-		line += fmt.Sprintf(" (%d more in the last %d s)", held, int(l.every/time.Second))
+		line += fmt.Sprintf(" (%d more since the last line, %d s ago)", held, int(since/time.Second))
 	}
 	l.say(line)
 }

@@ -78,6 +78,12 @@ type AppHub struct {
 	closed bool
 	// detaches are the Detach calls started in the background, which Shutdown waits for.
 	detaches sync.WaitGroup
+	// adding is the number of Add calls in progress: an app being added is an app the hub is about to have, so the hub
+	// is not empty while one is. (At start, a refused token detaches the first app while the second is still having
+	// its wrapper written; counting only the entries made that look like "the last app left" and ended the daemon.)
+	adding int
+	// afterWrapper, when set (tests), runs in Add between writing the wrapper and putting the app in the hub.
+	afterWrapper func()
 }
 
 // NewAppHub makes a hub that serves no app yet.
@@ -150,11 +156,20 @@ func (h *AppHub) Add(app registry.App) error {
 	}
 	h.n++
 	n := h.n
+	h.adding++
 	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.adding--
+		h.mu.Unlock()
+	}()
 
 	binDir, err := h.installWrapper(filepath.Join(h.o.WrapperRoot, strconv.Itoa(n)), app.Server)
 	if err != nil {
 		return err
+	}
+	if h.afterWrapper != nil {
+		h.afterWrapper()
 	}
 	e := &entry{app: app}
 	link, err := New(Options{
@@ -316,7 +331,7 @@ func (h *AppHub) Detach(server string, quiet bool) {
 	e.fleet.Shutdown(detachGrace)
 	e.link.Close(CloseGrace)
 	h.mu.Lock()
-	empty := len(h.entries) == 0
+	empty := len(h.entries) == 0 && h.adding == 0
 	h.mu.Unlock()
 	if empty && !quiet && h.o.OnEmpty != nil {
 		h.o.OnEmpty(home.ExitStopped)

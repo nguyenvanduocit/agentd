@@ -154,6 +154,9 @@ func Parse(argv []string) (Command, error) {
 			*slot = &positionals[i]
 		}
 	}
+	if flag := acpOnlyFlag(v); flag != "" && (name == nil || *name != "acp") {
+		return nil, errors.New(flag + ` only works with "agentd acp"`)
+	}
 	if extra != nil && *name != "apps" {
 		return nil, errors.New(`unexpected argument "` + *extra + `"`)
 	}
@@ -161,6 +164,18 @@ func Parse(argv []string) (Command, error) {
 		return nil, errors.New(`unexpected argument "` + positionals[3] + `"`)
 	}
 	return build(name, rest, extra, v)
+}
+
+// acpOnlyFlag is the option, if one was given, that only `agentd acp` has a use for: with any other command it would be
+// accepted and ignored, and `agentd --token` would start a daemon.
+func acpOnlyFlag(v flagValues) string {
+	switch {
+	case v.token:
+		return "--token"
+	case v.rotate:
+		return "--rotate"
+	}
+	return ""
 }
 
 func build(name, rest, extra *string, v flagValues) (Command, error) {

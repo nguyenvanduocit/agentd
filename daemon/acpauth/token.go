@@ -48,6 +48,10 @@ func Valid(s string) bool {
 	return true
 }
 
+// constantTimeCompare compares the bytes of two tokens of the same length. It is a variable only so that a test can
+// stand in for it and see that Equal decides by it and by nothing else.
+var constantTimeCompare = subtle.ConstantTimeCompare
+
 // Equal is whether presented is the token want. Nothing is equal to a want that is not a token (an unreadable file
 // must not let the empty string in), a length that differs is refused before the bytes are looked at, and the bytes
 // are compared in constant time.
@@ -55,5 +59,5 @@ func Equal(want, presented string) bool {
 	if !Valid(want) || len(presented) != len(want) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(presented)) == 1
+	return constantTimeCompare([]byte(want), []byte(presented)) == 1
 }
