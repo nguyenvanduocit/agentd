@@ -7,6 +7,7 @@
       body { font: 16px/1.4 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
       pre, code { background: #eee; padding: 0.15rem 0.3rem; border-radius: 3px; }
       pre { padding: 0.6rem; white-space: pre-wrap; word-break: break-all; }
+      pre:empty { display: none; } /* an empty result is no grey bar */
       .error { color: #b00020; }
       button { font: inherit; margin-right: 0.5rem; }
     </style>
@@ -17,7 +18,7 @@
 
     <section id="local" data-testid="local" hidden>
       <h2>A daemon is running on this computer</h2>
-      <p id="local-note"></p>
+      <p id="local-note" data-testid="local-note"></p>
       <button id="connect-local" data-testid="connect-local">Connect this computer</button>
       <p id="local-error" class="error" data-testid="local-error"></p>
     </section>

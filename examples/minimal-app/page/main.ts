@@ -3,7 +3,7 @@ import { createLocalDaemon, desktopDownloads, installCommand, recommendInstall, 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const post = async (path: string, method = "POST"): Promise<unknown> => (await fetch(path, { method })).json()
 
-const config = (await (await fetch("/api/config")).json()) as { agentdUrl: string }
+const config = (await (await fetch("/api/config")).json()) as { agentdUrl: string; ports?: number[] }
 let list: DaemonList = { daemons: [], pairing: { code: "", expiresAt: 0 }, latestVersion: "" }
 const downloads = desktopDownloads({ agentd: config.agentdUrl })
 if (downloads !== undefined) {
@@ -11,10 +11,12 @@ if (downloads !== undefined) {
   $<HTMLAnchorElement>("download-amd64").href = downloads.intel
 }
 
-// The app's own calls, handed to the SDK: a one-time code from this app's server.
+// The app's own calls, handed to the SDK: a one-time code from this app's server. `ports` pins where to look for a
+// daemon (development and tests: a second daemon beside your own); without it the SDK looks on agentd's ten ports.
 const local = createLocalDaemon({
   startPairing: async () => ((await post("/api/pairing")) as DaemonList).pairing.code,
   cancelPairing: () => post("/api/pairing", "DELETE"),
+  ...(config.ports === undefined || config.ports.length === 0 ? {} : { ports: config.ports }),
 })
 
 /** What the connection screen offers in each phase: one switch, no combination of flags. */

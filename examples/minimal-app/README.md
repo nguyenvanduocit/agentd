@@ -34,3 +34,5 @@ curl -s -X POST http://127.0.0.1:8090/api/ping
 ```
 
 The page at http://127.0.0.1:8090 does the same from a browser.
+
+To run a second daemon beside your own, pin the ports: start the daemon with `AGENTD_LOCAL_PORT=47700` (its gateway then walks up from 47700 through ten ports) and the app with `-agentd-ports 47700-47709`, so the page looks only there and never pairs with the daemon on 47615. The default (no flag) is the SDK's own 47615-47624.

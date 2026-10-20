@@ -47,6 +47,9 @@ const machine = (extraEnv = {}) => {
   const env = {
     ...process.env, PATH: "__PATH__", HOME: home, XDG_CONFIG_HOME: _path.join(home, ".config"), XDG_STATE_HOME: _path.join(home, ".local", "state"),
     npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false",
+    // AGENTD_LOCAL_PORT: the first of the ten ports of this run (scripts/e2e.sh), where the example's page looks; the
+    // machines of a run walk up from it together, so a daemon of the user on 47615 is never the one the page finds.
+    AGENTD_LOCAL_PORT: "__GATEWAY_BASE__",
     AGENTD_AGENT_CLAUDE: "__FAKE_AGENT__", AGENTD_AGENT_CODEX: "/usr/bin/false", AGENTD_ADAPTERS: "off", AGENTD_TRAY: "off", ...extraEnv,
   };
   let runs = 0;

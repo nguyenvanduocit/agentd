@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +34,33 @@ type app struct {
 	// agentdURL is where the page tells the user to install agentd from. It is for development and the end-to-end
 	// test, which serve their own releases; a real app drops it (and /api/config), and the page SDK points at GitHub.
 	agentdURL string
+	// ports are the ports the page looks for a daemon on (-agentd-ports); empty is the SDK's own ten, 47615-47624.
+	ports []int
+}
+
+// maxPorts bounds -agentd-ports: a daemon's gateway walks up ten ports from its first, so a larger range is a typo.
+const maxPorts = 64
+
+// parsePorts reads -agentd-ports: "" (the SDK's default), "47700" or "47700-47709".
+func parsePorts(s string) ([]int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	firstText, lastText, isRange := strings.Cut(s, "-")
+	if !isRange {
+		lastText = firstText
+	}
+	first, errFirst := strconv.Atoi(firstText)
+	last, errLast := strconv.Atoi(lastText)
+	if errFirst != nil || errLast != nil || first < 1 || last > 65535 || last < first || last-first >= maxPorts {
+		return nil, fmt.Errorf("-agentd-ports %q is not a port or a range of at most %d ports, like 47700-47709", s, maxPorts)
+	}
+	ports := make([]int, 0, last-first+1)
+	for p := first; p <= last; p++ {
+		ports = append(ports, p)
+	}
+	return ports, nil
 }
 
 func reply(w http.ResponseWriter, status int, v any) {
@@ -100,7 +129,10 @@ func (a *app) ping(ctx context.Context) (string, error) {
 func (a *app) routes(mux *http.ServeMux) {
 	me := a.server.For(user)
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, _ *http.Request) {
-		reply(w, http.StatusOK, map[string]string{"agentdUrl": a.agentdURL})
+		reply(w, http.StatusOK, struct {
+			AgentdURL string `json:"agentdUrl"`
+			Ports     []int  `json:"ports,omitempty"`
+		}{a.agentdURL, a.ports})
 	})
 	mux.HandleFunc("GET /api/daemons", func(w http.ResponseWriter, _ *http.Request) {
 		list, err := me.List()
@@ -138,14 +170,19 @@ func run() error {
 	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	static := flag.String("static", "static", "directory of the page (index.html, app.js)")
 	agentd := flag.String("agentd-url", "http://127.0.0.1:7100", "development and tests only: the releases the page tells the user to install from")
+	agentdPorts := flag.String("agentd-ports", "", "development and tests only: the ports the page looks for a daemon on, like 47700-47709 (empty: the SDK's 47615-47624)")
 	flag.Parse()
+	ports, err := parsePorts(*agentdPorts)
+	if err != nil {
+		return err
+	}
 
 	// MemoryTokens forgets every pairing when the process ends. A real app keeps them in its database by implementing
 	// goserver.Tokens (ByHash, ByID, List, Add, Rename, Delete, Seen); the godoc says what each owes the user condition.
 	h := goserver.New(goserver.Options{Tokens: goserver.NewMemoryTokens()})
 	mux := http.NewServeMux()
 	defer h.Attach(mux)() // /socket.io/, the /agentd namespace and POST /agentd/pair, with the message size daemons need
-	(&app{server: h, agentdURL: *agentd}).routes(mux)
+	(&app{server: h, agentdURL: *agentd, ports: ports}).routes(mux)
 	mux.Handle("/", http.FileServer(http.Dir(*static)))
 
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
