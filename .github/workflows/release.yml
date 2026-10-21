@@ -7,10 +7,10 @@ name: Release
 #   gh workflow run release.yml -f version=0.7.0 -f publish=true  # the same, then the GitHub release v0.7.0
 #
 # The signing material is the secrets of the `release` environment, which only main can use: the Developer ID certificate
-# and the notary API key (scripts/signing-keychain.sh makes the keychain `mygo build` reads from them), and the two
-# private keys release.sh signs the updates with (DAEMON_SIGNING_KEY, APP_UPDATE_KEY). Nothing else runs with them: the
-# CI workflow has no access to the environment, and pull requests never start this one. The actions below are pinned
-# by commit SHA, since this is the job that holds the keys.
+# and the notary API key (scripts/signing-keychain.sh makes the keychain `mygo build` reads from them), and the
+# private key release.sh signs the app update with (APP_UPDATE_KEY). Nothing else runs with them: the CI workflow has
+# no access to the environment, and pull requests never start this one. The actions below are pinned by commit SHA,
+# since this is the job that holds the keys.
 
 on:
   workflow_dispatch:
@@ -66,17 +66,14 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           PUBLISH: ${{ inputs.publish }}
-          DAEMON_SIGNING_KEY_PEM: ${{ secrets.DAEMON_SIGNING_KEY }}
           APP_UPDATE_KEY_VALUE: ${{ secrets.APP_UPDATE_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
           umask 077
-          printf '%s\n' "$DAEMON_SIGNING_KEY_PEM" >"$RUNNER_TEMP/daemon-signing.key"
           printf '%s' "$APP_UPDATE_KEY_VALUE" >"$RUNNER_TEMP/mygo-update.key"
           args=("$VERSION")
           if [ "$PUBLISH" = true ]; then args+=(--publish); fi
-          DAEMON_SIGNING_KEY="$RUNNER_TEMP/daemon-signing.key" APP_UPDATE_KEY="$RUNNER_TEMP/mygo-update.key" \
-            scripts/release.sh "${args[@]}"
+          APP_UPDATE_KEY="$RUNNER_TEMP/mygo-update.key" scripts/release.sh "${args[@]}"
 
       # Run the workflow without publishing first: this is what shows the apps it built are signed, notarized and stapled.
       - name: Check the apps are signed, notarized and stapled
@@ -97,5 +94,5 @@ jobs:
       - name: Remove the signing material
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/daemon-signing.key" "$RUNNER_TEMP/mygo-update.key"
+          rm -f "$RUNNER_TEMP/mygo-update.key"
           scripts/signing-keychain.sh teardown

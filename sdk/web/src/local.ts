@@ -36,6 +36,11 @@ export type Interval = (tick: () => void, everyMs: number) => () => void
  * adds the Origin header a browser would, and the `WebSocket` of your runtime (since 0.7.0). A `client` replaces them all.
  */
 export interface LocalCommonDeps {
+  /**
+   * What the app calls itself: the daemon's dialog and menu show it beside this page's origin. Required unless `client`
+   * replaces the calls to the daemon (`createLocalDaemon` throws without it).
+   */
+  name?: string
   /** The calls to the daemon (default: this package's own, made with the options below). */
   client?: LocalClient
   /** The timer of `watch` (default: `setInterval`). */
@@ -146,10 +151,11 @@ function defaultClient(deps: LocalCommonDeps): LocalClient {
     ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
   }
   const calls = deps.fetch === undefined ? {} : { fetch: deps.fetch }
+  const name = deps.name ?? ""
   return {
     detect: () => detect(look),
-    connectServer: (d, a) => connectServer(d, a, calls),
-    connectBrowser: (d) => connectBrowser(d, calls),
+    connectServer: (d, a) => connectServer(d, { name, code: a.code }, calls),
+    connectBrowser: (d) => connectBrowser(d, { name }, calls),
     disconnect: (d) => disconnect(d, calls),
   }
 }
@@ -254,6 +260,9 @@ function disconnectFailure(answer: unknown): Refusal | undefined {
  * the framework's own reactivity.
  */
 export function createLocalDaemon(deps: LocalDaemonDeps): LocalDaemon {
+  if (deps.client === undefined && (deps.name ?? "").trim() === "") {
+    throw new Error("createLocalDaemon: name is required: the user is asked to let this app in by its name")
+  }
   const client = deps.client ?? defaultClient(deps)
   const interval = deps.interval ?? DEFAULT_INTERVAL
   const mode = deps.mode ?? "server"

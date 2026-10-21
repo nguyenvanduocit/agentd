@@ -1,6 +1,6 @@
 {
   "name": "@agentd/client",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "What a web page uses to find the agentd daemon on the user's computer, ask it to connect, and run an agent through it.",
   "license": "MIT",
   "type": "module",

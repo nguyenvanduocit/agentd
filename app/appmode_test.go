@@ -14,8 +14,8 @@ import (
 // standIn is an app whose engine is a counter: launching it runs nothing.
 func standIn() (*desktop, *int) {
 	launched := new(int)
-	d := &desktop{files: EngineFiles{Engine: "/engine"}}
-	d.launch = func(EngineFiles, string, string, func([]byte)) (*Engine, error) {
+	d := &desktop{}
+	d.launch = func(EngineFiles, string, string, OpenLink) (*Engine, error) {
 		*launched++
 		return &Engine{done: make(chan struct{})}, nil
 	}
@@ -62,8 +62,8 @@ func TestAStartThatFollowsTheWaitFindsTheEngineAlreadyRunning(t *testing.T) {
 // An engine that does not start shows the person one sentence and the log gets the error as it came.
 func TestAnEngineThatDoesNotStartShowsAPlainSentenceAndLogsTheError(t *testing.T) {
 	d := &desktop{files: EngineFiles{Log: filepath.Join(t.TempDir(), "logs", "daemon.log")}}
-	d.launch = func(EngineFiles, string, string, func([]byte)) (*Engine, error) {
-		return nil, fmt.Errorf("start the engine: fork/exec /Applications/agentd.app/Contents/Resources/engine/agentd: operation not permitted")
+	d.launch = func(EngineFiles, string, string, OpenLink) (*Engine, error) {
+		return nil, fmt.Errorf("the system said: operation not permitted")
 	}
 	d.start()
 

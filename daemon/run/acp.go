@@ -152,8 +152,8 @@ func (d *daemon) removeAcpInfo() {
 	}
 }
 
-// acpAccess is the address of the standard ACP endpoint with its token, for the app or the tray to copy for the user. It
-// travels on the private channel the daemon shares with them and is never logged. False while there is no endpoint (every
+// acpAccess is the address of the standard ACP endpoint with its token, for the app to copy for the user. It travels in
+// the state the app shows and is never logged. False while there is no endpoint (every
 // port was taken) or no token.
 func (d *daemon) acpAccess() (ui.AcpState, bool) {
 	port := int(d.acp0.port.Load())

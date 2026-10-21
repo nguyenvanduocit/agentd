@@ -32,6 +32,7 @@ const origin = "https://app.example.com" // your server's origin: the daemon pai
 
 // 1. The daemon on this computer: is it there, and can the user connect it to this app?
 local, err := goclient.NewLocalDaemon(goclient.LocalDeps{
+	Name:          "My app",
 	Origin:        origin,
 	StartPairing:  myServer.StartDaemonPairing, // the app's own call: a one-time code
 	CancelPairing: myServer.CancelDaemonPairing,
@@ -49,10 +50,6 @@ if local.State().CanConnect {
 // 2. No daemon here: agentd.app for the user's Mac. Once it is open, Detect finds it and Connect pairs it.
 if downloads, ok := goclient.DesktopDownloadsFrom(""); ok { // "": agentd's own releases page
 	fmt.Println(downloads.AppleSilicon, downloads.Intel)
-}
-// Or, on Linux or from a terminal, the one command that installs it, pairs it with this app and starts it.
-if command, ok := goclient.InstallCommand(goclient.InstallOptions{App: origin, Code: "K7QX-29PD"}); ok {
-	fmt.Println(command)
 }
 ```
 
@@ -80,7 +77,7 @@ func (acpApp) SessionUpdate(_ context.Context, n acp.SessionNotification) error 
 ```go
 const origin = "http://localhost:5173" // https, or http on a loopback host: what the gateway accepts
 
-local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: origin, Mode: goclient.ModeBrowser})
+local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: origin, Mode: goclient.ModeBrowser})
 if err != nil {
 	log.Fatal(err) // an origin the gateway would refuse is an *OriginError that says what to write instead
 }
@@ -125,7 +122,7 @@ render := func(s goclient.LocalState) {
 		fmt.Println("Looking for agentd on this computer...")
 	case goclient.PhaseAbsent:
 		// Not installed, not running, or something between blocked the call: the program cannot tell which.
-		fmt.Println("agentd is not here. To start it from a terminal install:", goclient.AgentdCommands().Start)
+		fmt.Println("agentd is not here. Open agentd.app.")
 	case goclient.PhaseAvailable:
 		fmt.Println("agentd is here. Connect asks the user to allow this app.") // s.CanConnect
 	case goclient.PhaseConnecting:
@@ -227,14 +224,15 @@ printf '#!/bin/sh\necho /tmp/agentd-test\n' > allow.sh && chmod +x allow.sh
 mkdir -p home
 HOME=$PWD/home AGENTD_HOME=$PWD/home/.agentd XDG_CONFIG_HOME=$PWD/home/.config XDG_STATE_HOME=$PWD/home/.state \
   AGENTD_LOCAL_PORT=47661 AGENTD_CONSENT=$PWD/allow.sh AGENTD_AGENT_CLAUDE=$PWD/fake-agent \
-  AGENTD_ADAPTERS=off AGENTD_TRAY=off AGENTD_RELEASE_URL= ./agentd run
+  AGENTD_ADAPTERS=off ./agentd run
 ```
 
-The first four variables keep it away from your own `~/.agentd` and `~/.config/agentd`. `AGENTD_AGENT_CLAUDE` replaces the agent with a fake one that answers `initialize`. `AGENTD_CONSENT` answers the dialog. `AGENTD_LOCAL_PORT` moves the gateway off the ports of a real daemon, and the client then looks there:
+The first four variables keep it away from your own `~/.agentd` and `~/.config/agentd`. `AGENTD_AGENT_CLAUDE` replaces the agent with a fake one that answers `initialize`. `AGENTD_CONSENT` answers the consent question. `AGENTD_LOCAL_PORT` moves the gateway off the ports of a real daemon, and the client then looks there:
 
 ```go
 // A test daemon on port 47661 (AGENTD_LOCAL_PORT=47661, see "Test without clicking" in the README).
 local, err := goclient.NewLocalDaemon(goclient.LocalDeps{
+	Name:    "My app",
 	Origin:  "http://localhost:5173",
 	Mode:    goclient.ModeBrowser,
 	Options: []goclient.Option{goclient.WithPorts(47661)},
@@ -301,13 +299,11 @@ The words are the same in `@agentd/client` and in the daemon's tests: all three 
 
 ### Reference
 
-- `NewLocalDaemon(deps)` makes a `*LocalDaemon`, safe for concurrent use: `State()` (a value: `Found`, `Connecting`, `Error`, `CanConnect`, `Incompatible`, and *since 0.7.0* `Phase`, `Reason`, `Message`, `RetryAt`), `Subscribe(fn)` (every change, in order; returns what stops it), `Detect(ctx)`, `Watch(ctx, every)`, `Connect(ctx) bool`, `Disconnect(ctx)`, `OpenSession(ctx, agent)`. `deps` is `LocalDeps{Origin, Mode, StartPairing, CancelPairing, Client, Options, Now}`: `Mode` is `ModeServer` (the zero value) or `ModeBrowser`, browser mode takes no pairing, `Client` replaces the calls to the daemon, and `Now` is the clock that `RetryAt` is read against. `Detect` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). After an Allow, the state goes from connecting straight to connected. `Disconnect` takes back what this app was allowed and looks again; when the daemon refuses, `State().Error` says why. A daemon whose protocol (`Detected.Protocol`, read from `/v1/status`) is not one of `SupportedProtocols()` is `Found` with `State().Incompatible` set, `CanConnect` false, and `Connect` returns false without asking it.
-- `OpenSession(ctx, daemon, origin, agent)` gives a `*Session`: `Stdout()` (each line ending in `\n`; EOF when the agent exits or the socket closes), `Stdin()` (an `io.WriteCloser`: each complete line is sent, a partial one waits for its newline; closing it sends the partial line, not the session), the line-level `Write(line)` / `WriteLine(line)`, `OnFrame(fn)`, `Wait()`, `Done()`, `Close()`, `Pid`, `Cwd`. `Stdout()` starts the first time it is called and keeps no line from before: call it right after the session opens. `ctx` covers opening only. `Mcp()` and `McpServer(name)` (`{Name, Command, Args, Env}`, ACP's stdio MCP server) are for tools from the app.
+- `NewLocalDaemon(deps)` makes a `*LocalDaemon`, safe for concurrent use: `State()` (a value: `Found`, `Connecting`, `Error`, `CanConnect`, `Incompatible`, and *since 0.7.0* `Phase`, `Reason`, `Message`, `RetryAt`), `Subscribe(fn)` (every change, in order; returns what stops it), `Detect(ctx)`, `Watch(ctx, every)`, `Connect(ctx) bool`, `Disconnect(ctx)`, `OpenSession(ctx, agent)`. `deps` is `LocalDeps{Origin, Name, Mode, StartPairing, CancelPairing, Client, Options, Now}`: `Name` is what the app calls itself (required unless `Client` replaces the calls to the daemon), shown in the user's consent window and menu beside `Origin`; `Mode` is `ModeServer` (the zero value) or `ModeBrowser`, browser mode takes no pairing, `Client` replaces the calls to the daemon, and `Now` is the clock that `RetryAt` is read against. `Detect` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). After an Allow, the state goes from connecting straight to connected. `Disconnect` takes back what this app was allowed and looks again; when the daemon refuses, `State().Error` says why. A daemon whose protocol (`Detected.Protocol`, read from `/v1/status`) is not one of `SupportedProtocols()` is `Found` with `State().Incompatible` set, `CanConnect` false, and `Connect` returns false without asking it.
+- `OpenSession(ctx, daemon, origin, agent)` gives a `*Session`: `Stdout()` (each line ending in `\n`; EOF when the agent exits or the socket closes), `Stdin()` (an `io.WriteCloser`: each complete line is sent, a partial one waits for its newline; closing it sends the partial line, not the session), the line-level `Write(line)` / `WriteLine(line)`, `OnFrame(fn)`, `Wait()`, `Done()`, `Close()`, `Pid`, `Cwd`. `Chdir(ctx, dir)` moves the agent to another directory the user allowed this app (absolute path): the daemon ends the agent and starts the same program in `dir` on the same streams, and `Pid` and `Cwd` become the new process's. It is a new agent that has not been initialized, so run `initialize` and `NewSession` (or `LoadSession`) again; a refusal is a `*SessionError` and leaves the agent where it is. `Stdout()` starts the first time it is called and keeps no line from before: call it right after the session opens. `ctx` covers opening only. `Mcp()` and `McpServer(name)` (`{Name, Command, Args, Env}`, ACP's stdio MCP server) are for tools from the app.
 - `AgentInfo` is `{Name, Title, Ready, Reason}`; `Title` is the name to show, the agent's `Name` when the daemon is older than the title.
 - `DesktopDownloadsFrom(agentd)` is `{AppleSilicon, Intel}`, the links of agentd.app's disk images in the latest release, or false while the releases page is not a plain http(s) URL (`""` is `AgentdReleases`).
-- `InstallCommand(InstallOptions{Agentd, App, Code})` is the curl line, or false while an origin or the code is not safe to paste into a shell.
-- `AgentdCommands()` are what the user of an install from the terminal runs on their machine: `Status`, `Logs`, `Start`, each with the full path `~/.agentd/bin/agentd` (the installer puts nothing on `PATH`). The desktop app has no command line.
-- Lower level: `Detect(ctx, origin, opts...)`, `ConnectServer(ctx, daemon, origin, code, opts...)`, `ConnectBrowser(ctx, daemon, origin, opts...)` (a `ConnectResult{Granted, Reason, Message, RetryAfter}`), `Disconnect(ctx, daemon, origin, opts...)` (a refusal is a `*DisconnectError{Status, Reason, Message}`), `ValidateOrigin(origin)`, `ReasonText(reason)`, `DefaultPorts()`, `SupportedProtocols()`, `Detected.Incompatible()`, `Detected.Daemon()`. Options: `WithHTTPClient`, `WithDialer`, `WithPorts`, `WithTimeout`.
+- Lower level: `Detect(ctx, origin, opts...)`, `ConnectServer(ctx, daemon, origin, name, code, opts...)`, `ConnectBrowser(ctx, daemon, origin, name, opts...)` (a `ConnectResult{Granted, Reason, Message, RetryAfter}`), `Disconnect(ctx, daemon, origin, opts...)` (a refusal is a `*DisconnectError{Status, Reason, Message}`), `ValidateOrigin(origin)`, `ReasonText(reason)`, `DefaultPorts()`, `SupportedProtocols()`, `Detected.Incompatible()`, `Detected.Daemon()`. Options: `WithHTTPClient`, `WithDialer`, `WithPorts`, `WithTimeout`.
 
 The app connected is the one at **the origin you name**: the daemon refuses a request that names another server.
 

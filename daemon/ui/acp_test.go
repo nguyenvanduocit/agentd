@@ -10,16 +10,15 @@ const acpToken = "tokentokentokentokentokentokentokentokento"
 
 var acpState = AcpState{Base: "ws://127.0.0.1:47615/acp/", Token: acpToken, Agents: []string{"claude", "codex"}}
 
-// The address of the standard ACP endpoint, with its token, goes to the app and the tray on the private channel they
-// share with the daemon; it is in the state only while there is an endpoint to reach.
+// The address of the standard ACP endpoint, with its token, goes to agentd.app in the state; it is there only while there
+// is an endpoint to reach.
 func TestTheStateCarriesTheAcpAddressOnlyWhenThereIsOne(t *testing.T) {
-	if line := NewState(Facts{Version: "1"}).line(); strings.Contains(line, `"acp"`) {
-		t.Errorf("a state with no address has an acp field: %s", line)
+	if got := NewState(Facts{Version: "1"}).Acp; got != nil {
+		t.Errorf("a state with no address has one: %+v", got)
 	}
-	line := NewState(Facts{Version: "1", Acp: &acpState}).line()
-	want := `"acp":{"base":"ws://127.0.0.1:47615/acp/","token":"` + acpToken + `","agents":["claude","codex"]}`
-	if !strings.HasSuffix(line, want+"}") {
-		t.Errorf("the state line is %s, want it to end with %s", line, want)
+	got := NewState(Facts{Version: "1", Acp: &acpState}).Acp
+	if got == nil || got.Base != acpState.Base || got.Token != acpToken || strings.Join(got.Agents, ",") != "claude,codex" {
+		t.Errorf("the state carries %+v, want %+v", got, acpState)
 	}
 }
 

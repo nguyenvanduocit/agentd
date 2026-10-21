@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/nguyenvanduocit/agentd/daemon/acpauth"
+	"github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
 // The local secret of the standard ACP endpoint, with a real daemon and the real `agentd acp`.
@@ -212,15 +213,15 @@ func TestAgentdAcpWhenNoDaemonHasRunAndWhenItHasEnded(t *testing.T) {
 	}
 }
 
-// The app (or the tray) is told where the endpoint is and what the token is on the private channel it shares with the
-// daemon, so that it can copy the address for the user. The daemon never writes the token to its log.
-func TestTheAppIsToldTheAcpAddressAndTokenOnItsChannelAndTheLogNeverHasThem(t *testing.T) {
+// The app is told where the endpoint is and what the token is in the state it shows, so that it can copy the address
+// for the user. The daemon never writes the token to its log.
+func TestTheAppIsToldTheAcpAddressAndTokenAndTheLogNeverHasThem(t *testing.T) {
 	box := newSandbox(t)
 	d, app := startWithApp(t, box, map[string]string{"AGENTD_AGENT_CLAUDE": acpAgent(filepath.Join(t.TempDir(), "pid"))})
 	token := box.acpToken(t)
 
-	state := app.state(t, "a state with the ACP address", func(m map[string]any) bool { return m["acp"] != nil })
-	acp, _ := state["acp"].(map[string]any)
+	state := app.state(t, "a state with the ACP address", func(s ui.State) bool { return s.Acp != nil })
+	acp := state.Acp
 	var port int
 	waitFor(t, "the gateway port", func() bool {
 		m := gatewayLine.FindStringSubmatch(d.out.String())
@@ -230,19 +231,18 @@ func TestTheAppIsToldTheAcpAddressAndTokenOnItsChannelAndTheLogNeverHasThem(t *t
 		port, _ = strconv.Atoi(m[1])
 		return true
 	})
-	if want := "ws://127.0.0.1:" + strconv.Itoa(port) + "/acp/"; acp["base"] != want {
-		t.Errorf("acp.base = %v, want %q", acp["base"], want)
+	if want := "ws://127.0.0.1:" + strconv.Itoa(port) + "/acp/"; acp.Base != want {
+		t.Errorf("acp.base = %v, want %q", acp.Base, want)
 	}
-	if acp["token"] != token {
+	if acp.Token != token {
 		t.Errorf("acp.token is not the token in the file")
 	}
-	agents, _ := acp["agents"].([]any)
 	found := map[string]bool{}
-	for _, a := range agents {
-		found[a.(string)] = true
+	for _, a := range acp.Agents {
+		found[a] = true
 	}
 	if !found["claude"] || !found["codex"] {
-		t.Errorf("acp.agents = %v, want claude and codex (ready by their seams)", agents)
+		t.Errorf("acp.agents = %v, want claude and codex (ready by their seams)", acp.Agents)
 	}
 	if out := d.out.String(); strings.Contains(out, token) {
 		t.Errorf("the daemon's output holds the token:\n%s", out)

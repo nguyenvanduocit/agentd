@@ -105,28 +105,55 @@ func CORSHeaders(origin string, request http.Header) map[string]string {
 	return headers
 }
 
-// ConnectRequest is the body of POST /v1/connect: Code is set for ModeServer only.
+// maxNameRunes is the longest name an app can give itself; a longer one is cut.
+const maxNameRunes = 64
+
+// CleanName is the name an app gave itself as the window and the menu show it: the app chooses it, so characters that
+// hide or reorder text (controls, and format characters such as the right-to-left override and the zero-width space)
+// are dropped, runs of white space become one space, and a long name is cut to maxNameRunes. Empty when nothing is left.
+func CleanName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) {
+			b.WriteRune(r)
+		}
+	}
+	words := strings.Join(strings.Fields(b.String()), " ")
+	if runes := []rune(words); len(runes) > maxNameRunes {
+		return strings.TrimSpace(string(runes[:maxNameRunes]))
+	}
+	return words
+}
+
+// ConnectRequest is the body of POST /v1/connect: Name is what the app calls itself; Code is set for ModeServer only.
 type ConnectRequest struct {
 	Mode consent.Mode
+	Name string
 	Code string
 }
 
 // ParseConnect reads the body of POST /v1/connect; false when it is malformed. The app a page connects is the one at
 // its own origin: a body that names a server is refused, so a page cannot point the daemon at someone else's server.
+// Every request says who the app is (name): one that does not, or whose name is nothing once cleaned, is malformed.
 func ParseConnect(body []byte) (ConnectRequest, bool) {
 	var b map[string]any
 	if json.Unmarshal(body, &b) != nil || b == nil {
 		return ConnectRequest{}, false
 	}
+	text, isName := b["name"].(string)
+	name := CleanName(text)
+	if !isName || name == "" {
+		return ConnectRequest{}, false
+	}
 	if b["mode"] == "browser" {
-		return ConnectRequest{Mode: consent.ModeBrowser}, true
+		return ConnectRequest{Mode: consent.ModeBrowser, Name: name}, true
 	}
 	code, isText := b["code"].(string)
 	_, namesServer := b["server"]
 	if b["mode"] != "server" || !isText || code == "" || namesServer {
 		return ConnectRequest{}, false
 	}
-	return ConnectRequest{Mode: consent.ModeServer, Code: code}, true
+	return ConnectRequest{Mode: consent.ModeServer, Name: name, Code: code}, true
 }
 
 // Cooldown: origins that said no (or did not answer) wait before the dialog can open for them again. It is not safe

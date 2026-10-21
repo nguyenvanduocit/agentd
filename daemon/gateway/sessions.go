@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -462,7 +463,7 @@ func (s *BrowserSessions) end(e *pageEntry) {
 func (s *BrowserSessions) handle(e *pageEntry, text string) {
 	m, ok := pagetools.ParseToDaemon(text)
 	if !ok {
-		e.page.send(pagetools.NewError("", "expected a JSON message: open, write, close or mcp"))
+		e.page.send(pagetools.NewError("", "expected a JSON message: open, write, close, chdir or mcp"))
 		return
 	}
 	switch m.T {
@@ -482,6 +483,16 @@ func (s *BrowserSessions) handle(e *pageEntry, text string) {
 			if !e.fleet.Write(m.ID, m.Line) {
 				e.page.send(pagetools.NewError(m.ID, fmt.Sprintf("session %s is not running", m.ID)))
 			}
+		})
+	case pagetools.ToChdir:
+		// On the lane of the writes: a line sent before the move reaches the old agent, one sent after it the new.
+		e.lanes.run("write:"+m.ID, func() {
+			moved, err := e.fleet.Chdir(context.Background(), m.ID, m.Dir)
+			if err != nil {
+				e.page.send(pagetools.NewError(m.ID, err.Error()))
+				return
+			}
+			e.page.send(pagetools.NewMoved(m.ID, moved.PID, moved.Cwd))
 		})
 	case pagetools.ToClose:
 		e.fleet.Close(m.ID)

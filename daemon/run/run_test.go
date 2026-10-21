@@ -1,20 +1,14 @@
 package run
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
-	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
-	"github.com/nguyenvanduocit/agentd/daemon/update"
 )
 
 func TestMakeTempDirsIsAgentdAndSixCharactersWithABinInsideAndMode0700(t *testing.T) {
@@ -100,57 +94,6 @@ func TestWorkDir(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-func TestReleaseCheckInterval(t *testing.T) {
-	for value, want := range map[string]time.Duration{
-		"":      6 * time.Hour,
-		"50":    50 * time.Millisecond,
-		"49":    6 * time.Hour,
-		"0":     6 * time.Hour,
-		"-100":  6 * time.Hour,
-		"1.5":   6 * time.Hour,
-		"soon":  6 * time.Hour,
-		"250":   250 * time.Millisecond,
-		"1e3":   time.Second,
-		" 100 ": 100 * time.Millisecond,
-	} {
-		if got := releaseCheckInterval(home.Env{"AGENTD_RELEASE_CHECK_MS": value}); got != want {
-			t.Errorf("AGENTD_RELEASE_CHECK_MS=%q: %s, want %s", value, got, want)
-		}
-	}
-	if got := releaseCheckInterval(home.Env{}); got != 6*time.Hour {
-		t.Errorf("unset: %s", got)
-	}
-}
-
-func TestAnUpdateSwitchOfADaemonThatCannotUpdateTurnsNothing(t *testing.T) {
-	u := noUpdates()
-	u.turn(true)
-	u.turn(false)
-	u.stop()
-	if u.updatable {
-		t.Fatal("updatable")
-	}
-}
-
-func TestOnlyAnInstalledDaemonUpdatesItself(t *testing.T) {
-	box := &sandbox{root: t.TempDir()}
-	host := home.Host{Platform: "linux", Env: home.Env{"AGENTD_HOME": box.root}, Home: box.root}
-	log := proc.NewLogger(&syncBuffer{}, &syncBuffer{})
-	// a source run, a test build and a copy elsewhere
-	for _, exe := range []string{filepath.Join(box.root, "agentd"), filepath.Join(box.root, "elsewhere", "agentd")} {
-		if _, ok := installedLayout(exe, host, log); ok {
-			t.Errorf("%s counts as installed", exe)
-		}
-	}
-}
-
-func TestANotInstalledDaemonSaysItsUpdatesAreOff(t *testing.T) {
-	r := startRig(t, sleepAgent, nil)
-	waitFor(t, "the line", func() bool {
-		return r.d.says("updates are off: this daemon is not installed under ~/.agentd/daemon (the installer does that)")
-	})
-}
-
 func TestADaemonWithABrokenRegistryStopsWithAMessageNamingTheFile(t *testing.T) {
 	box := newSandbox(t)
 	if err := os.MkdirAll(filepath.Dir(box.configFile()), 0o700); err != nil {
@@ -187,39 +130,5 @@ func TestTheDaemonRemovesItsTemporaryDirectoryOnTheWayOut(t *testing.T) {
 	r.d.exitCode(t, waitLimit)
 	if _, err := os.Stat(entries[0]); !os.IsNotExist(err) {
 		t.Fatalf("%s is still there (%v)", entries[0], err)
-	}
-}
-
-func TestTurningUpdatesOnAsksTheReleaseServerAndTurningThemOffStopsAsking(t *testing.T) {
-	var asked atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == strings.TrimPrefix(update.LatestURL("http://x"), "http://x") {
-			asked.Add(1)
-		}
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(server.Close)
-	out := &syncBuffer{}
-	u := &updates{
-		updatable: true,
-		layout:    home.LayoutOf(t.TempDir()),
-		base:      server.URL,
-		interval:  50 * time.Millisecond,
-		idle:      func() bool { return true },
-		exit:      func(int) { t.Error("exit called") },
-		log:       proc.NewLogger(out, out),
-	}
-	t.Cleanup(u.stop)
-	u.turn(true)
-	waitFor(t, "the release server to be asked again and again", func() bool { return asked.Load() >= 3 })
-	u.turn(false)
-	if !strings.Contains(out.String(), "updates are off: turned off in the settings") {
-		t.Fatalf("output: %s", out)
-	}
-	time.Sleep(200 * time.Millisecond) // a request that was on its way
-	then := asked.Load()
-	time.Sleep(300 * time.Millisecond)
-	if now := asked.Load(); now != then {
-		t.Fatalf("asked %d more times after the updates were turned off", now-then)
 	}
 }

@@ -173,3 +173,35 @@ func TestRunAppsRemovesALapsedBrowserGrant(t *testing.T) {
 	}
 	wantEqual(t, saved.Browsers, []BrowserGrant{})
 }
+
+func TestRunAppsListsTheNameAndEndOfEachGrant(t *testing.T) {
+	rig := newAppsRig(t, `{"apps":[`+
+		`{"server":"https://a.example","token":"ta","name":"AIOcean","expiresAt":"2026-10-25T00:00:00Z"},`+
+		`{"server":"https://b.example","token":"tb","name":"Notes","expiresAt":"never"},`+
+		`{"server":"https://d.example","token":"td","expiresAt":"2026-10-20T00:00:00Z"}],`+
+		`"browsers":[{"origin":"https://c.example","grantedAt":"2026-10-19T00:00:00.000Z","name":"Docs","expiresAt":"2026-10-21T00:00:00Z"}]}`)
+	if _, err := RunAppsAt(cli.Apps{Action: cli.AppsList}, rig.host, rig.log, onDay2); err != nil {
+		t.Fatal(err)
+	}
+	want := "AIOcean (https://a.example)  app, expires 2026-10-25, any folder\n" +
+		"Notes (https://b.example)  app, no end, any folder\n" +
+		"https://d.example  app, expired 2026-10-20, any folder\n" +
+		"Docs (https://c.example)  browser, granted 2026-10-19, expires 2026-10-21, any folder\n"
+	if rig.out.String() != want {
+		t.Errorf("output = %q, want %q", rig.out.String(), want)
+	}
+}
+
+// A lapsed app is still in the file; the way to forget it is the way to forget any other.
+func TestRunAppsRemovesALapsedApp(t *testing.T) {
+	rig := newAppsRig(t, `{"apps":[{"server":"https://a.example","token":"ta","expiresAt":"2026-10-20T00:00:00Z"}]}`)
+	exit, err := RunAppsAt(cli.Apps{Action: cli.AppsRemove, Origin: "https://a.example"}, rig.host, rig.log, onDay2)
+	if err != nil || exit != 0 {
+		t.Fatalf("RunApps = %d, %v; stderr %q", exit, err, rig.errOut.String())
+	}
+	saved, err := Load(rig.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEqual(t, saved.Apps, []App{})
+}

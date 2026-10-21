@@ -1,14 +1,12 @@
 #!/bin/bash
-# Builds a release of agentd and, with --publish, publishes it as a GitHub release (tag v<version>). It carries:
-# agentd.app, the desktop app for macOS (agentd-darwin-<arch>.dmg, and the signed update installed apps take:
-# agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json); the daemon tarball (the Go engine of darwin and linux on
-# arm64 and amd64), its latest.json and install.sh (the install from a terminal); and the SDK tarball (@agentd/client). The latest release serves them all.
+# Builds a release of agentd and, with --publish, publishes it as a GitHub release (tag v<version>). It carries
+# agentd.app for macOS (agentd-darwin-<arch>.dmg, and the signed update installed apps take:
+# agentd-<version>-darwin-<arch>.tar.gz and update-darwin-<arch>.json) and the SDK tarball (@agentd/client).
 #
-#   DAEMON_SIGNING_KEY=.release-signing/daemon-signing.key APP_UPDATE_KEY=.release-signing/mygo-update.key \
-#     scripts/release.sh <x.y.z> [--publish]
+#   APP_UPDATE_KEY=.release-signing/mygo-update.key scripts/release.sh <x.y.z> [--publish]
 #
 # Without --publish it builds and checks everything in a temporary directory and prints what it would upload. The private
-# keys sign the daemon and the app's update; they are the files named by the two variables, and nowhere else but the
+# key signs the app's update; it is the file named by APP_UPDATE_KEY, and nowhere else but the
 # secrets of the `release` environment, which .github/workflows/release.yml runs this script with on a macOS runner
 # (signing the app and notarizing it with the Developer ID and the notary profile that scripts/signing-keychain.sh sets up
 # there). app/mygo.json carries the version of the app: make it <x.y.z> in the release's commit, and run
@@ -19,11 +17,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-VERSION="${1:?usage: DAEMON_SIGNING_KEY=<key> APP_UPDATE_KEY=<key> scripts/release.sh <x.y.z> [--publish]}"
+VERSION="${1:?usage: APP_UPDATE_KEY=<key> scripts/release.sh <x.y.z> [--publish]}"
 PUBLISH=0
 [ "${2:-}" = "--publish" ] && PUBLISH=1
 [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "version \"$VERSION\" is not x.y.z" >&2; exit 1; }
-: "${DAEMON_SIGNING_KEY:?DAEMON_SIGNING_KEY is the path of the release private key}"
 : "${APP_UPDATE_KEY:?APP_UPDATE_KEY is the path of the private key that signs the app updates (mygo keygen)}"
 APP_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' app/mygo.json)"
 [ "$APP_VERSION" = "$VERSION" ] || { echo "app/mygo.json is version $APP_VERSION: make it $VERSION and commit it first" >&2; exit 1; }
@@ -36,25 +33,10 @@ REPO="nguyenvanduocit/agentd"
 DIST="$(mktemp -d)"
 trap 'rm -rf "$DIST"' EXIT
 
-RELEASE=1 VERSION="$VERSION" ./scripts/build-daemon.sh "$DIST"
 ./scripts/build-sdk.sh "$DIST"
 MYGO_UPDATER_PRIVATE_KEY="$(cat "$APP_UPDATE_KEY")" DESKTOP_ARCHES="arm64 amd64" ./scripts/build-desktop.sh
-DIR="$DIST/download/v$VERSION"
 SDK_FILE="$(cd "$DIST" && ls agentd-client-*.tgz)"
-FILES=("$DIR/agentd-$VERSION.tgz" "$DIR/latest.json" "$DIR/install.sh" "$DIST/$SDK_FILE")
-
-# What was built agrees with itself: the manifest names this tarball's sha256, and the installer bakes the same one.
-SHA="$(shasum -a 256 "$DIR/agentd-$VERSION.tgz" | cut -d' ' -f1)"
-grep -q "\"sha256\":\"$SHA\"" "$DIR/latest.json" || { echo "latest.json does not carry the tarball's sha256" >&2; exit 1; }
-grep -q "^SHA256='$SHA'" "$DIR/install.sh" || { echo "install.sh does not carry the tarball's sha256" >&2; exit 1; }
-grep -q "releases/download/v$VERSION/agentd-$VERSION.tgz'" "$DIR/install.sh" || { echo "install.sh does not point at this release's tarball" >&2; exit 1; }
-
-# The tarball carries the Go engine of every platform the installer and the updater pick from.
-LISTING="$(tar -tzf "$DIR/agentd-$VERSION.tgz")"
-for engine in agentd-darwin-arm64 agentd-darwin-amd64 agentd-linux-arm64 agentd-linux-amd64; do
-  grep -qx "package/$engine" <<<"$LISTING" || { echo "the daemon tarball has no package/$engine" >&2; exit 1; }
-done
-grep -qx "package/launcher.sh" <<<"$LISTING" || { echo "the daemon tarball has no package/launcher.sh" >&2; exit 1; }
+FILES=("$DIST/$SDK_FILE")
 
 # The app of each processor: its disk image under a name that stays from release to release (the SDK's download links),
 # and its signed update, whose manifest names this version and this release's archive, as installed apps read it from
@@ -76,7 +58,6 @@ done
 
 echo "release v$VERSION of $REPO:" >&2
 for f in "${FILES[@]}"; do printf '  %s  %s bytes\n' "$(basename "$f")" "$(wc -c <"$f" | tr -d ' ')" >&2; done
-echo "  sha256 of the daemon tarball: $SHA" >&2
 
 if [ "$PUBLISH" != 1 ]; then
   echo "not published (add --publish)" >&2

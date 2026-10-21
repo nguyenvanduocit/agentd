@@ -39,18 +39,18 @@ describe("the daemon's reason and its more specific code", () => {
   const d = { port: 47615 }
 
   test("the code is the reason when the SDK knows it, and the legacy reason stays for a code it does not", async () => {
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "cooldown", code: "locked", message: "m" }) })).toEqual({ granted: false, reason: "locked", message: "m" })
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "no-dialog", code: "no-folder" }) })).toEqual({ granted: false, reason: "no-folder" })
-    expect(await connectServer(d, { code: "ABCD-1234" }, { fetch: refusal({ reason: "pairing", code: "not-saved" }) })).toEqual({ granted: false, reason: "not-saved" })
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "cooldown", code: "a-code-from-the-future" }) })).toEqual({ granted: false, reason: "cooldown" })
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "denied" }) })).toEqual({ granted: false, reason: "denied" })
-    expect(await connectBrowser(d, { fetch: refusal({}) })).toEqual({ granted: false, reason: "malformed" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "cooldown", code: "locked", message: "m" }) })).toEqual({ granted: false, reason: "locked", message: "m" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "no-dialog", code: "no-folder" }) })).toEqual({ granted: false, reason: "no-folder" })
+    expect(await connectServer(d, { name: "Test app", code: "ABCD-1234" }, { fetch: refusal({ reason: "pairing", code: "not-saved" }) })).toEqual({ granted: false, reason: "not-saved" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "cooldown", code: "a-code-from-the-future" }) })).toEqual({ granted: false, reason: "cooldown" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "denied" }) })).toEqual({ granted: false, reason: "denied" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({}) })).toEqual({ granted: false, reason: "malformed" })
   })
 
   test("retryAfter is the daemon's seconds, from the body or else the Retry-After header", async () => {
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "cooldown", retryAfter: 30 }, { "retry-after": "99" }) })).toEqual({ granted: false, reason: "cooldown", retryAfter: 30 })
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "cooldown", code: "locked" }, { "retry-after": "600" }) })).toEqual({ granted: false, reason: "locked", retryAfter: 600 })
-    expect(await connectBrowser(d, { fetch: refusal({ reason: "cooldown", retryAfter: "soon" }) })).toEqual({ granted: false, reason: "cooldown" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "cooldown", retryAfter: 30 }, { "retry-after": "99" }) })).toEqual({ granted: false, reason: "cooldown", retryAfter: 30 })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "cooldown", code: "locked" }, { "retry-after": "600" }) })).toEqual({ granted: false, reason: "locked", retryAfter: 600 })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: refusal({ reason: "cooldown", retryAfter: "soon" }) })).toEqual({ granted: false, reason: "cooldown" })
   })
 
   test("a failed disconnect says why in the same words", async () => {
@@ -69,14 +69,14 @@ describe("a request that is stopped", () => {
       throw new TypeError("Failed to fetch")
     })
     stopped.abort()
-    expect(await connectBrowser(d, { fetch: f, signal: stopped.signal })).toMatchObject({ granted: false, reason: "cancelled" })
-    expect(await connectBrowser(d, { fetch: f })).toMatchObject({ granted: false, reason: "unreachable", message: "Failed to fetch" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: f, signal: stopped.signal })).toMatchObject({ granted: false, reason: "cancelled" })
+    expect(await connectBrowser(d, { name: "Test app" }, { fetch: f })).toMatchObject({ granted: false, reason: "unreachable", message: "Failed to fetch" })
   })
 
   test("hands its signal to the fetch", async () => {
     let seen: AbortSignal | null | undefined
     const stopped = new AbortController()
-    await connectBrowser(d, { fetch: fetchWith((_url, init) => ((seen = init?.signal), json(200, { granted: true }))), signal: stopped.signal })
+    await connectBrowser(d, { name: "Test app" }, { fetch: fetchWith((_url, init) => ((seen = init?.signal), json(200, { granted: true }))), signal: stopped.signal })
     expect(seen).toBe(stopped.signal)
   })
 })

@@ -208,10 +208,10 @@ func capturing(res *http.Response, got *capture) *http.Client {
 func TestConnectServerPostsTheCodeAndNoServerAndReportsAllow(t *testing.T) {
 	var got capture
 	c := capturing(jsonReply(200, map[string]any{"granted": true}), &got)
-	if r := goclient.ConnectServer(context.Background(), found, app, "ABCD", goclient.WithHTTPClient(c)); r != (goclient.ConnectResult{Granted: true}) {
+	if r := goclient.ConnectServer(context.Background(), found, app, "Test app", "ABCD", goclient.WithHTTPClient(c)); r != (goclient.ConnectResult{Granted: true}) {
 		t.Fatalf("result = %+v", r)
 	}
-	want := capture{"POST", "http://127.0.0.1:47615/v1/connect", app, "application/json", `{"mode":"server","code":"ABCD"}`}
+	want := capture{"POST", "http://127.0.0.1:47615/v1/connect", app, "application/json", `{"mode":"server","name":"Test app","code":"ABCD"}`}
 	if got != want {
 		t.Fatalf("request = %+v, want %+v", got, want)
 	}
@@ -220,8 +220,8 @@ func TestConnectServerPostsTheCodeAndNoServerAndReportsAllow(t *testing.T) {
 func TestTheBodiesAreWrittenAsJSONStringifyWritesThem(t *testing.T) {
 	var got capture
 	c := capturing(jsonReply(200, map[string]any{"granted": true}), &got)
-	goclient.ConnectServer(context.Background(), found, app, `a<b>&"c"`, goclient.WithHTTPClient(c))
-	if want := `{"mode":"server","code":"a<b>&\"c\""}`; got.body != want {
+	goclient.ConnectServer(context.Background(), found, app, "Test app", `a<b>&"c"`, goclient.WithHTTPClient(c))
+	if want := `{"mode":"server","name":"Test app","code":"a<b>&\"c\""}`; got.body != want {
 		t.Fatalf("body = %s, want %s", got.body, want)
 	}
 }
@@ -229,10 +229,10 @@ func TestTheBodiesAreWrittenAsJSONStringifyWritesThem(t *testing.T) {
 func TestConnectBrowserPostsModeBrowser(t *testing.T) {
 	var got capture
 	c := capturing(jsonReply(200, map[string]any{"granted": true}), &got)
-	if r := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(c)); !r.Granted {
+	if r := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(c)); !r.Granted {
 		t.Fatalf("result = %+v", r)
 	}
-	if got.body != `{"mode":"browser"}` || got.origin != app {
+	if got.body != `{"mode":"browser","name":"Test app"}` || got.origin != app {
 		t.Fatalf("request = %+v", got)
 	}
 }
@@ -255,7 +255,7 @@ func TestEachRefusalIsItsReasonAndTheDaemonsMessage(t *testing.T) {
 			return jsonReply(c.status, map[string]any{"granted": false, "reason": c.reason, "message": "why"}), nil
 		})
 		want := goclient.ConnectResult{Reason: c.reason, Message: "why"}
-		if got := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(h)); got != want {
+		if got := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(h)); got != want {
 			t.Errorf("HTTP %d %s: %+v", c.status, c.reason, got)
 		}
 	}
@@ -275,7 +275,7 @@ func TestAnAnswerThatIsNotAGrantIsMalformedUnlessItSaysWhy(t *testing.T) {
 			}
 			return reply(status, c.body), nil
 		})
-		if got := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(h)); got.Granted || got.Reason != goclient.ReasonMalformed {
+		if got := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(h)); got.Granted || got.Reason != goclient.ReasonMalformed {
 			t.Errorf("%s %s: %+v", c.status, c.body, got)
 		}
 	}
@@ -283,7 +283,7 @@ func TestAnAnswerThatIsNotAGrantIsMalformedUnlessItSaysWhy(t *testing.T) {
 
 func TestADaemonThatWentAwayIsUnreachable(t *testing.T) {
 	h := clientWith(func(*http.Request) (*http.Response, error) { return nil, errors.New("connection refused") })
-	got := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(h))
+	got := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(h))
 	if got.Granted || got.Reason != goclient.ReasonUnreachable || !strings.Contains(got.Message, "connection refused") {
 		t.Fatalf("result = %+v", got)
 	}
@@ -292,7 +292,7 @@ func TestADaemonThatWentAwayIsUnreachable(t *testing.T) {
 func TestAConnectionThatWaitsForTheDialogEndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	got := goclient.ConnectBrowser(ctx, found, app, goclient.WithHTTPClient(clientWith(hang)))
+	got := goclient.ConnectBrowser(ctx, found, app, "Test app", goclient.WithHTTPClient(clientWith(hang)))
 	if got.Granted || got.Reason != goclient.ReasonCancelled { // the daemon did answer nothing yet: its dialog may still be open
 		t.Fatalf("result = %+v", got)
 	}

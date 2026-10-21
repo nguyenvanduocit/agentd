@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -749,4 +750,63 @@ func TestClosingMcpSendsTheLineStillWaiting(t *testing.T) {
 	_, _ = mcp.Write([]byte("a\nb"))
 	_ = mcp.Close()
 	d.waitSent("mcp", "a", "b")
+}
+
+func TestChdirAsksTheDaemonToMoveTheAgentAndTakesItsNewPidAndCwd(t *testing.T) {
+	d, s, id := openFakeSession(t, nil, "0.9.0")
+	moved := make(chan error, 1)
+	go func() { moved <- s.Chdir(context.Background(), "/work/app") }()
+	if got := d.nextSent(1); got["t"] != "chdir" || got["id"] != id || got["dir"] != "/work/app" {
+		t.Fatalf("the daemon got %v", got)
+	}
+	d.say(msg{"t": "moved", "id": id, "pid": 43, "cwd": "/work/app"})
+	select {
+	case err := <-moved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(wait):
+		t.Fatal("Chdir did not return")
+	}
+	if s.Pid != 43 || s.Cwd != "/work/app" {
+		t.Fatalf("pid %d, cwd %q", s.Pid, s.Cwd)
+	}
+	d.out(id, "from the new agent")
+	line, _ := bufio.NewReader(s.Stdout()).ReadString('\n')
+	if line != "from the new agent\n" {
+		t.Fatalf("read %q", line)
+	}
+}
+
+func TestChdirRefusedByTheDaemonIsItsMessageAndLeavesCwdAlone(t *testing.T) {
+	d, s, id := openFakeSession(t, nil, "0.9.0")
+	moved := make(chan error, 1)
+	go func() { moved <- s.Chdir(context.Background(), "/etc") }()
+	d.nextSent(1)
+	d.say(msg{"t": "error", "id": id, "message": "/etc is outside the folders you allowed this app"})
+	var refusal *goclient.SessionError
+	select {
+	case err := <-moved:
+		if !errors.As(err, &refusal) || refusal.Message != "/etc is outside the folders you allowed this app" {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(wait):
+		t.Fatal("Chdir did not return")
+	}
+	if s.Cwd != "/work" {
+		t.Fatalf("cwd %q", s.Cwd)
+	}
+}
+
+func TestChdirEndsWithItsContextAndWithTheSession(t *testing.T) {
+	_, s, _ := openFakeSession(t, nil, "0.9.0")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Chdir(ctx, "/work/app"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	_ = s.Close()
+	if err := s.Chdir(context.Background(), "/work/app"); !errors.Is(err, goclient.ErrClosed) {
+		t.Fatalf("err = %v", err)
+	}
 }

@@ -115,7 +115,7 @@ func TestTheSpecificCodeOfARefusalIsItsReasonWhenThisPackageKnowsIt(t *testing.T
 		{"a code and no reason", map[string]any{"granted": false, "code": "locked"}, goclient.ReasonLocked},
 		{"neither", map[string]any{"granted": false}, goclient.ReasonMalformed},
 	} {
-		got := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(refusalWith(429, c.body, nil)))
+		got := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(refusalWith(429, c.body, nil)))
 		if got.Granted || got.Reason != c.want {
 			t.Errorf("%s: %+v, want reason %q", c.name, got, c.want)
 		}
@@ -136,7 +136,7 @@ func TestHowLongToWaitComesFromTheBodyOrTheHeader(t *testing.T) {
 		{"a value that is no number", map[string]any{"granted": false, "reason": "cooldown"}, http.Header{"Retry-After": {"soon"}}, 0},
 		{"a negative value", map[string]any{"granted": false, "reason": "cooldown", "retryAfter": -3}, nil, 0},
 	} {
-		got := goclient.ConnectBrowser(context.Background(), found, app, goclient.WithHTTPClient(refusalWith(429, c.body, c.header)))
+		got := goclient.ConnectBrowser(context.Background(), found, app, "Test app", goclient.WithHTTPClient(refusalWith(429, c.body, c.header)))
 		if got.RetryAfter != c.want {
 			t.Errorf("%s: RetryAfter = %v, want %v", c.name, got.RetryAfter, c.want)
 		}
@@ -146,14 +146,14 @@ func TestHowLongToWaitComesFromTheBodyOrTheHeader(t *testing.T) {
 func TestAContextThatEndsIsCancelledNotUnreachable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	got := goclient.ConnectBrowser(ctx, found, app, goclient.WithHTTPClient(clientWith(hang)))
+	got := goclient.ConnectBrowser(ctx, found, app, "Test app", goclient.WithHTTPClient(clientWith(hang)))
 	if got.Granted || got.Reason != goclient.ReasonCancelled {
 		t.Fatalf("result = %+v, want reason cancelled", got)
 	}
 
 	cancelled, stop := context.WithCancel(context.Background())
 	stop()
-	if got := goclient.ConnectServer(cancelled, found, app, "CODE", goclient.WithHTTPClient(clientWith(hang))); got.Reason != goclient.ReasonCancelled {
+	if got := goclient.ConnectServer(cancelled, found, app, "Test app", "CODE", goclient.WithHTTPClient(clientWith(hang))); got.Reason != goclient.ReasonCancelled {
 		t.Fatalf("a cancelled context: %+v", got)
 	}
 }

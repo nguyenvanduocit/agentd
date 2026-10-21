@@ -17,7 +17,7 @@ SDK="${2:-$(node -p "require('./sdk/web/package.json').version")}"
 export RELEASE SDK
 
 # The same files and patterns as scripts/check-release.sh.
-for f in README.md sdk/web/README.md sdk/goclient/README.md sdk/goserver/README.md sdk/release/README.md examples/minimal-app/README.md examples/minimal-app/page/package.json; do
+for f in README.md sdk/web/README.md sdk/goclient/README.md sdk/goserver/README.md examples/minimal-app/README.md examples/minimal-app/page/package.json; do
   [ -f "$f" ] || continue
   perl -pi -e '
     s{(releases/download/v)[0-9][0-9.]*(/agentd-client-)[0-9][0-9.]*(\.tgz)}{$1$ENV{RELEASE}$2$ENV{SDK}$3}g;

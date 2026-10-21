@@ -66,38 +66,3 @@ func writeRegistry(t *testing.T, file string, apps, pages []string) {
 		t.Fatal(err)
 	}
 }
-
-// lineLog collects the lines a fake peer or a fake link got, parsed.
-type lineLog struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (l *lineLog) add(line string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, line)
-}
-
-func (l *lineLog) all() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]string(nil), l.lines...)
-}
-
-func (l *lineLog) hasState(match func(State) bool) bool {
-	for _, line := range l.all() {
-		if s, ok := parseState(line); ok && match(s) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseState(line string) (State, bool) {
-	var s State
-	if err := decode(line, &s); err != nil || s.T != "state" {
-		return State{}, false
-	}
-	return s, true
-}

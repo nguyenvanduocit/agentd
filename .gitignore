@@ -1,6 +1,5 @@
 # The release private key, the notary credentials in .env and every build output stay out of git.
 .release-signing/
-.dev-signing/
 .env
 node_modules/
 dist/

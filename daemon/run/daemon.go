@@ -25,14 +25,11 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 	"github.com/nguyenvanduocit/agentd/daemon/ui"
-	"github.com/nguyenvanduocit/agentd/daemon/update"
 )
 
 const (
 	// shutdownGrace is how long the pages' agents and the apps' agents get to end before they are killed.
 	shutdownGrace = 2 * time.Second
-	// logCheckEvery is how often the log file is looked at for a size over its limit.
-	logCheckEvery = time.Minute
 )
 
 // Deps is what the daemon touches outside its own logic.
@@ -43,14 +40,17 @@ type Deps struct {
 	// Tracker holds the process groups that must not outlive the daemon; nil makes the daemon's own.
 	Tracker *proc.Tracker
 	// Executable is the real path of the agentd binary: the pages' and the apps' MCP wrappers run it, and the
-	// installed layout and the tray program are found beside it. Empty is this process's own.
+	// installed layout is found beside it. Empty is this process's own.
 	Executable string
+	// UI opens the link to what shows the daemon's state and asks the user: agentd.app, which runs the daemon in its own
+	// process. It calls onAction with each choice of the user. Nil: nothing shows the state, and no question is asked.
+	UI func(onAction func(ui.Action)) ui.Link
 }
 
 // daemon is one run: what it started, so that the way out can end it in order.
 type daemon struct {
 	Deps
-	env      home.Env // the daemon's environment, with a Node.js the installer downloaded first on PATH
+	env      home.Env // the daemon's environment
 	agentEnv home.Env // env with the wrappers' directory first on PATH: what the agents' lookups see
 	exe      string
 	node     string
@@ -63,16 +63,13 @@ type daemon struct {
 
 	state    *proc.SessionState
 	store    *agents.Store
-	settings *home.SettingsStore
-	layout   *home.Layout
-	updates  *updates
 	browsers *gateway.BrowserSessions
 	acp      *gateway.AcpSessions // the standard ACP endpoint's connections (/acp)
 	acp0     acpState             // its token and the record of where it is (acp.go)
 	hub      *link.AppHub
 	gateway  *gateway.Gateway
-	stopTray func()
-	// ui is the link to the app or the tray program that shows the daemon's state, once it is started: what the
+	stopUI   func()
+	// ui is the link to the app that shows the daemon's state, once it is started: what the
 	// daemon asks the user through (see ask).
 	ui atomic.Pointer[ui.Link]
 
@@ -121,8 +118,7 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	d.settings = home.OpenSettings(home.SettingsFile(d.file), d.Log.Warn)
-	apps, err := reg.SelectApps(cmd.App)
+	apps, err := reg.SelectApps(cmd.App, time.Now())
 	if err != nil {
 		return 0, err
 	}
@@ -147,7 +143,6 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 	d.store = agents.NewStore(agents.StoreOptions{Layout: home.LayoutOf(home.AgentdHome(d.Host)), Env: d.env, Log: d.Log, Tracker: d.Tracker})
 	d.store.Start()
 
-	d.startUpdates()
 	if err := d.startBrowserSessions(); err != nil {
 		return 0, err
 	}
@@ -179,7 +174,7 @@ func (d *daemon) run(ctx context.Context, cmd cli.Run) (int, error) {
 }
 
 // shutdown ends what runs. The apps stop taking opens first. Their agents and the pages' sessions then end side by
-// side, while the adapter installs and the extras (tray, updates, registry checks) stop; the gateway closes after
+// side, while the adapter installs and the extras (the UI link, registry checks) stop; the gateway closes after
 // both, and the record of the agents is cleared last (it stays when an agent still runs, for the next start). Whatever
 // did not start is skipped.
 func (d *daemon) shutdown() {
@@ -266,55 +261,16 @@ func executable(given string) (string, error) {
 	return real, nil
 }
 
-// setEnvironment fixes what the agents and the adapters' npm installs run in: the daemon's environment with a Node.js
-// the installer downloaded (~/.agentd/node) first on PATH, so that the adapters and npm use it; the Node.js the
-// adapters run on is the first `node` of that PATH.
+// setEnvironment fixes what the agents and the adapters' npm installs run in: the daemon's environment, and with the
+// wrappers' directory first on PATH for the agents; the Node.js the adapters run on is the first `node` of the PATH.
 func (d *daemon) setEnvironment() {
 	d.env = d.Host.Env
-	nodeBin := home.LayoutOf(home.AgentdHome(d.Host)).NodeDir + "/bin"
-	if _, ok := home.FindProgram("node", home.Env{"PATH": nodeBin}); ok {
-		if dirs := home.PathDirs(d.env, d.Host.Platform); len(dirs) == 0 || dirs[0] != nodeBin {
-			d.env = home.AgentEnv(d.env, nodeBin, d.Host.Platform)
-		}
-	}
 	d.node, _ = home.FindProgram("node", d.env)
 	d.agentEnv = home.AgentEnv(d.env, d.bin, d.Host.Platform)
 }
 
 func (d *daemon) fleetOptions() agents.FleetOptions {
 	return agents.FleetOptions{Cwd: d.cwd, Env: d.env, State: d.state, Adapter: d.store.State, Node: d.node, Log: d.Log}
-}
-
-// startUpdates finds the layout updates and log rotation work in; a daemon that is not installed says so.
-func (d *daemon) startUpdates() {
-	if l, ok := installedLayout(d.exe, d.Host, d.Log); ok {
-		d.layout = &l
-		d.keepLogSmall(l)
-		return
-	}
-	_, managedByApp, _ := ui.UIFd(d.env)
-	d.Log.Say(updatesOffNote(managedByApp))
-}
-
-// updatesOffNote says, in the log, why this daemon does not update itself: agentd.app keeps its own engine current, and
-// any other daemon updates only when it is installed under ~/.agentd/daemon.
-func updatesOffNote(managedByApp bool) string {
-	if managedByApp {
-		return "updates are off in the engine: agentd.app updates itself"
-	}
-	return "updates are off: this daemon is not installed under ~/.agentd/daemon (the installer does that)"
-}
-
-// keepLogSmall keeps the log file of a service under its size limit: only when this process writes its stdout into
-// that file.
-func (d *daemon) keepLogSmall(l home.Layout) {
-	check := func() {
-		if proc.StdoutIs(l.LogFile) {
-			proc.RotateLog(l.LogFile, proc.LogMaxBytes, proc.LogKeep)
-		}
-	}
-	check()
-	d.every(logCheckEvery, check)
 }
 
 // every runs fn after each interval until the extras end, one run at a time.
@@ -463,56 +419,20 @@ func (d *daemon) announce(apps int) {
 	d.Log.Say(fmt.Sprintf("agentd %s (pid %d) serving agents in %s for %d app(s)", home.Version, os.Getpid(), d.cwd, apps))
 }
 
-// startExtras starts what runs beside the apps: the updates, the icon in the menu bar (or the channel to agentd.app)
-// and the registry checks.
+// startExtras starts what runs beside the apps: the link to agentd.app that shows the state, and the registry checks.
 func (d *daemon) startExtras() error {
-	open, err := d.trayLink()
-	if err != nil {
-		return err
-	}
-	if d.updates, err = d.updateSwitch(); err != nil {
-		return err
-	}
-	d.updates.turn(d.settings.Get().Updates)
-	if open != nil {
-		d.stopTray = d.startTray(open)
+	if d.UI != nil {
+		d.stopUI = d.startUI(d.UI)
 	}
 	d.every(registryCheckEvery, d.newRegistryFollower().check)
 	return nil
 }
 
-// updateSwitch is the switch of the updates: off for a daemon that is not installed or has no release server.
-func (d *daemon) updateSwitch() (*updates, error) {
-	if d.layout == nil {
-		return noUpdates(), nil
-	}
-	base, err := update.ReleaseBase(func(key string) (string, bool) { v, ok := d.Host.Env[key]; return v, ok }, home.ReleaseURL)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" {
-		d.Log.Say("updates are off: there is no release server (AGENTD_RELEASE_URL is empty)")
-		return noUpdates(), nil
-	}
-	return &updates{
-		updatable: true,
-		layout:    *d.layout,
-		base:      base,
-		interval:  releaseCheckInterval(d.Host.Env),
-		idle:      func() bool { return d.running() == 0 },
-		exit:      d.stop,
-		log:       d.Log,
-	}, nil
-}
-
-// stopExtras ends what startExtras and the log check started.
+// stopExtras ends what startExtras started.
 func (d *daemon) stopExtras() {
 	d.bgCancel()
 	d.bg.Wait()
-	if d.updates != nil {
-		d.updates.stop()
-	}
-	if d.stopTray != nil {
-		d.stopTray()
+	if d.stopUI != nil {
+		d.stopUI()
 	}
 }

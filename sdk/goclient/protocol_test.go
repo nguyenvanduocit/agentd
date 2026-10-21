@@ -26,7 +26,7 @@ func TestDetectReadsTheProtocolTheDaemonStates(t *testing.T) {
 
 func TestSupportedProtocolsIsACopy(t *testing.T) {
 	got := goclient.SupportedProtocols()
-	if !slices.Equal(got, []int{1}) {
+	if !slices.Equal(got, []int{1, 2}) {
 		t.Fatalf("SupportedProtocols = %v", got)
 	}
 	got[0] = 99
@@ -44,7 +44,8 @@ func TestDetectedIncompatibleIsASentenceOnlyForAProtocolThisClientDoesNotSpeak(t
 		{"nothing found", goclient.Detected{}, ""},
 		{"the daemon states no protocol", goclient.Detected{Found: true}, ""},
 		{"the daemon speaks protocol 1", goclient.Detected{Found: true, Protocol: 1}, ""},
-		{"the daemon speaks a newer protocol", goclient.Detected{Found: true, Protocol: 2}, "newer than this app understands"},
+		{"the daemon speaks protocol 2", goclient.Detected{Found: true, Protocol: 2}, ""},
+		{"the daemon speaks a newer protocol", goclient.Detected{Found: true, Protocol: 3}, "newer than this app understands"},
 	} {
 		got := c.d.Incompatible()
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
@@ -54,7 +55,7 @@ func TestDetectedIncompatibleIsASentenceOnlyForAProtocolThisClientDoesNotSpeak(t
 }
 
 func TestALocalDaemonOfAProtocolThisClientDoesNotSpeakCannotConnect(t *testing.T) {
-	local, client := setup(t, setupOptions{detected: []goclient.Detected{{Found: true, Port: 47615, Version: "9.0.0", Protocol: 2}}})
+	local, client := setup(t, setupOptions{detected: []goclient.Detected{{Found: true, Port: 47615, Version: "9.0.0", Protocol: 3}}})
 	local.Detect(bg)
 	st := local.State()
 	if st.Incompatible == "" || st.CanConnect || st.Error != st.Incompatible {

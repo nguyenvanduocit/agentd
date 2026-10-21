@@ -29,7 +29,7 @@ describe("detect", () => {
   })
 
   test("SUPPORTED_PROTOCOLS names the protocols this SDK speaks", () => {
-    expect(SUPPORTED_PROTOCOLS).toEqual([1])
+    expect(SUPPORTED_PROTOCOLS).toEqual([1, 2])
   })
 
   test("every agent has a title: the daemon's, or its name from a daemon that sends none", async () => {
@@ -72,10 +72,10 @@ describe("connect", () => {
       got = { url, init }
       return json(200, { granted: true })
     })
-    expect(await connectServer(found, { code: "ABCD" }, { fetch: f })).toEqual({ granted: true })
+    expect(await connectServer(found, { name: "Test app", code: "ABCD" }, { fetch: f })).toEqual({ granted: true })
     expect(got?.url).toBe("http://127.0.0.1:47615/v1/connect")
     expect(got?.init?.method).toBe("POST")
-    expect(JSON.parse(String(got?.init?.body))).toEqual({ mode: "server", code: "ABCD" })
+    expect(JSON.parse(String(got?.init?.body))).toEqual({ mode: "server", name: "Test app", code: "ABCD" })
   })
 
   test("connectBrowser posts mode browser", async () => {
@@ -84,8 +84,8 @@ describe("connect", () => {
       body = String(init?.body)
       return json(200, { granted: true })
     })
-    expect(await connectBrowser(found, { fetch: f })).toEqual({ granted: true })
-    expect(JSON.parse(body)).toEqual({ mode: "browser" })
+    expect(await connectBrowser(found, { name: "Test app" }, { fetch: f })).toEqual({ granted: true })
+    expect(JSON.parse(body)).toEqual({ mode: "browser", name: "Test app" })
   })
 
   test.each<[number, string, Reason]>([
@@ -103,14 +103,14 @@ describe("connect", () => {
     [500, "error", "error"],
   ])("HTTP %i %s is the reason %s", async (status, reason, expected) => {
     const f = fetchWith(() => json(status, { granted: false, reason, message: "why" }))
-    expect(await connectBrowser(found, { fetch: f })).toEqual({ granted: false, reason: expected, message: "why" })
+    expect(await connectBrowser(found, { name: "Test app" }, { fetch: f })).toEqual({ granted: false, reason: expected, message: "why" })
   })
 
   test("a daemon that went away is unreachable", async () => {
     const f = fetchWith(() => {
       throw new TypeError("Failed to fetch")
     })
-    expect(await connectBrowser(found, { fetch: f })).toMatchObject({ granted: false, reason: "unreachable" })
+    expect(await connectBrowser(found, { name: "Test app" }, { fetch: f })).toMatchObject({ granted: false, reason: "unreachable" })
   })
 
   test("disconnect sends DELETE", async () => {
@@ -203,6 +203,64 @@ describe("openSession", () => {
     expect(sock.sent[1]).toEqual({ t: "write", id: open?.id, line: "ping" })
     session.close()
     expect(sock.sent[2]).toEqual({ t: "close", id: open?.id })
+  })
+
+  test("chdir asks the daemon to move the agent, and takes its new pid and cwd", async () => {
+    const pending = openSession({ port: 47615 }, "claude", { WebSocket: FakeSocket as unknown as typeof WebSocket })
+    await new Promise((r) => setTimeout(r, 0))
+    const sock = FakeSocket.last
+    sock.say({ t: "hello", version: "1", agents: [] })
+    await new Promise((r) => setTimeout(r, 0))
+    const id = sock.sent[0]?.id
+    sock.say({ t: "opened", id, pid: 42, cwd: "/work" })
+    const session = await pending
+
+    const moved = session.chdir("/work/app")
+    expect(sock.sent[1]).toEqual({ t: "chdir", id, dir: "/work/app" })
+    await expect(session.chdir("/elsewhere")).rejects.toThrow("already moving")
+    sock.say({ t: "moved", id: "someone-else", pid: 1, cwd: "/ignored" })
+    sock.say({ t: "moved", id, pid: 43, cwd: "/work/app" })
+    await moved
+    expect(session).toMatchObject({ pid: 43, cwd: "/work/app" })
+
+    const lines: string[] = []
+    session.onFrame((f) => f.kind === "out" && lines.push(f.data))
+    sock.say({ t: "frame", id, kind: "out", data: "from the new agent", code: 0 })
+    expect(lines).toEqual(["from the new agent"])
+  })
+
+  test("a chdir the daemon refuses rejects with its message and leaves the cwd alone", async () => {
+    const pending = openSession({ port: 47615 }, "claude", { WebSocket: FakeSocket as unknown as typeof WebSocket })
+    await new Promise((r) => setTimeout(r, 0))
+    const sock = FakeSocket.last
+    sock.say({ t: "hello", version: "1", agents: [] })
+    await new Promise((r) => setTimeout(r, 0))
+    const id = sock.sent[0]?.id
+    sock.say({ t: "opened", id, pid: 42, cwd: "/work" })
+    const session = await pending
+
+    const refused = session.chdir("/etc")
+    sock.say({ t: "error", id, message: "/etc is outside the folders you allowed this app" })
+    await expect(refused).rejects.toThrow("/etc is outside the folders you allowed this app")
+    expect(session.cwd).toBe("/work")
+
+    const again = session.chdir("/work/app")
+    sock.say({ t: "moved", id, pid: 44, cwd: "/work/app" })
+    await again
+    expect(session.cwd).toBe("/work/app")
+  })
+
+  test("a chdir in flight rejects when the socket closes", async () => {
+    const pending = openSession({ port: 47615 }, "claude", { WebSocket: FakeSocket as unknown as typeof WebSocket })
+    await new Promise((r) => setTimeout(r, 0))
+    const sock = FakeSocket.last
+    sock.say({ t: "hello", version: "1", agents: [] })
+    await new Promise((r) => setTimeout(r, 0))
+    sock.say({ t: "opened", id: sock.sent[0]?.id, pid: 42, cwd: "/work" })
+    const session = await pending
+    const moved = session.chdir("/work/app")
+    sock.close()
+    await expect(moved).rejects.toThrow("the daemon closed the session")
   })
 
   test("an error for the open rejects with the daemon's message", async () => {

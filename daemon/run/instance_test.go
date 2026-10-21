@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
+	"github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
 // One home, one daemon. A second `agentd run` on a home that a daemon already holds says so, starts nothing, writes
-// nothing and exits with 0: the exit codes are the protocol with the service manager (home/exit.go), and 0 is the one
-// that stays stopped. Any other code would be restarted at once by launchd and systemd, and the launcher would count
-// the quick exits as crashes and roll a good version back.
+// nothing and exits with 0: the exit codes are the protocol with agentd.app (home/exit.go), and 0 is the one that stays
+// stopped. Any other code would be started again at once and counted as a crash.
 
 // theMessage is what the second daemon prints, with the timestamp every line of a daemon's log starts with.
 func theMessage(holderPid int, kind string) *regexp.Regexp {
@@ -135,33 +135,13 @@ func TestTheLockRecordNamesTheDaemonThatHoldsIt(t *testing.T) {
 	}
 }
 
-func TestAServiceIsNamedAsOneBySecondDaemon(t *testing.T) {
-	box := newSandbox(t)
-	first := waitForGateway(t, startDaemon(t, box, nil, map[string]string{"AGENTD_AGENT_CLAUDE": sleepAgent, "AGENTD_MANAGED": "1"}), box)
-	settled(t, first)
-	second := startDaemon(t, box, nil, map[string]string{"AGENTD_AGENT_CLAUDE": sleepAgent})
-	if code := second.exitCode(t, 5*time.Second); code != 0 {
-		t.Fatalf("exit code %d, want 0", code)
+func TestTheKindOfADaemonComesFromItsUI(t *testing.T) {
+	someUI := func(func(ui.Action)) ui.Link { return nil }
+	if got := instanceKind(Deps{}); got != home.KindTerminal {
+		t.Errorf("no UI: %q, want %q", got, home.KindTerminal)
 	}
-	if !theMessage(first.d.pid(), "as a service").MatchString(strings.TrimSpace(second.out.String())) {
-		t.Errorf("the second daemon said %q", second.out.String())
-	}
-}
-
-func TestTheKindOfADaemonComesFromItsEnvironment(t *testing.T) {
-	for _, c := range []struct {
-		env  home.Env
-		want string
-	}{
-		{home.Env{}, home.KindTerminal},
-		{home.Env{"AGENTD_MANAGED": "1"}, home.KindService},
-		{home.Env{"AGENTD_MANAGED": "1", "AGENTD_UI_FD": "3"}, home.KindApp},
-		{home.Env{"AGENTD_UI_FD": "3"}, home.KindApp},
-		{home.Env{"AGENTD_UI_FD": "x"}, home.KindTerminal}, // not a descriptor: the start fails later, this is not an app
-	} {
-		if got := instanceKind(c.env); got != c.want {
-			t.Errorf("instanceKind(%v) = %q, want %q", c.env, got, c.want)
-		}
+	if got := instanceKind(Deps{UI: someUI}); got != home.KindApp {
+		t.Errorf("a UI: %q, want %q", got, home.KindApp)
 	}
 }
 
@@ -192,8 +172,8 @@ func TestADaemonThatEndsGivesTheHomeBack(t *testing.T) {
 	settled(t, second)
 }
 
-// The launcher starts a new engine as soon as the old one has exited with 75 (a restart, an update): the lock must
-// be free by then, or every update would end in "already running".
+// The app starts a new engine as soon as the old one has exited with 75 (a restart): the lock must be free by then, or
+// every restart would end in "already running".
 func TestARestartThroughExit75FindsTheLockFree(t *testing.T) {
 	r := startRig(t, sleepAgent, map[string]string{"AGENTD_MANAGED": "1"})
 	r.app.restart(t)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,6 +32,9 @@ const (
 type LocalDeps struct {
 	// Origin is the app's origin, as the gateway reads it from the Origin header (see ValidateOrigin).
 	Origin string
+	// Name is what the app calls itself: the daemon's dialog and menu show it beside Origin. Required unless Client
+	// replaces the calls to the daemon.
+	Name string
 	// Mode is ModeServer (the zero value too) or ModeBrowser.
 	Mode Mode
 	// StartPairing (server mode) starts a pairing on the app's server and answers its code; "" when the server gave none.
@@ -95,15 +99,16 @@ type LocalState struct {
 // remote is the default LocalClient: the package's calls for one origin.
 type remote struct {
 	origin string
+	name   string
 	opts   []Option
 }
 
 func (r remote) Detect(ctx context.Context) Detected { return Detect(ctx, r.origin, r.opts...) }
 func (r remote) ConnectServer(ctx context.Context, d Daemon, code string) ConnectResult {
-	return ConnectServer(ctx, d, r.origin, code, r.opts...)
+	return ConnectServer(ctx, d, r.origin, r.name, code, r.opts...)
 }
 func (r remote) ConnectBrowser(ctx context.Context, d Daemon) ConnectResult {
-	return ConnectBrowser(ctx, d, r.origin, r.opts...)
+	return ConnectBrowser(ctx, d, r.origin, r.name, r.opts...)
 }
 func (r remote) Disconnect(ctx context.Context, d Daemon) error {
 	return Disconnect(ctx, d, r.origin, r.opts...)
@@ -142,8 +147,8 @@ func realTicker(every time.Duration) (<-chan time.Time, func()) {
 	return t.C, t.Stop
 }
 
-// NewLocalDaemon is a LocalDaemon that has found nothing yet. It fails on deps that cannot work: no origin, an origin
-// the gateway would refuse (an *OriginError), or server mode without the pairing calls.
+// NewLocalDaemon is a LocalDaemon that has found nothing yet. It fails on deps that cannot work: no origin, no name, an
+// origin the gateway would refuse (an *OriginError), or server mode without the pairing calls.
 func NewLocalDaemon(deps LocalDeps) (*LocalDaemon, error) {
 	mode := deps.Mode
 	if mode == "" {
@@ -154,6 +159,8 @@ func NewLocalDaemon(deps LocalDeps) (*LocalDaemon, error) {
 		return nil, errors.New("goclient: Mode is ModeServer or ModeBrowser")
 	case deps.Origin == "" && deps.Client == nil:
 		return nil, errors.New("goclient: LocalDeps.Origin is required")
+	case deps.Client == nil && strings.TrimSpace(deps.Name) == "":
+		return nil, errors.New("goclient: LocalDeps.Name is required: the user is asked to let this app in by its name")
 	case mode == ModeServer && (deps.StartPairing == nil || deps.CancelPairing == nil):
 		return nil, errors.New("goclient: server mode cannot connect without StartPairing and CancelPairing")
 	}
@@ -164,7 +171,7 @@ func NewLocalDaemon(deps LocalDeps) (*LocalDaemon, error) {
 	}
 	client := deps.Client
 	if client == nil {
-		client = remote{origin: deps.Origin, opts: deps.Options}
+		client = remote{origin: deps.Origin, name: deps.Name, opts: deps.Options}
 	}
 	now := deps.Now
 	if now == nil {

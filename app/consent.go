@@ -1,90 +1,55 @@
 package main
 
 import (
-	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/nguyenvanduocit/agentd/daemon/consent"
 )
 
 // The consent window is where the daemon asks the user to let an app or a web page run agents: what it wants, the
-// folders it may work in, Allow or Deny. The wire is in daemon/ui/consent.go.
+// folders agents start in, Allow or Deny.
 
-// ConsentRequest is what the daemon asks. Title and Body are the daemon's own words for it, the ones the native dialogs
-// use too.
+// ConsentRequest is what the window shows: the daemon's words for the question and how long it waits for the answer.
 type ConsentRequest struct {
-	T        string   `json:"t"`
-	ID       string   `json:"id"`
-	Origin   string   `json:"origin"`
-	Mode     string   `json:"mode"`
-	Agents   []string `json:"agents"`
-	Title    string   `json:"title"`
-	Body     string   `json:"body"`
-	TimeoutS int      `json:"timeoutS"`
+	Title    string
+	Body     string
+	TimeoutS int
 }
 
-// ParseConsent reads a line of the daemon that asks the user; false for any other line.
-func ParseConsent(line []byte) (ConsentRequest, bool) {
-	var r ConsentRequest
-	if err := json.Unmarshal(line, &r); err != nil || r.T != "consent" || r.ID == "" {
-		return ConsentRequest{}, false
-	}
-	return r, true
+// RequestOf is the window's question for the daemon's: its words, and its time.
+func RequestOf(q consent.Question, timeoutS int) ConsentRequest {
+	text := consent.ConsentText(q)
+	return ConsentRequest{Title: text.Title, Body: text.Body, TimeoutS: timeoutS}
 }
 
-// ParseConsentEnd reads a line of the daemon that withdraws a question (it asked elsewhere, or ran out of time): the id
-// of the question.
-func ParseConsentEnd(line []byte) (string, bool) {
-	var m struct {
-		T  string `json:"t"`
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(line, &m); err != nil || m.T != "consent-end" || m.ID == "" {
-		return "", false
-	}
-	return m.ID, true
-}
-
-// ShownLine tells the daemon the window is up: it asks nowhere else.
-func ShownLine(id string) []byte {
-	b, _ := json.Marshal(struct {
-		T  string `json:"t"`
-		ID string `json:"id"`
-	}{"consent-shown", id})
-	return b
-}
-
-// AnswerLine is the user's decision. Folders are those the user chose, and mean something for an Allow only.
-func AnswerLine(id string, allow bool, folders []string) []byte {
-	answer := "deny"
-	if allow {
-		answer = "allow"
-	}
-	if folders == nil {
-		folders = []string{}
-	}
-	b, _ := json.Marshal(struct {
-		T       string   `json:"t"`
-		ID      string   `json:"id"`
-		Answer  string   `json:"answer"`
-		Folders []string `json:"folders"`
-	}{"consent-answer", id, answer, folders})
-	return b
-}
-
-// Consent is the window of one question: the question and the folders chosen so far. Its fields are read and changed
-// on the main thread only.
+// Consent is the window of one question: the question, the folders chosen so far, how long the access lasts, and where
+// the decision goes. Its fields are read and changed on the main thread only.
 type Consent struct {
 	Request ConsentRequest
 	Folders []string
-	// Answered: the answer went out, or the daemon withdrew the question; the window may close without saying more.
+	// Lasts is the index of the chosen time in consent.LastsChoices.
+	Lasts int
+	// Answered: the decision went out; the window may close without saying more.
 	Answered bool
 
 	win    *mygo.Window
 	answer func(allow bool)
+	result chan<- consent.Decision
 }
+
+// newConsent is the window of a question with the time the daemon suggests chosen.
+func newConsent(req ConsentRequest, result chan<- consent.Decision) *Consent {
+	return &Consent{Request: req, Lasts: consent.DefaultLastsChoice, result: result}
+}
+
+// LastsFor is how long the chosen time lasts (consent.NoEnd for never).
+func (c *Consent) LastsFor() time.Duration { return consent.LastsChoices[c.Lasts].Lasts }
 
 // Add chooses folders, each once, in the order chosen; what is not an absolute path is left out.
 func (c *Consent) Add(paths []string) {
@@ -120,25 +85,65 @@ func (c *Consent) View(ctx *ui.Context) {
 			ui.Text(ctx, c.Request.Body)
 		})
 		c.folders(ctx)
-		ui.Row(ctx).Gap(8).Children(func() {
-			ui.Spacer(ctx)
-			if ui.Button(ctx, "Deny").AutoFocus().Clicked() {
-				c.answer(false)
+		c.lasting(ctx)
+		ui.Column(ctx).Gap(4).Children(func() {
+			if line := timeoutLine(c.Request.TimeoutS); line != "" {
+				ui.Text(ctx, line).FontSize(11).TextColor(ctx.Theme().TextMuted)
 			}
-			if ui.PrimaryButton(ctx, "Allow").Disabled(!c.CanAllow()).Clicked() {
-				c.answer(true)
+			ui.Row(ctx).Gap(8).Children(func() {
+				ui.Spacer(ctx)
+				if ui.Button(ctx, "Deny").AutoFocus().Clicked() {
+					c.answer(false)
+				}
+				if ui.PrimaryButton(ctx, "Allow").Disabled(!c.CanAllow()).Clicked() {
+					c.answer(true)
+				}
+			})
+			if !c.CanAllow() {
+				ui.Text(ctx, "Add a folder to turn on Allow.").FontSize(11).TextColor(ctx.Theme().TextMuted)
 			}
 		})
 	})
 }
 
+// lasting is the choice of how long the access lasts, with the day it ends said under it.
+func (c *Consent) lasting(ctx *ui.Context) {
+	labels := make([]string, len(consent.LastsChoices))
+	for i, choice := range consent.LastsChoices {
+		labels[i] = choice.Label
+	}
+	ui.Column(ctx).Gap(8).Children(func() {
+		heading(ctx, "How long")
+		ui.Segmented(ctx, &c.Lasts, labels...).Label("How long")
+		ui.Text(ctx, endLine(c.LastsFor(), time.Now())).FontSize(11).TextColor(ctx.Theme().TextMuted)
+	})
+}
+
+// endLine says when access given at now for lasts ends, so the choice has a day and not only a length.
+func endLine(lasts time.Duration, now time.Time) string {
+	if lasts == consent.NoEnd {
+		return "The access has no end. You can disconnect it from the agentd icon in the menu bar."
+	}
+	return "The access ends " + now.Add(lasts).Format("Mon 2 Jan, 15:04") + "."
+}
+
+// timeoutLine says what no answer counts as, so a window that closes by itself is no surprise; empty when the daemon
+// named no time.
+func timeoutLine(seconds int) string {
+	switch {
+	case seconds <= 0:
+		return ""
+	case seconds%60 == 0:
+		return fmt.Sprintf("No answer within %d min counts as Deny.", seconds/60)
+	}
+	return fmt.Sprintf("No answer within %d s counts as Deny.", seconds)
+}
+
 // folders is the list of chosen folders, each with its own Remove, and Add.
 func (c *Consent) folders(ctx *ui.Context) {
 	ui.Column(ctx).Gap(8).Children(func() {
-		heading(ctx, "Folders it may work in")
-		if len(c.Folders) == 0 {
-			ui.Text(ctx, "Choose at least one folder. Agents start in the first one.").TextColor(ctx.Theme().TextMuted)
-		}
+		heading(ctx, "Where agents start")
+		ui.Text(ctx, "Agents start in the first folder. They can still reach files outside it.").TextColor(ctx.Theme().TextMuted)
 		for i, folder := range c.Folders {
 			ui.Row(ctx.Key(folder)).Gap(12).AlignItems(ui.Center).Children(func() {
 				ui.Text(ctx, folder).Grow(1).SingleLine().Ellipsis("…")
@@ -159,7 +164,7 @@ func (c *Consent) choose() {
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 			Parent:            c.win,
-			Title:             "Folders it may work in",
+			Title:             "Where agents start",
 			ButtonLabel:       "Add",
 			Directory:         true,
 			Multiple:          true,

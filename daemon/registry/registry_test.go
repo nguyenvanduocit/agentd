@@ -77,7 +77,7 @@ func TestParseDropsUnknownFields(t *testing.T) {
 
 // The file of a Node install (JSON.stringify(registry, null, 2) and a newline) is what Marshal writes.
 func TestMarshalIsTheBytesTheNodeDaemonWrote(t *testing.T) {
-	r := Empty().AddApp(App{Server: "https://a.example", Token: "t<&>"}).AddBrowser("https://c.example", day0, nil)
+	r := Empty().AddApp(App{Server: "https://a.example", Token: "t<&>"}).AddBrowser("https://c.example", day0, Access{})
 	want := `{
   "apps": [
     {
@@ -105,7 +105,7 @@ func TestMarshalIsTheBytesTheNodeDaemonWrote(t *testing.T) {
 }
 
 func TestMarshalParseRoundTrip(t *testing.T) {
-	r := Empty().AddApp(appA).AddApp(appB).AddBrowser("https://c.example", day0, nil)
+	r := Empty().AddApp(appA).AddApp(appB).AddBrowser("https://c.example", day0, Access{})
 	got, err := Parse(string(r.Marshal()))
 	if err != nil {
 		t.Fatal(err)
@@ -131,22 +131,22 @@ func TestEditsDoNotChangeTheirInput(t *testing.T) {
 
 func TestRemoveOriginDropsTheAppAndTheBrowserGrantOfThatOriginOnly(t *testing.T) {
 	later := day0.Add(time.Hour)
-	r := Empty().AddApp(appA).AddApp(appB).AddBrowser(appA.Server, day0, nil).AddBrowser("https://other.example", later, nil)
+	r := Empty().AddApp(appA).AddApp(appB).AddBrowser(appA.Server, day0, Access{}).AddBrowser("https://other.example", later, Access{})
 	r = r.RemoveOrigin(appA.Server)
 	wantEqual(t, r.Apps, []App{appB})
 	wantEqual(t, r.Browsers, []BrowserGrant{{Origin: "https://other.example", GrantedAt: GrantStamp(later)}})
 }
 
 func TestHasAppAndHasBrowserAnswerByOrigin(t *testing.T) {
-	r := Empty().AddApp(appA).AddBrowser("https://c.example", day0, nil)
+	r := Empty().AddApp(appA).AddBrowser("https://c.example", day0, Access{})
 	now := day0.Add(time.Hour)
 	for _, tc := range []struct {
 		name string
 		got  bool
 		want bool
 	}{
-		{"app a", r.HasApp(appA.Server), true},
-		{"app b", r.HasApp(appB.Server), false},
+		{"app a", r.HasApp(appA.Server, day0), true},
+		{"app b", r.HasApp(appB.Server, day0), false},
 		{"browser c", r.HasBrowser("https://c.example", now), true},
 		{"browser a", r.HasBrowser(appA.Server, now), false},
 	} {
@@ -157,7 +157,7 @@ func TestHasAppAndHasBrowserAnswerByOrigin(t *testing.T) {
 }
 
 func TestWithdrawnIsWhatRunsForAnOriginTheRegistryNoLongerHas(t *testing.T) {
-	r := Empty().AddApp(appA).AddBrowser("https://c.example", day0, nil)
+	r := Empty().AddApp(appA).AddBrowser("https://c.example", day0, Access{})
 	now := day0.Add(time.Hour)
 	wantEqual(t, r.Withdrawn([]string{appA.Server, appB.Server}, []string{"https://c.example", "https://d.example"}, now),
 		Ended{Apps: []string{appB.Server}, Pages: []string{"https://d.example"}})
@@ -165,46 +165,46 @@ func TestWithdrawnIsWhatRunsForAnOriginTheRegistryNoLongerHas(t *testing.T) {
 }
 
 func TestARepeatedBrowserGrantIsStoredOnce(t *testing.T) {
-	r := Empty().AddBrowser("https://c.example", day0, nil).AddBrowser("https://c.example", day0.Add(time.Hour), nil)
+	r := Empty().AddBrowser("https://c.example", day0, Access{}).AddBrowser("https://c.example", day0.Add(time.Hour), Access{})
 	wantEqual(t, r.Browsers, []BrowserGrant{{Origin: "https://c.example", GrantedAt: GrantStamp(day0)}})
 }
 
 func TestSelectApps(t *testing.T) {
 	two := Empty().AddApp(appA).AddApp(appB)
-	if got, err := two.SelectApps(nil); err != nil {
+	if got, err := two.SelectApps(nil, day0); err != nil {
 		t.Fatal(err)
 	} else {
 		wantEqual(t, got, []App{appA, appB})
 	}
-	if got, err := two.SelectApps(ptr("https://b.example/")); err != nil {
+	if got, err := two.SelectApps(ptr("https://b.example/"), day0); err != nil {
 		t.Fatal(err)
 	} else {
 		wantEqual(t, got, []App{appB})
 	}
-	if _, err := two.SelectApps(ptr("https://x.example")); err == nil || !strings.Contains(err.Error(), "not paired with https://x.example") {
+	if _, err := two.SelectApps(ptr("https://x.example"), day0); err == nil || !strings.Contains(err.Error(), "not paired with https://x.example") {
 		t.Errorf("error = %v, want not paired with https://x.example", err)
 	}
-	if _, err := two.SelectApps(ptr("nonsense")); err == nil || !strings.Contains(err.Error(), "is not a URL") {
+	if _, err := two.SelectApps(ptr("nonsense"), day0); err == nil || !strings.Contains(err.Error(), "is not a URL") {
 		t.Errorf("error = %v, want is not a URL", err)
 	}
 }
 
 func TestSelectAppTakesTheOnlyAppOrTheOneNamed(t *testing.T) {
 	two := Empty().AddApp(appA).AddApp(appB)
-	if got, err := Empty().AddApp(appA).SelectApp(nil); err != nil || !reflect.DeepEqual(got, appA) {
+	if got, err := Empty().AddApp(appA).SelectApp(nil, day0); err != nil || !reflect.DeepEqual(got, appA) {
 		t.Errorf("only app = %+v, %v", got, err)
 	}
-	if got, err := two.SelectApp(ptr(appB.Server)); err != nil || !reflect.DeepEqual(got, appB) {
+	if got, err := two.SelectApp(ptr(appB.Server), day0); err != nil || !reflect.DeepEqual(got, appB) {
 		t.Errorf("named app = %+v, %v", got, err)
 	}
 }
 
 func TestSelectAppWithSeveralAppsAndNoServerAsksForApp(t *testing.T) {
 	two := Empty().AddApp(appA).AddApp(appB)
-	if _, err := two.SelectApp(nil); err == nil || !strings.Contains(err.Error(), "--app") {
+	if _, err := two.SelectApp(nil, day0); err == nil || !strings.Contains(err.Error(), "--app") {
 		t.Errorf("error = %v, want it to mention --app", err)
 	}
-	if _, err := Empty().SelectApp(nil); err == nil || !strings.Contains(err.Error(), "not paired") {
+	if _, err := Empty().SelectApp(nil, day0); err == nil || !strings.Contains(err.Error(), "not paired") {
 		t.Errorf("error = %v, want not paired", err)
 	}
 }
@@ -212,8 +212,8 @@ func TestSelectAppWithSeveralAppsAndNoServerAsksForApp(t *testing.T) {
 func TestFoldersRoundTripAndAreLookedUpPerGrant(t *testing.T) {
 	r := Empty().
 		AddApp(App{Server: "https://a.example", Token: "ta", Folders: []string{"/work/a", "/work/b"}}).
-		AddBrowser("https://c.example", day0, []string{"/work/c"}).
-		AddBrowser("https://d.example", day0, nil)
+		AddBrowser("https://c.example", day0, Access{Folders: []string{"/work/c"}}).
+		AddBrowser("https://d.example", day0, Access{})
 	back, err := Parse(string(r.Marshal()))
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestFoldersRoundTripAndAreLookedUpPerGrant(t *testing.T) {
 	if back.BrowserFolders("https://d.example") != nil || back.BrowserFolders("https://unknown.example") != nil || back.AppFolders("https://unknown.example") != nil {
 		t.Error("a grant without folders, or none at all, has no folders")
 	}
-	if strings.Contains(string(Empty().AddBrowser("https://d.example", day0, nil).Marshal()), "folders") {
+	if strings.Contains(string(Empty().AddBrowser("https://d.example", day0, Access{}).Marshal()), "folders") {
 		t.Error("a grant without folders is written as before")
 	}
 }
@@ -245,8 +245,8 @@ func TestAGrantStampIsTheFormatTheNodeDaemonWroteAndReadsBack(t *testing.T) {
 		t.Errorf("GrantStamp = %q", got)
 	}
 	g := BrowserGrant{Origin: "https://c.example", GrantedAt: GrantStamp(day0)}
-	if at, ok := g.ExpiresAt(); !ok || !at.Equal(day0.Add(BrowserGrantTTL)) {
-		t.Errorf("ExpiresAt = %v, %v; want %v", at, ok, day0.Add(BrowserGrantTTL))
+	if at, ends, ok := g.End(); !ok || !ends || !at.Equal(day0.Add(BrowserGrantTTL)) {
+		t.Errorf("End = %v, %v; want %v", at, ok, day0.Add(BrowserGrantTTL))
 	}
 }
 
@@ -254,7 +254,7 @@ func TestABrowserGrantLastsThirtyDaysFromTheDayItWasMade(t *testing.T) {
 	if BrowserGrantTTL != 30*24*time.Hour {
 		t.Fatalf("BrowserGrantTTL = %v, want 30 days", BrowserGrantTTL)
 	}
-	r := Empty().AddBrowser("https://c.example", day0, nil)
+	r := Empty().AddBrowser("https://c.example", day0, Access{})
 	for _, tc := range []struct {
 		name string
 		at   time.Duration
@@ -283,7 +283,7 @@ func TestAGrantWithoutAReadableTimeIsLapsed(t *testing.T) {
 }
 
 func TestHasLiveBrowsersSaysWhetherAnyPageGrantIsYoung(t *testing.T) {
-	r := Empty().AddBrowser("https://old.example", day0, nil).AddBrowser("https://new.example", day0.Add(20*24*time.Hour), nil)
+	r := Empty().AddBrowser("https://old.example", day0, Access{}).AddBrowser("https://new.example", day0.Add(20*24*time.Hour), Access{})
 	if !r.HasLiveBrowsers(day0.Add(31 * 24 * time.Hour)) {
 		t.Error("the younger grant is live on day 31")
 	}
@@ -296,10 +296,10 @@ func TestHasLiveBrowsersSaysWhetherAnyPageGrantIsYoung(t *testing.T) {
 }
 
 func TestAskingAgainAfterTheGrantLapsedRenewsItWithTheNewFolders(t *testing.T) {
-	other := Empty().AddBrowser("https://other.example", day0, []string{"/work/o"})
-	r := other.AddBrowser("https://c.example", day0, []string{"/work/old"})
+	other := Empty().AddBrowser("https://other.example", day0, Access{Folders: []string{"/work/o"}})
+	r := other.AddBrowser("https://c.example", day0, Access{Folders: []string{"/work/old"}})
 	again := day0.Add(BrowserGrantTTL + time.Hour)
-	r = r.AddBrowser("https://c.example", again, []string{"/work/new"})
+	r = r.AddBrowser("https://c.example", again, Access{Folders: []string{"/work/new"}})
 	wantEqual(t, r.Browsers, []BrowserGrant{
 		{Origin: "https://other.example", GrantedAt: GrantStamp(day0), Folders: []string{"/work/o"}},
 		{Origin: "https://c.example", GrantedAt: GrantStamp(again), Folders: []string{"/work/new"}},
@@ -310,13 +310,13 @@ func TestAskingAgainAfterTheGrantLapsedRenewsItWithTheNewFolders(t *testing.T) {
 }
 
 func TestAGrantThatIsStillLiveKeepsItsFirstTimeAndFoldersWhenAskedAgain(t *testing.T) {
-	r := Empty().AddBrowser("https://c.example", day0, []string{"/work/a"})
-	r = r.AddBrowser("https://c.example", day0.Add(10*24*time.Hour), []string{"/work/b"})
+	r := Empty().AddBrowser("https://c.example", day0, Access{Folders: []string{"/work/a"}})
+	r = r.AddBrowser("https://c.example", day0.Add(10*24*time.Hour), Access{Folders: []string{"/work/b"}})
 	wantEqual(t, r.Browsers, []BrowserGrant{{Origin: "https://c.example", GrantedAt: GrantStamp(day0), Folders: []string{"/work/a"}}})
 }
 
 func TestPagesOfALapsedGrantAreWithdrawnLikeThoseOfARemovedOne(t *testing.T) {
-	r := Empty().AddBrowser("https://old.example", day0, nil).AddBrowser("https://new.example", day0.Add(20*24*time.Hour), nil)
+	r := Empty().AddBrowser("https://old.example", day0, Access{}).AddBrowser("https://new.example", day0.Add(20*24*time.Hour), Access{})
 	now := day0.Add(31 * 24 * time.Hour)
 	wantEqual(t, r.Withdrawn(nil, []string{"https://old.example", "https://new.example"}, now),
 		Ended{Apps: []string{}, Pages: []string{"https://old.example"}})
@@ -325,6 +325,6 @@ func TestPagesOfALapsedGrantAreWithdrawnLikeThoseOfARemovedOne(t *testing.T) {
 // A session that is still open when its grant lapses must stay inside its folders until the daemon ends it: no folders
 // would mean no limit.
 func TestALapsedGrantStillNamesItsFolders(t *testing.T) {
-	r := Empty().AddBrowser("https://c.example", day0, []string{"/work/c"})
+	r := Empty().AddBrowser("https://c.example", day0, Access{Folders: []string{"/work/c"}})
 	wantEqual(t, r.BrowserFolders("https://c.example"), []string{"/work/c"})
 }

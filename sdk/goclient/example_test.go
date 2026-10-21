@@ -30,6 +30,7 @@ func Example_serverMode() {
 
 	// 1. The daemon on this computer: is it there, and can the user connect it to this app?
 	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{
+		Name:          "My app",
 		Origin:        origin,
 		StartPairing:  myServer.StartDaemonPairing, // the app's own call: a one-time code
 		CancelPairing: myServer.CancelDaemonPairing,
@@ -47,10 +48,6 @@ func Example_serverMode() {
 	// 2. No daemon here: agentd.app for the user's Mac. Once it is open, Detect finds it and Connect pairs it.
 	if downloads, ok := goclient.DesktopDownloadsFrom(""); ok { // "": agentd's own releases page
 		fmt.Println(downloads.AppleSilicon, downloads.Intel)
-	}
-	// Or, on Linux or from a terminal, the one command that installs it, pairs it with this app and starts it.
-	if command, ok := goclient.InstallCommand(goclient.InstallOptions{App: origin, Code: "K7QX-29PD"}); ok {
-		fmt.Println(command)
 	}
 }
 
@@ -73,7 +70,7 @@ func Example_browserMode() {
 	ctx := context.Background()
 	const origin = "http://localhost:5173" // https, or http on a loopback host: what the gateway accepts
 
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: origin, Mode: goclient.ModeBrowser})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: origin, Mode: goclient.ModeBrowser})
 	if err != nil {
 		log.Fatal(err) // an origin the gateway would refuse is an *OriginError that says what to write instead
 	}
@@ -105,7 +102,7 @@ func Example_browserMode() {
 
 func Example_phases() {
 	ctx := context.Background()
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -115,7 +112,7 @@ func Example_phases() {
 			fmt.Println("Looking for agentd on this computer...")
 		case goclient.PhaseAbsent:
 			// Not installed, not running, or something between blocked the call: the program cannot tell which.
-			fmt.Println("agentd is not here. To start it from a terminal install:", goclient.AgentdCommands().Start)
+			fmt.Println("agentd is not here. Open agentd.app.")
 		case goclient.PhaseAvailable:
 			fmt.Println("agentd is here. Connect asks the user to allow this app.") // s.CanConnect
 		case goclient.PhaseConnecting:
@@ -135,7 +132,7 @@ func Example_phases() {
 
 func Example_errors() {
 	ctx := context.Background()
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -157,7 +154,7 @@ func Example_errors() {
 
 func Example_agentEnded() {
 	ctx := context.Background()
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -178,7 +175,7 @@ func Example_agentEnded() {
 }
 
 func Example_cancelConnect() {
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "My app", Origin: "http://localhost:5173", Mode: goclient.ModeBrowser})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -194,6 +191,7 @@ func Example_cancelConnect() {
 func Example_testWithoutClicking() {
 	// A test daemon on port 47661 (AGENTD_LOCAL_PORT=47661, see "Test without clicking" in the README).
 	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{
+		Name:    "My app",
 		Origin:  "http://localhost:5173",
 		Mode:    goclient.ModeBrowser,
 		Options: []goclient.Option{goclient.WithPorts(47661)},

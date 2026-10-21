@@ -160,15 +160,10 @@ func TestTheAppCountsACPConnectionsAmongTheRunningAgents(t *testing.T) {
 	d, app := startWithApp(t, box, map[string]string{"AGENTD_LOCAL_PORT": "0", "AGENTD_AGENT_CLAUDE": acpAgent(pidFile)})
 	g := waitForGateway(t, d, box)
 
-	// sessions is what the newest state line says; -1 before there is one.
-	sessions := func() float64 {
-		app.mu.Lock()
-		defer app.mu.Unlock()
-		for i := len(app.got) - 1; i >= 0; i-- {
-			if app.got[i]["t"] == "state" {
-				n, _ := app.got[i]["sessions"].(float64)
-				return n
-			}
+	// sessions is what the newest state says; -1 before there is one.
+	sessions := func() int {
+		if s, ok := app.latest(); ok {
+			return s.Sessions
 		}
 		return -1
 	}

@@ -39,9 +39,6 @@ func equalCommand(a, b Command) bool {
 	case Apps:
 		y, ok := b.(Apps)
 		return ok && x.Action == y.Action && x.Origin == y.Origin && eq(x.Config, y.Config)
-	case Service:
-		y, ok := b.(Service)
-		return ok && x.Action == y.Action && x.Lines == y.Lines && x.Follow == y.Follow && eq(x.Dir, y.Dir)
 	default:
 		return a == b
 	}
@@ -67,15 +64,6 @@ func TestParseCommands(t *testing.T) {
 		{"run is the explicit name of the default command", []string{"run"}, Run{}},
 		{"run with --dir", []string{"run", "--dir", "/w"}, Run{Dir: p("/w")}},
 		{"empty --dir= is not an absent --dir", []string{"--dir="}, Run{Dir: p("")}},
-
-		{"service install", []string{"service", "install"}, Service{Action: ServiceInstall, Lines: 100}},
-		{"service uninstall", []string{"service", "uninstall"}, Service{Action: ServiceUninstall, Lines: 100}},
-		{"service start", []string{"service", "start"}, Service{Action: ServiceStart, Lines: 100}},
-		{"service restart", []string{"service", "restart"}, Service{Action: ServiceRestart, Lines: 100}},
-		{"service status", []string{"service", "status"}, Service{Action: ServiceStatus, Lines: 100}},
-		{"service logs -n -f", []string{"service", "logs", "-n", "20", "-f"}, Service{Action: ServiceLogs, Lines: 20, Follow: true}},
-		{"service logs --lines=5", []string{"service", "logs", "--lines=5"}, Service{Action: ServiceLogs, Lines: 5}},
-		{"service install --dir", []string{"service", "install", "--dir", "/work"}, Service{Action: ServiceInstall, Lines: 100, Dir: p("/work")}},
 
 		{"apps lists", []string{"apps"}, Apps{Action: AppsList}},
 		{"apps list with --config", []string{"apps", "list", "--config", "/c.json"}, Apps{Action: AppsList, Config: p("/c.json")}},
@@ -103,18 +91,12 @@ func TestParseCommands(t *testing.T) {
 }
 
 func TestParseErrors(t *testing.T) {
-	servicePhrase := "install, uninstall, start, restart, status, logs"
 	cases := []struct {
 		name    string
 		argv    []string
 		contain string
 	}{
 		{"run takes no argument", []string{"run", "extra"}, `unexpected argument "extra"`},
-		{"service needs an action", []string{"service"}, servicePhrase},
-		{"service rejects an unknown action", []string{"service", "reboot"}, servicePhrase},
-		{"service logs -n 0", []string{"service", "logs", "-n", "0"}, "positive"},
-		{"service logs -n x", []string{"service", "logs", "-n", "x"}, "positive"},
-		{"service install takes no argument", []string{"service", "install", "extra"}, `unexpected argument "extra"`},
 		{"apps remove needs an origin", []string{"apps", "remove"}, "<origin>"},
 		{"apps rejects an unknown action", []string{"apps", "frob"}, "list, remove"},
 		{"pair needs --app", []string{"pair", "--code", "abc"}, "--app"},
@@ -143,8 +125,6 @@ func TestParseErrorTexts(t *testing.T) {
 	}{
 		{[]string{"apps", "list", "https://x", "y"}, `unexpected argument "y"`},
 		{[]string{"run", "a", "b"}, `unexpected argument "b"`},
-		{[]string{"service", "logs", "-n", "1.5"}, `--lines "1.5" is not a positive number`},
-		{[]string{"service", "logs", "--lines="}, `--lines "" is not a positive number`},
 		{[]string{"pair", "--app="}, "pair needs --app <url>"},
 		{[]string{"mcp", "--session="}, "mcp needs --session <id> (an app's session) or --page (a page's)"},
 	}
@@ -161,31 +141,13 @@ func TestParseHelpWinsOverPositionals(t *testing.T) {
 	}
 }
 
-func TestParseServiceLinesRange(t *testing.T) {
-	cases := []struct {
-		lines string
-		want  int
-	}{{"1", 1}, {" 7 ", 7}, {"1e2", 100}, {"0x10", 16}, {"+5", 5}, {"5.0", 5}, {"9999999999999999999999", int(^uint(0) >> 1)}}
-	for _, c := range cases {
-		got := mustParse(t, "service", "logs", "--lines="+c.lines).(Service)
-		if got.Lines != c.want {
-			t.Errorf("--lines=%q = %d, want %d", c.lines, got.Lines, c.want)
-		}
-	}
-	for _, bad := range []string{"", "-1", "0", "NaN", "Infinity", "1.5", "1_0", "0x", "abc", "1,5"} {
-		if err := parseError(t, "service", "logs", "--lines="+bad); !strings.Contains(err, "positive") {
-			t.Errorf("--lines=%q error = %q", bad, err)
-		}
-	}
-}
-
 func TestUsage(t *testing.T) {
-	for _, want := range []string{"apps remove", "pair --app", "service install", "agentd help", "-v, --version", "-h, --help"} {
+	for _, want := range []string{"apps remove", "pair --app", "agentd help", "-v, --version", "-h, --help"} {
 		if !strings.Contains(Usage, want) {
 			t.Errorf("Usage lacks %q", want)
 		}
 	}
-	if !strings.HasPrefix(Usage, "agentd: runs your agents for the apps you allow\n\nusage:\n") || !strings.HasSuffix(Usage, "agentd service install\n") {
+	if !strings.HasPrefix(Usage, "agentd: runs your agents for the apps you allow\n\nusage:\n") || !strings.HasSuffix(Usage, "agentd acp claude\n") {
 		t.Errorf("Usage has the wrong frame: %q ... %q", Usage[:40], Usage[len(Usage)-40:])
 	}
 }
@@ -193,7 +155,7 @@ func TestUsage(t *testing.T) {
 // Every line of the usage says what its command does, and none says what is not true.
 func TestUsageDescribesEveryCommandAndExplainsRemove(t *testing.T) {
 	lines := strings.Split(Usage, "\n")
-	for _, command := range []string{"agentd service uninstall", "agentd service status", "agentd version"} {
+	for _, command := range []string{"agentd apps remove", "agentd acp", "agentd version"} {
 		found := false
 		for _, line := range lines {
 			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), command); ok {
@@ -206,9 +168,6 @@ func TestUsageDescribesEveryCommandAndExplainsRemove(t *testing.T) {
 		if !found {
 			t.Errorf("Usage has no line for %q", command)
 		}
-	}
-	if strings.Contains(Usage, "service restart applies it") {
-		t.Error("a removed app goes within seconds of the running daemon reading its registry: no restart is needed")
 	}
 	if !strings.Contains(Usage, "examples:\n") {
 		t.Error("Usage has no examples")
@@ -242,7 +201,7 @@ func TestAnUnknownOptionPointsAtHelp(t *testing.T) {
 // The entry's switch reads as one case per command.
 func TestCommandSwitch(t *testing.T) {
 	kinds := map[string]string{}
-	for _, argv := range [][]string{{}, {"pair", "--app", "x"}, {"mcp", "--session", "s"}, {"mcp", "--page"}, {"apps"}, {"service", "status"}, {"version"}, {"-h"}} {
+	for _, argv := range [][]string{{}, {"pair", "--app", "x"}, {"mcp", "--session", "s"}, {"mcp", "--page"}, {"apps"}, {"version"}, {"-h"}} {
 		switch mustParse(t, argv...).(type) {
 		case Run:
 			kinds["run"] = "ok"
@@ -254,15 +213,13 @@ func TestCommandSwitch(t *testing.T) {
 			kinds["page-mcp"] = "ok"
 		case Apps:
 			kinds["apps"] = "ok"
-		case Service:
-			kinds["service"] = "ok"
 		case Version:
 			kinds["version"] = "ok"
 		case Help:
 			kinds["help"] = "ok"
 		}
 	}
-	if len(kinds) != 8 {
-		t.Errorf("type switch reached %d of 8 commands: %v", len(kinds), kinds)
+	if len(kinds) != 7 {
+		t.Errorf("type switch reached %d of 7 commands: %v", len(kinds), kinds)
 	}
 }

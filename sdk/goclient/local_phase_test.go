@@ -31,7 +31,7 @@ func newClock() *clock { return &clock{now: time.Date(2026, 10, 20, 9, 0, 0, 0, 
 
 func localWith(t *testing.T, mode goclient.Mode, client goclient.LocalClient, now func() time.Time) *goclient.LocalDaemon {
 	t.Helper()
-	deps := goclient.LocalDeps{Origin: "https://app.example.com", Mode: mode, Client: client, Now: now}
+	deps := goclient.LocalDeps{Name: "Test app", Origin: "https://app.example.com", Mode: mode, Client: client, Now: now}
 	if mode != goclient.ModeBrowser {
 		deps.StartPairing = func(context.Context) (string, error) { return "CODE", nil }
 		deps.CancelPairing = func() {}

@@ -147,8 +147,18 @@ func (g *gatewayDaemon) call(t *testing.T, method, path string, o callOptions) r
 	return out
 }
 
+// connect asks to connect as `from`. A body that names no app gets a name: what these tests are about is not the name.
 func (g *gatewayDaemon) connect(t *testing.T, body any, from string) reply {
 	t.Helper()
+	if m, ok := body.(map[string]any); ok {
+		if _, named := m["name"]; !named {
+			named := map[string]any{"name": "Test app"}
+			for k, v := range m {
+				named[k] = v
+			}
+			body = named
+		}
+	}
 	return g.call(t, "POST", "/v1/connect", callOptions{origin: origin(from), body: body})
 }
 

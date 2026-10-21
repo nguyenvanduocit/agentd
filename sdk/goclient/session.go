@@ -258,8 +258,18 @@ type Session struct {
 	stdin         *lineWriter
 	mcpOut        *lineWriter
 
-	mu     sync.Mutex // guards frames
+	mu     sync.Mutex // guards frames and moving
 	frames []func(Frame)
+
+	moveMu sync.Mutex      // one Chdir at a time
+	moving chan moveResult // the answer a Chdir waits for; nil when none does
+}
+
+// moveResult is the daemon's answer to a chdir: moved, or an error.
+type moveResult struct {
+	pid int
+	cwd string
+	err error
 }
 
 func (s *Session) send(m any) error {
@@ -281,6 +291,43 @@ type toDaemon struct {
 	ID    string `json:"id"`
 	Agent string `json:"agent,omitempty"`
 	Line  string `json:"line,omitempty"`
+	Dir   string `json:"dir,omitempty"`
+}
+
+// Chdir moves the agent to dir, an absolute path to a directory the user allowed this app. The daemon ends the agent
+// and starts the same program in dir, on this session's streams: Stdout and Stdin carry on with the new process. It is
+// a new agent that has not been initialized, so the app speaks ACP to it from the start (initialize, then session/new
+// or session/load), and what the old one had said and not yet been read stays in Stdout. Pid and Cwd are the new
+// process's once it returns; do not read them while it runs. The daemon's refusal (a folder the user did not allow,
+// not a directory, a stopping daemon) is a *SessionError and leaves the agent where it is, except that an agent which
+// cannot start in dir is gone and ends the session. An agentd that predates Chdir refuses it as an unknown message.
+func (s *Session) Chdir(ctx context.Context, dir string) error {
+	s.moveMu.Lock()
+	defer s.moveMu.Unlock()
+	reply := make(chan moveResult, 1)
+	s.mu.Lock()
+	s.moving = reply
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.moving = nil
+		s.mu.Unlock()
+	}()
+	if err := s.send(toDaemon{T: "chdir", ID: s.id, Dir: dir}); err != nil {
+		return err
+	}
+	select {
+	case m := <-reply:
+		if m.err != nil {
+			return m.err
+		}
+		s.Pid, s.Cwd = m.pid, m.cwd
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.done:
+		return ErrClosed
+	}
 }
 
 // Write sends one line to the agent's stdin (without its newline).
@@ -386,6 +433,14 @@ func (s *Session) run() {
 		switch m.T {
 		case "mcp":
 			s.mcpIn.line(m.Line)
+		case "moved":
+			pid := -1
+			if m.Pid != nil {
+				pid = *m.Pid
+			}
+			s.answerMove(moveResult{pid: pid, cwd: m.Cwd})
+		case "error":
+			s.answerMove(moveResult{err: &SessionError{Reason: ReasonError, Message: m.Message}})
 		case "frame":
 			f := Frame{Kind: m.Kind, Data: m.Data, Code: m.Code}
 			if f.Kind == "" {
@@ -410,6 +465,19 @@ func (s *Session) run() {
 					close(s.exited)
 				})
 			}
+		}
+	}
+}
+
+// answerMove hands the daemon's answer to the Chdir that waits for it; an answer nobody waits for is dropped.
+func (s *Session) answerMove(m moveResult) {
+	s.mu.Lock()
+	reply := s.moving
+	s.mu.Unlock()
+	if reply != nil {
+		select {
+		case reply <- m:
+		default:
 		}
 	}
 }

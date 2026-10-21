@@ -3,27 +3,30 @@
 package main
 
 import (
-	"bufio"
-	"cmp"
+	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/nguyenvanduocit/agentd/daemon/cli"
+	"github.com/nguyenvanduocit/agentd/daemon/home"
+	"github.com/nguyenvanduocit/agentd/daemon/proc"
+	"github.com/nguyenvanduocit/agentd/daemon/run"
+	agentui "github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
 // maxLog is how large the engine's log may grow before the app starts a new one at the next start of the engine.
 const maxLog = 5 << 20
 
-// EngineFiles are what the app runs: the engine (agentd's Go binary), the Node.js it runs the ACP adapters on, and where
-// its log goes. Node is empty when the app carries none; the engine then reports its adapters not ready.
+// EngineFiles are what the engine uses of the app: the Node.js it runs the ACP adapters on, the folder it keeps its
+// files in, and where its log goes. Node is empty when the app carries none; the engine then reports its adapters not
+// ready.
 type EngineFiles struct {
-	Engine, Node, Home, Log string
+	Node, Home, Log string
 }
 
 // NodeBin is the directory of the Node.js the app carries, or "" without one.
@@ -36,10 +39,7 @@ func (f EngineFiles) NodeBin() string {
 
 // Why the engine does not start. The error that reaches the log says it in full; what the person reads is PlainReason.
 var (
-	errNoEngine = errors.New("this app carries no engine")
-	errChannel  = errors.New("the engine's channel")
-	errLog      = errors.New("the engine's log")
-	errStart    = errors.New("start the engine")
+	errLog = errors.New("the engine's log")
 )
 
 // couldNotStart is what the person reads for every reason below that has no sentence of its own: the log has the rest.
@@ -51,7 +51,6 @@ var plainReasons = []struct {
 	because error
 	say     string
 }{
-	{errNoEngine, "This copy of agentd is incomplete. Download agentd.app again."},
 	{errLog, "agentd cannot write its log in ~/.agentd. Check that folder, then choose Start."},
 }
 
@@ -79,27 +78,20 @@ func NoteInLog(file, text string) {
 	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), text)
 }
 
-// FindEngine finds what the app carries in its resources: engine/agentd, and node/bin/node for the adapters. Both are
-// merged into the app's resources by mygo build from the platform's directory, and stay in a directory of their own
-// under go run, so each is looked for in the resources and then in the platform's.
-// AGENTD_APP_ENGINE and AGENTD_APP_NODE name others (development, tests); AGENTD_HOME moves the engine's home. An app
-// without an engine cannot run; one without Node.js runs, and its adapters are not ready.
-func FindEngine(resources, home string, env func(string) string) (EngineFiles, error) {
-	f := EngineFiles{Engine: env("AGENTD_APP_ENGINE"), Node: env("AGENTD_APP_NODE"), Home: env("AGENTD_HOME")}
+// FindFiles finds what the app carries in its resources: node/bin/node for the adapters. It is merged into the app's
+// resources by mygo build from the platform's directory, and stays in a directory of its own under go run, so it is
+// looked for in the resources and then in the platform's. AGENTD_APP_NODE names another (development, tests);
+// AGENTD_HOME moves the engine's home. An app without Node.js runs, and its adapters are not ready.
+func FindFiles(resources, home string, env func(string) string) EngineFiles {
+	f := EngineFiles{Node: env("AGENTD_APP_NODE"), Home: env("AGENTD_HOME")}
 	if f.Home == "" {
 		f.Home = filepath.Join(home, ".agentd")
 	}
 	f.Log = filepath.Join(f.Home, "logs", "daemon.log")
-	if f.Engine == "" {
-		f.Engine = carried(resources, "engine", "agentd")
-	}
 	if f.Node == "" {
 		f.Node = carried(resources, "node", "bin", "node")
 	}
-	if f.Engine == "" || !exists(f.Engine) {
-		return f, fmt.Errorf("%w (looked for %q)", errNoEngine, cmp.Or(f.Engine, filepath.Join(resources, "engine", "agentd")))
-	}
-	return f, nil
+	return f
 }
 
 // carried is the path of a file the app ships, in the resources or else in the platform's directory of them; "" when it
@@ -118,54 +110,65 @@ func exists(p string) bool {
 	return err == nil
 }
 
-// Engine is the agentd daemon the app runs, with a channel on its fd 3 (AGENTD_UI_FD): its states come in, the user's
-// choices go out. Closing the channel ends it, with its agents.
+// Engine is the agentd daemon (daemon/run) running inside the app, in a goroutine. It shows its state and asks the
+// user through the link the app gives it, and does what the user chooses through Send. Stopping it ends its agents.
 type Engine struct {
-	cmd     *exec.Cmd
-	conn    net.Conn
+	cancel  context.CancelFunc
+	tracker *proc.Tracker
 	started time.Time
-	write   sync.Mutex
 	done    chan struct{}
 	code    int
+
+	mu       sync.Mutex
+	onAction func(agentui.Action)
 }
 
-// StartEngine runs the engine in the user's home with `path` as its PATH, in a process group of its own, its output
-// in its log. onLine gets each line it sends (states and questions, see app.line).
-func StartEngine(f EngineFiles, home, path string, onLine func(line []byte)) (*Engine, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errChannel, err)
-	}
-	theirs := os.NewFile(uintptr(fds[1]), "agentd-ui-engine")
-	defer func() { _ = theirs.Close() }()
-	// A net.Conn, on the poller: closing it ends a read in flight, so the engine sees its channel close.
-	file := os.NewFile(uintptr(fds[0]), "agentd-ui")
-	ours, err := net.FileConn(file)
-	_ = file.Close()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errChannel, err)
-	}
+// OpenLink is how the engine reaches the app: it opens the link that shows the engine's state, and calls onAction with
+// each choice of the user.
+type OpenLink = func(onAction func(agentui.Action)) agentui.Link
+
+// StartEngine runs the engine in this process, in the user's home with `path` as its PATH, its output in its log. open
+// is the link to the app.
+func StartEngine(f EngineFiles, home string, path string, open OpenLink) (*Engine, error) {
 	logFile, err := openLog(f.Log)
 	if err != nil {
-		_ = ours.Close()
 		return nil, err
 	}
-	defer func() { _ = logFile.Close() }()
-	cmd := exec.Command(f.Engine, "run")
-	cmd.Dir = home
-	// The last of a duplicated name wins: the app's PATH and channel replace whatever its own environment says.
-	cmd.Env = append(os.Environ(), "PATH="+path, "AGENTD_UI_FD=3", "AGENTD_MANAGED=1", "AGENTD_HOME="+f.Home)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	cmd.ExtraFiles = []*os.File{theirs}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		_ = ours.Close()
-		return nil, fmt.Errorf("%w: %w", errStart, err)
+	host, err := engineHost(home, path, f.Home)
+	if err != nil {
+		_ = logFile.Close()
+		return nil, err
 	}
-	e := &Engine{cmd: cmd, conn: ours, started: time.Now(), done: make(chan struct{})}
-	go e.read(onLine)
-	go e.wait()
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &Engine{cancel: cancel, tracker: proc.NewTracker(), started: time.Now(), done: make(chan struct{})}
+	log := proc.NewLogger(logFile, logFile)
+	deps := run.Deps{Log: log, Host: host, Tracker: e.tracker, UI: func(onAction func(agentui.Action)) agentui.Link {
+		e.mu.Lock()
+		e.onAction = onAction
+		e.mu.Unlock()
+		return open(onAction)
+	}}
+	go func() {
+		defer close(e.done)
+		defer func() { _ = logFile.Close() }()
+		defer log.CrashOnPanic(e.tracker)
+		e.code = run.Daemon(ctx, cli.Run{Dir: &home}, deps)
+	}()
 	return e, nil
+}
+
+// engineHost is the machine the engine sees: this process's environment, with the app's PATH and home on top of it, and
+// agentd.app named as what manages it (a Restart from the window exits 75, and the app starts the engine again).
+func engineHost(userHome, path, agentdHome string) (home.Host, error) {
+	host, err := home.CurrentHost()
+	if err != nil {
+		return home.Host{}, err
+	}
+	host.Env["PATH"] = path
+	host.Env["AGENTD_MANAGED"] = "1"
+	host.Env["AGENTD_HOME"] = agentdHome
+	host.Home = userHome
+	return host, nil
 }
 
 // openLog opens the engine's log for appending, after moving one that grew past maxLog to daemon.log.1.
@@ -183,37 +186,19 @@ func openLog(file string) (*os.File, error) {
 	return f, nil
 }
 
-func (e *Engine) read(onLine func(line []byte)) {
-	in := bufio.NewScanner(e.conn)
-	in.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for in.Scan() {
-		onLine(in.Bytes())
+// Send hands the engine a choice of the user, in the id of the menu entry; an id that is no choice of the engine's
+// does nothing.
+func (e *Engine) Send(id string) {
+	action, ok := agentui.ActionOf(id)
+	if !ok {
+		return
 	}
-}
-
-func (e *Engine) wait() {
-	err := e.cmd.Wait()
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		e.code = 0
-	case errors.As(err, &exit) && exit.ExitCode() >= 0:
-		e.code = exit.ExitCode()
-	default:
-		e.code = -1 // killed by a signal, or never waited on: a crash
+	e.mu.Lock()
+	act := e.onAction
+	e.mu.Unlock()
+	if act != nil {
+		act(action)
 	}
-	_ = e.conn.Close()
-	close(e.done)
-}
-
-// Send hands the engine a choice of the user.
-func (e *Engine) Send(id string) { e.Write(ActionLine(id)) }
-
-// Write hands the engine one line: a choice, or the answer to a question.
-func (e *Engine) Write(line []byte) {
-	e.write.Lock()
-	defer e.write.Unlock()
-	_, _ = e.conn.Write(append(line[:len(line):len(line)], '\n'))
 }
 
 // Done is closed once the engine has exited; ExitCode and RanFor are then its exit.
@@ -221,22 +206,13 @@ func (e *Engine) Done() <-chan struct{} { return e.done }
 func (e *Engine) ExitCode() int         { return e.code }
 func (e *Engine) RanFor() time.Duration { return time.Since(e.started) }
 
-// Stop ends the engine: it closes the channel, and the engine ends its agents and exits. One that does not within
-// `grace` is ended with its process group, SIGTERM and then SIGKILL.
+// Stop ends the engine: it ends its agents and exits. One that does not within `grace` leaves its tracked process groups
+// to be killed.
 func (e *Engine) Stop(grace time.Duration) {
-	e.write.Lock()
-	_ = e.conn.Close()
-	e.write.Unlock()
+	e.cancel()
 	select {
 	case <-e.done:
-		return
 	case <-time.After(grace):
-	}
-	_ = syscall.Kill(-e.cmd.Process.Pid, syscall.SIGTERM)
-	select {
-	case <-e.done:
-	case <-time.After(2 * time.Second):
-		_ = syscall.Kill(-e.cmd.Process.Pid, syscall.SIGKILL)
-		<-e.done
+		e.tracker.KillAll()
 	}
 }

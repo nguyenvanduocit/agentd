@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds agentd.app, the desktop app (app/, with mygo), for macOS. Into its resources go the engine (agentd, the Go
-# binary of cmd/agentd, which never updates itself: the app does) and Node.js for the ACP adapters, the version
-# daemon/install.sh.in pins, checked against nodejs.org's SHASUMS256.txt.
+# Builds agentd.app, the desktop app (app/, with mygo), for macOS. The app is one executable that carries the engine
+# (daemon/run) and the command line (daemon/entry); into its resources goes Node.js for the ACP adapters, checked
+# against nodejs.org's SHASUMS256.txt.
 #
 #   scripts/build-desktop.sh
 #
@@ -13,26 +13,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCHES="${DESKTOP_ARCHES:-arm64 amd64}"
 VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$ROOT/app/mygo.json")"
-NODE_VERSION="$(sed -n "s/^NODE_VERSION='\([0-9.]*\)'\$/\1/p" "$ROOT/daemon/install.sh.in")"
+NODE_VERSION="24.21.0" # the Node.js the adapters run on
 [ -n "$VERSION" ] || { echo "no version in app/mygo.json" >&2; exit 1; }
-[ -n "$NODE_VERSION" ] || { echo "no NODE_VERSION in daemon/install.sh.in" >&2; exit 1; }
 NODE_DIST="${AGENTD_NODE_DIST:-https://nodejs.org/dist}"
 CACHE="${AGENTD_NODE_CACHE:-$HOME/Library/Caches/agentd-build/node}"
 RES="$ROOT/app/resources"
 
 rm -rf "$RES" "$ROOT/app/build"
 mkdir -p "$CACHE"
-
-# The engine for one architecture, into the platform's resources, which mygo build merges into that platform's app
-# (resources/darwin-<arch>/engine/agentd is engine/agentd in Contents/Resources). It has no release key and no releases
-# page: the app updates it.
-engine_for() {
-  local arch="$1" pkg=github.com/nguyenvanduocit/agentd/daemon/home
-  mkdir -p "$RES/darwin-$arch/engine"
-  (cd "$ROOT" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -trimpath \
-    -ldflags "-s -w -X $pkg.Version=$VERSION -X $pkg.ReleaseKey= -X $pkg.ReleaseURL=" \
-    -o "$RES/darwin-$arch/engine/agentd" ./cmd/agentd)
-}
 
 # Node.js for one architecture, from nodejs.org once, checked against its SHASUMS256.txt: bin (node, npm, npx) and lib
 # (npm itself), into the platform's resources, which mygo build merges into that platform's app. The adapters run on it.
@@ -56,7 +44,6 @@ node_for() {
 
 platforms=""
 for arch in $ARCHES; do
-  engine_for "$arch"
   node_for "$arch"
   platforms="${platforms:+$platforms,}darwin/$arch"
 done

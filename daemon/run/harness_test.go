@@ -183,7 +183,7 @@ func (b *sandbox) writeServers(t *testing.T, origins ...string) {
 const unset = "\x00"
 
 // environ is the environment of a process in the sandbox: this process's own, the sandbox's directories, the fake codex
-// and no tray, with `extra` on top.
+// with `extra` on top.
 func (b *sandbox) environ(extra map[string]string) []string {
 	env := map[string]string{}
 	for _, kv := range os.Environ() {
@@ -198,7 +198,6 @@ func (b *sandbox) environ(extra map[string]string) []string {
 		"AGENTD_HOME":        filepath.Join(b.root, "mc"),
 		"AGENTD_AGENT_CODEX": "true",
 		"AGENTD_LOCAL_PORT":  "0",
-		"AGENTD_TRAY":        "off",
 	} {
 		env[k] = v
 	}
@@ -220,9 +219,16 @@ type daemonProc struct {
 	out    *syncBuffer
 	exited chan struct{}
 	code   int
+	// end stops a daemon that runs inside this test process (startInProcess), as SIGTERM stops a started one.
+	end func()
 }
 
-func (d *daemonProc) pid() int { return d.cmd.Process.Pid }
+func (d *daemonProc) pid() int {
+	if d.cmd == nil {
+		return os.Getpid()
+	}
+	return d.cmd.Process.Pid
+}
 
 func (d *daemonProc) hasExited() bool {
 	select {
@@ -240,14 +246,22 @@ func (d *daemonProc) exitCode(t *testing.T, limit time.Duration) int {
 	case <-d.exited:
 		return d.code
 	case <-time.After(limit):
-		_ = syscall.Kill(-d.pid(), syscall.SIGKILL)
+		if d.cmd != nil {
+			_ = syscall.Kill(-d.pid(), syscall.SIGKILL)
+		}
 		t.Fatalf("the daemon is still running after %s; output:\n%s", limit, d.out)
 		return -1
 	}
 }
 
-// signal sends sig to the daemon alone.
-func (d *daemonProc) signal(sig syscall.Signal) { _ = syscall.Kill(d.pid(), sig) }
+// signal sends sig to the daemon alone; a daemon inside this process is told to stop, whichever the signal.
+func (d *daemonProc) signal(sig syscall.Signal) {
+	if d.end != nil {
+		d.end()
+		return
+	}
+	_ = syscall.Kill(d.pid(), sig)
+}
 
 // stop is SIGTERM and a wait; a daemon that ignores it is killed with its group.
 func (d *daemonProc) stop() {
@@ -258,6 +272,10 @@ func (d *daemonProc) stop() {
 	select {
 	case <-d.exited:
 	case <-time.After(10 * time.Second):
+		if d.cmd == nil {
+			<-d.exited
+			return
+		}
 		_ = syscall.Kill(-d.pid(), syscall.SIGKILL)
 		<-d.exited
 	}
@@ -268,18 +286,17 @@ func (d *daemonProc) says(text string) bool { return strings.Contains(d.out.Stri
 // startDaemon starts `agentd args...` in the sandbox's working directory, in a group of its own; the test ends it.
 func startDaemon(t *testing.T, box *sandbox, args []string, env map[string]string) *daemonProc {
 	t.Helper()
-	d := startWith(t, box, args, env, nil)
+	d := startWith(t, box, args, env)
 	t.Cleanup(d.stop)
 	return d
 }
 
-func startWith(t *testing.T, box *sandbox, args []string, env map[string]string, extraFiles []*os.File) *daemonProc {
+func startWith(t *testing.T, box *sandbox, args []string, env map[string]string) *daemonProc {
 	t.Helper()
 	cmd := exec.Command(binaries.agentd, args...)
 	cmd.Dir = box.work
 	cmd.Env = box.environ(env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.ExtraFiles = extraFiles
 	out := &syncBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {

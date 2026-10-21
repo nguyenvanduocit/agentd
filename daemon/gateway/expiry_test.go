@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nguyenvanduocit/agentd/daemon/consent"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
@@ -21,8 +22,8 @@ func TestStatusNamesThePageProtocol(t *testing.T) {
 	if got, _ := status(t, g.Port, page).body["protocol"].(float64); got != float64(PageProtocol) {
 		t.Fatalf("protocol = %v, want %d", got, PageProtocol)
 	}
-	if PageProtocol != 1 {
-		t.Fatalf("PageProtocol = %d: it is bumped only when the page protocol changes incompatibly, and the SDKs say which they speak", PageProtocol)
+	if PageProtocol != 2 {
+		t.Fatalf("PageProtocol = %d: it is bumped only when the page protocol changes incompatibly (2: connect names the app), and the SDKs say which they speak", PageProtocol)
 	}
 }
 
@@ -38,7 +39,7 @@ func TestAPageGrantHoldsForThirtyDaysAndThenTheOriginIsNotGranted(t *testing.T) 
 		{"long after", 90 * 24 * time.Hour, false},
 	} {
 		w := newWorld()
-		w.reg = w.reg.AddBrowser(page, grantedOn, nil)
+		w.reg = w.reg.AddBrowser(page, grantedOn, registry.Access{})
 		g := startGatewayAt(t, w.deps(), clockAt(grantedOn.Add(tc.after)))
 		st := status(t, g.Port, page)
 		if _, browser := granted(t, st); browser != tc.want {
@@ -55,7 +56,7 @@ func TestAPageWhoseGrantLapsedIsAskedAgainAndGrantedAnew(t *testing.T) {
 	w := newWorld()
 	w.ask = ask
 	w.chosen = []string{"/work/new"}
-	w.reg = w.reg.AddBrowser(page, grantedOn, []string{"/work/old"})
+	w.reg = w.reg.AddBrowser(page, grantedOn, registry.Access{Folders: []string{"/work/old"}})
 	now := grantedOn.Add(registry.BrowserGrantTTL + time.Hour)
 	w.now = clockAt(now)
 	g := startGatewayAt(t, w.deps(), clockAt(now))
@@ -79,7 +80,7 @@ func TestAPageWhoseGrantIsLiveIsNotAskedAgain(t *testing.T) {
 	ask, ran := dialog(t, 0, 0)
 	w := newWorld()
 	w.ask = ask
-	w.reg = w.reg.AddBrowser(page, grantedOn, nil)
+	w.reg = w.reg.AddBrowser(page, grantedOn, registry.Access{})
 	g := startGatewayAt(t, w.deps(), clockAt(grantedOn.Add(10*24*time.Hour)))
 	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 200, map[string]any{"granted": true})
 	if ran() != 0 {
@@ -97,7 +98,7 @@ func TestTheSessionSocketOfALapsedGrantIsRefused(t *testing.T) {
 		{"lapsed", registry.BrowserGrantTTL + time.Second, 0},
 	} {
 		w := newWorld()
-		w.reg = w.reg.AddBrowser(page, grantedOn, nil)
+		w.reg = w.reg.AddBrowser(page, grantedOn, registry.Access{})
 		deps := w.deps()
 		deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 			w.mu.Lock()
@@ -116,20 +117,40 @@ func TestTheSessionSocketOfALapsedGrantIsRefused(t *testing.T) {
 	}
 }
 
-// The number of days the dialog promises is the registry's, not a copy of it.
-func TestTheDialogForAPageNamesHowManyDaysTheGrantLastsAndTheOneForAnAppNamesNone(t *testing.T) {
-	w := newWorld()
-	g := startGateway(t, w.deps(), nil)
-	connectAs(t, g.Port, map[string]any{"mode": "browser"}, page)
-	connectAs(t, g.Port, map[string]any{"mode": "server", "code": code}, "https://app.example.com")
-	asked := w.asks()
-	if len(asked) != 2 {
-		t.Fatalf("asked %d times, want 2", len(asked))
-	}
-	if want := int(registry.BrowserGrantTTL / (24 * time.Hour)); asked[0].GrantDays != want {
-		t.Errorf("the page's question names %d days, want %d", asked[0].GrantDays, want)
-	}
-	if asked[1].GrantDays != 0 {
-		t.Errorf("the app's question names %d days: its access has no end of its own", asked[1].GrantDays)
+// What the user chose in the window is how long the grant lasts, counted from now; a choice of nothing is the default.
+func TestTheGrantEndsWhenTheUserChoseAndAfterTheDefaultWhenTheyChoseNone(t *testing.T) {
+	grantedOn := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		lasts time.Duration
+		want  string
+	}{
+		{"an hour", time.Hour, "2026-10-19T13:00:00Z"},
+		{"a week", 7 * 24 * time.Hour, "2026-10-26T12:00:00Z"},
+		{"no choice is the default", 0, "2026-11-18T12:00:00Z"},
+		{"never", consent.NoEnd, registry.Never},
+	} {
+		for _, mode := range []string{"browser", "server"} {
+			w := newWorld()
+			w.lasts = tc.lasts
+			w.now = func() time.Time { return grantedOn }
+			g := startGatewayAt(t, w.deps(), clockAt(grantedOn))
+			body := map[string]any{"mode": mode}
+			if mode == "server" {
+				body["code"] = code
+			}
+			wantReply(t, connectAs(t, g.Port, body, "https://app.example.com"), 200, map[string]any{"granted": true})
+			w.mu.Lock()
+			var got string
+			if mode == "browser" {
+				got = w.reg.Browsers[0].ExpiresAt
+			} else {
+				got = w.reg.Apps[0].ExpiresAt
+			}
+			w.mu.Unlock()
+			if got != tc.want {
+				t.Errorf("%s, %s: expiresAt = %q, want %q", tc.name, mode, got, tc.want)
+			}
+		}
 	}
 }

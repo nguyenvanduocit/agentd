@@ -7,7 +7,7 @@ What a web page uses to find the agentd daemon on the user's computer, ask it to
 The package is a file of agentd's GitHub release, `agentd-client-<version>.tgz`; install it by its URL:
 
 ```
-bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.8.0/agentd-client-0.6.0.tgz       # npm: npm install <the same URL>
+bun add https://github.com/nguyenvanduocit/agentd/releases/download/v0.9.0/agentd-client-0.7.0.tgz       # npm: npm install <the same URL>
 ```
 
 The release in the URL is the one that carries the file, and the number in the file's name is the SDK's own version. Your lockfile records the file's sha512, and a published file never changes: a change of the SDK is a new version in a new release (`scripts/release.sh` refuses a release whose SDK sources changed under the old version).
@@ -23,10 +23,11 @@ Two ways to use the daemon: **server mode**, where the daemon connects to your a
 `myServer` below is your own API client: its two calls reach your server, which mints a one-time pairing code (with `sdk/goserver`: `StartPairing`) and cancels it.
 
 ```ts
-import { createLocalDaemon, desktopDownloads, installCommand, recommendInstall } from "@agentd/client"
+import { createLocalDaemon, desktopDownloads, recommendInstall } from "@agentd/client"
 
 // 1. The daemon on this computer: is it there, and can the user connect it to this app?
 const local = createLocalDaemon({
+  name: "My app", // what the user sees in the consent window and the daemon's menu, beside this page's address
   startPairing: async () => (await myServer.startDaemonPairing()).code, // the app's own call: a one-time code
   cancelPairing: () => myServer.cancelDaemonPairing(),
 })
@@ -34,14 +35,8 @@ local.subscribe(render, { immediate: true }) // draw the state now, and again af
 const stop = local.watch() // when the settings tab opens: looks now and every 3 s; stop() when it closes
 document.querySelector("#connect")?.addEventListener("click", () => void local.connect()) // the dialog opens on the user's computer
 
-// 2. No daemon here: agentd.app for the user's Mac. Once it is open, watch() finds it and connect() pairs it.
-const how = recommendInstall() // "dmg" on a Mac, "script" on Linux, "unsupported" elsewhere (Windows: use WSL)
-if (how === "dmg") offer(desktopDownloads()) // { appleSilicon, intel }: the disk images of the latest release
-// On Linux or from a terminal, the one command that installs it, pairs it with this app and starts it.
-if (how === "script") {
-  const { code } = await myServer.startDaemonPairing()
-  offer(installCommand({ app: location.origin, code }))
-}
+// 2. No agentd here: the disk images of agentd.app, on a Mac. Once it is open, watch() finds it and connect() pairs it.
+if (recommendInstall() === "dmg") offer(desktopDownloads()) // { appleSilicon, intel }: the disk images of the latest release
 ```
 
 `watch()` is not instant: until its first look ends the phase is `detecting` and nothing can be connected, so connect from a click (when the phase is `available`), not right after `watch()`.
@@ -74,7 +69,7 @@ function panel(s: LocalState): { title: string; body: string; action?: Action } 
       return {
         title: "agentd is not running on this computer",
         body: s.error || "It is not installed, not running, or your browser blocked the page from reaching it.",
-        ...(recommendInstall() === "unsupported" ? {} : { action: recommendInstall() === "dmg" ? ("download" as const) : ("install" as const) }),
+        ...(recommendInstall() === "dmg" ? { action: "download" as const } : {}),
       }
     case "available":
       return { title: "agentd is running", body: `agentd ${s.found.version} is ready to be connected to this app.`, action: "connect" }
@@ -127,7 +122,7 @@ The page asks for its own grant, opens an agent, and speaks ACP to it with the o
 import { PROTOCOL_VERSION, client, ndJsonStream } from "@agentclientprotocol/sdk"
 import { createLocalDaemon } from "@agentd/client"
 
-const local = createLocalDaemon({ mode: "browser" })
+const local = createLocalDaemon({ name: "My app", mode: "browser" })
 local.subscribe(render, { immediate: true })
 local.watch()
 
@@ -160,7 +155,7 @@ A page can give its agent tools of its own (navigate, search, read what is on sc
 import { PROTOCOL_VERSION, client, ndJsonStream, type Stream } from "@agentclientprotocol/sdk"
 import { createLocalDaemon } from "@agentd/client"
 
-const local = createLocalDaemon({ mode: "browser" })
+const local = createLocalDaemon({ name: "My app", mode: "browser" })
 await local.detect()
 const session = await local.openSession("claude")
 void serveTools(ndJsonStream(session.mcp.writable, session.mcp.readable)) // JSON-RPC messages both ways
@@ -189,7 +184,7 @@ async function serveTools({ readable, writable }: Stream) {
 
 What a page may send: in any `session/...` request, `mcpServers` is `[]` or the entry of `session.mcpServer(name)` and nothing else (another command, an argument, a variable, or an http/sse server is refused), and `session/new`, `session/load`, `session/resume`, `session/fork` and `authenticate` carry no `_meta`. The daemon answers a refused request with JSON-RPC error `-32602` (invalid params) and never passes it to the agent; a line that is not a single JSON-RPC message gets an `error` message, `not passed to the agent: ...`. A page's grant is for the page's own tools, not for choosing which programs the agent starts or how the agent is configured. A server app that connects the daemon to its own server (server mode) has no such limit.
 
-A page's grant lasts 30 days. After that `granted.browser` is `false` again, open sessions of the page end, `watch()` notices (the phase goes from `connected` to `available`), and `connect()` shows the dialog again; the app's grant (server mode) lasts until the user disconnects it.
+The user chooses how long a grant lasts in the dialog (1 hour to 30 days, or never). When its time ends, `granted.browser` is `false` again, open sessions of the page end, `watch()` notices (the phase goes from `connected` to `available`), and `connect()` shows the dialog again; the app's grant (server mode) ends the same way, and its link goes down.
 
 Any MCP server whose transport reads and writes JSON-RPC messages works in place of `serveTools`. The agent may start the server again (a new `initialize` arrives on the same `session.mcp`). The bridge ends with the session and with the page's socket. A daemon older than 0.4 bridges no page server: `mcpServer()` throws and says so.
 
@@ -214,7 +209,7 @@ class OriginWebSocket extends WebSocket {
   }
 }
 
-const local = createLocalDaemon({ mode: "browser", ports: [47681], fetch: withOrigin, WebSocket: OriginWebSocket })
+const local = createLocalDaemon({ name: "My app", mode: "browser", ports: [47681], fetch: withOrigin, WebSocket: OriginWebSocket })
 await local.detect()
 if (local.state.phase === "available") await local.connect() // the daemon's dialog: the test program below answers it
 if (local.state.phase !== "connected") throw new Error(local.state.error)
@@ -241,18 +236,17 @@ while read -r line; do printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersio
 EOF
 chmod +x "$T/allow.sh" "$T/agent.sh"
 
-# The engine itself, not the launcher: the launcher looks for it under AGENTD_HOME, which this run has moved.
-ENGINE=~/.agentd/daemon/current/agentd   # after an install from a terminal; or: go build -o agentd ./cmd/agentd, in the agentd repository
+ENGINE=./agentd   # go build -o agentd ./cmd/agentd, in the agentd repository
 
 HOME=$T AGENTD_HOME=$T/agentd XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state \
 AGENTD_LOCAL_PORT=47681 \
 AGENTD_CONSENT=$T/allow.sh \
 AGENTD_AGENT_CLAUDE=$T/agent.sh \
-AGENTD_ADAPTERS=off AGENTD_TRAY=off AGENTD_RELEASE_URL= \
+AGENTD_ADAPTERS=off \
   "$ENGINE" run
 ```
 
-`AGENTD_CONSENT` (tests only) stands for both dialogs, `AGENTD_AGENT_<NAME>` (tests only) replaces the command line of an agent and counts it as ready, `AGENTD_LOCAL_PORT` moves the gateway off the ports of a real agentd, and `AGENTD_ADAPTERS=off` stops the daemon from installing the agents' adapters. Exit 1 from the dialog program is a Deny: use it to test the `denied`, `cooldown` and `locked` paths without clicking.
+`AGENTD_CONSENT` (tests only) answers the consent question, `AGENTD_AGENT_<NAME>` (tests only) replaces the command line of an agent and counts it as ready, `AGENTD_LOCAL_PORT` moves the gateway off the ports of a real agentd, and `AGENTD_ADAPTERS=off` stops the daemon from installing the agents' adapters. Exit 1 from the dialog program is a Deny: use it to test the `denied`, `cooldown` and `locked` paths without clicking.
 
 ### The daemons list of your server
 
@@ -263,21 +257,18 @@ import type { DaemonList } from "@agentd/client"
 
 const list = (await (await fetch("/api/daemons")).json()) as DaemonList // your own route: goserver's List as JSON
 for (const d of list.daemons) {
-  const behind = list.latestVersion !== "" && d.version !== "" && d.version !== list.latestVersion
-  console.log(`${d.name}: ${d.state}${d.incompatible ? ` (${d.incompatible})` : ""}${behind ? ", an update is available" : ""}`)
+  console.log(`${d.name}: ${d.state}${d.incompatible ? ` (${d.incompatible})` : ""}`)
 }
 ```
 
 ### Reference
 
-- `createLocalDaemon(deps)` is a small observable, not tied to a framework: wrap `state` and `subscribe` in your framework's reactivity (a Vue `ref`, a React store). `deps` is `{ startPairing, cancelPairing }` (server mode, the default) or `{ mode: "browser" }`; both take an optional `client` to replace the calls to the daemon, or (since 0.7.0) `ports`, `fetch`, `timeoutMs` and `WebSocket` for the calls it makes itself. `detect()` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). `connect()` puts the refusal in `state`. `watch(everyMs)` and the phases are described above. `disconnect()` takes back what this page was allowed and looks again; if the daemon could not do it, the refusal is in `state`. Both take an optional `interval` (`(tick, everyMs) => stop`, default `setInterval`) for tests. `subscribe(listener, { immediate })` and `openSession(agent)` are since 0.7.0.
-- `openSession(d, agent)` gives an `AgentSession`: `readable` (stdout, each line ending in `\n`; it ends when the agent exits or the socket closes), `writable` (stdin; each complete line is sent, a partial one waits for its newline), and the line-level `write(line)`, `onFrame(cb)`, `onClose(cb)`, `close()`, `pid`, `cwd`. `readable` starts the first time it is taken and keeps no line from before: take it right after the session opens. `mcp` (`{ readable, writable }`) and `mcpServer(name)` (`{ name, command, args, env: [{ name, value }] }`, ACP's stdio MCP server) are for tools from the page.
+- `createLocalDaemon(deps)` is a small observable, not tied to a framework: wrap `state` and `subscribe` in your framework's reactivity (a Vue `ref`, a React store). `deps` is `{ name, startPairing, cancelPairing }` (server mode, the default) or `{ name, mode: "browser" }`: `name` is what the app calls itself, shown in the user's consent window and menu beside the page's address, and `createLocalDaemon` throws without it when it makes the calls itself. Both take an optional `client` to replace the calls to the daemon, or (since 0.7.0) `ports`, `fetch`, `timeoutMs` and `WebSocket` for the calls it makes itself. `detect()` clears the last refusal, and is skipped while a connection waits for the dialog (the dialog returns the focus that triggers it). `connect()` puts the refusal in `state`. `watch(everyMs)` and the phases are described above. `disconnect()` takes back what this page was allowed and looks again; if the daemon could not do it, the refusal is in `state`. Both take an optional `interval` (`(tick, everyMs) => stop`, default `setInterval`) for tests. `subscribe(listener, { immediate })` and `openSession(agent)` are since 0.7.0.
+- `openSession(d, agent)` gives an `AgentSession`: `readable` (stdout, each line ending in `\n`; it ends when the agent exits or the socket closes), `writable` (stdin; each complete line is sent, a partial one waits for its newline), and the line-level `write(line)`, `onFrame(cb)`, `onClose(cb)`, `close()`, `pid`, `cwd`. `chdir(dir)` moves the agent to another directory the user allowed this page (absolute path): the daemon ends the agent and starts the same program in `dir` on the same streams, and `pid` and `cwd` become the new process's. It is a new agent that has not been initialized, so run `initialize` and `session/new` (or `session/load`) again; a refusal rejects with the daemon's message and leaves the agent where it is. `readable` starts the first time it is taken and keeps no line from before: take it right after the session opens. `mcp` (`{ readable, writable }`) and `mcpServer(name)` (`{ name, command, args, env: [{ name, value }] }`, ACP's stdio MCP server) are for tools from the page.
 - `AgentInfo` is `{ name, title, ready, reason }`; `title` is the name to show, the agent's `name` when the daemon is older than the title.
 - `desktopDownloads({ agentd })` is `{ appleSilicon, intel }`, the links of agentd.app's disk images in the latest release, or `undefined` while the releases page is not a plain http(s) URL.
-- `installCommand({ agentd, app, code })` is the curl line, or `undefined` while an origin or the code is not safe to paste into a shell. Without `app` and `code` (browser mode, since 0.7.0) it only installs and starts agentd.
-- `AGENTD_COMMANDS` are what the user of an install from the terminal runs on their machine: `status`, `logs`, `start`, each by the path of the launcher the installer writes, `~/.agentd/bin/agentd`, because neither install puts `agentd` on PATH. The desktop app has no command line: it shows these in its own window.
-- `recommendInstall({ os })` is `"dmg"` (a Mac: agentd.app), `"script"` (Linux: the install command) or `"unsupported"` (Windows, phones: use WSL on Windows). Without an argument it reads the browser. `arch` is accepted and does not change the answer: both disk images are offered.
-- Lower level: `detect()` (a found daemon carries `protocol` when it states one; when no daemon answered but one refused this page, `{ found: false, refused }` says why, since 0.7.0; `SUPPORTED_PROTOCOLS` are the ones this SDK speaks), `connectServer(d, { code })`, `connectBrowser(d)` (both answer `{ granted: true }` or `{ granted: false, reason, message?, retryAfter? }`, and take `{ fetch, signal }`), `reasonText(reason)` (a sentence for every reason, one from a newer daemon included), and `disconnect(d)`, which answers `{ disconnected: true }` or `{ disconnected: false, reason, message? }`.
+- `recommendInstall({ os })` is `"dmg"` on a Mac and `"unsupported"` on Linux, Windows and phones. Without an argument it reads the browser. `arch` is accepted and does not change the answer: both disk images are offered.
+- Lower level: `detect()` (a found daemon carries `protocol` when it states one; when no daemon answered but one refused this page, `{ found: false, refused }` says why, since 0.7.0; `SUPPORTED_PROTOCOLS` are the ones this SDK speaks), `connectServer(d, { name, code })`, `connectBrowser(d, { name })` (both answer `{ granted: true }` or `{ granted: false, reason, message?, retryAfter? }`, and take `{ fetch, signal }`), `reasonText(reason)` (a sentence for every reason, one from a newer daemon included), and `disconnect(d)`, which answers `{ disconnected: true }` or `{ disconnected: false, reason, message? }`.
 
 The app connected is the one at **your page's own origin**: the daemon refuses a request that names another server. An app whose API lives on another origin cannot use this yet.
 

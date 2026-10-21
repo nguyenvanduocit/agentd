@@ -72,8 +72,8 @@ func TestCORSHeadersAnswerAPrivateNetworkAccessPreflight(t *testing.T) {
 
 func TestParseConnect(t *testing.T) {
 	good := map[string]ConnectRequest{
-		`{"mode":"server","code":"ABCD"}`: {Mode: consent.ModeServer, Code: "ABCD"},
-		`{"mode":"browser"}`:              {Mode: consent.ModeBrowser},
+		`{"mode":"server","code":"ABCD","name":"AIOcean"}`: {Mode: consent.ModeServer, Code: "ABCD", Name: "AIOcean"},
+		`{"mode":"browser","name":"Docs"}`:                 {Mode: consent.ModeBrowser, Name: "Docs"},
 	}
 	for body, want := range good {
 		if got, ok := ParseConnect([]byte(body)); !ok || got != want {
@@ -81,14 +81,37 @@ func TestParseConnect(t *testing.T) {
 		}
 	}
 	// Server mode needs a code and names no server: the app is the page's own origin, so a page cannot connect the
-	// daemon to an origin that is not its own.
+	// daemon to an origin that is not its own. Every connect names the app.
 	for _, body := range []string{
-		`{"mode":"server"}`, `{"mode":"server","code":""}`, `{"mode":"server","code":5}`,
-		`{"mode":"server","code":"ABCD","server":"https://api.x"}`, `{"mode":"server","code":"ABCD","server":null}`,
-		`{"mode":"root"}`, `null`, `"x"`, `[]`, ``, `{`, `{"mode":"browser"} x`,
+		`{"mode":"server","name":"A"}`, `{"mode":"server","code":"","name":"A"}`, `{"mode":"server","code":5,"name":"A"}`,
+		`{"mode":"server","code":"ABCD","server":"https://api.x","name":"A"}`, `{"mode":"server","code":"ABCD","server":null,"name":"A"}`,
+		`{"mode":"root","name":"A"}`, `null`, `"x"`, `[]`, ``, `{`, `{"mode":"browser","name":"A"} x`,
+		`{"mode":"browser"}`, `{"mode":"server","code":"ABCD"}`,
+		`{"mode":"browser","name":""}`, `{"mode":"browser","name":"   "}`, `{"mode":"browser","name":5}`, `{"mode":"browser","name":null}`,
+		`{"mode":"browser","name":"\u0000\u202e"}`,
 	} {
 		if got, ok := ParseConnect([]byte(body)); ok {
 			t.Errorf("ParseConnect(%s) = %v, want malformed", body, got)
+		}
+	}
+}
+
+// The name goes to a window and a menu; the app chooses it, so what could hide or reshape text is cut out of it.
+func TestCleanName(t *testing.T) {
+	long := strings.Repeat("é", maxNameRunes+10)
+	for in, want := range map[string]string{
+		"AIOcean":         "AIOcean",
+		"  AI \t Ocean\n": "AI Ocean",
+		"A\u0000B\u0007C": "ABC",
+		"safe\u202eevil":  "safeevil", // a right-to-left override reorders what follows it
+		"emoji 🚀 ok":      "emoji 🚀 ok",
+		"日本語アプリ":          "日本語アプリ",
+		long:              strings.Repeat("é", maxNameRunes),
+		"\u200b":          "",
+		"   ":             "",
+	} {
+		if got := CleanName(in); got != want {
+			t.Errorf("CleanName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

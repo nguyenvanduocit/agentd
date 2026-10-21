@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 const wait = 10 * time.Second
@@ -330,7 +331,7 @@ func TestAGrantedOriginGetsItsAnswerWhileALockoutHoldsEveryDialog(t *testing.T) 
 	for i := range 3 {
 		connectAs(t, g.Port, map[string]any{"mode": "browser"}, "http://localhost:"+strconv.Itoa(5170+i))
 	}
-	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), registry.Access{})
 	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 200, map[string]any{"granted": true})
 }
 
@@ -395,7 +396,7 @@ func TestStartNeedsAGate(t *testing.T) {
 func gatewayHere(t *testing.T, owners consent.PeerOwners) (*Gateway, *world) {
 	t.Helper()
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), registry.Access{})
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()
@@ -472,7 +473,7 @@ func TestALookupThatFailsIsLoggedOnce(t *testing.T) {
 
 func TestTheRealLookupLetsThisProcessInRoutesAnswerAndTheUpgradeGoesThrough(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), registry.Access{})
 	deps := w.deps()
 	deps.Upgrade = func(origin string, rw http.ResponseWriter, _ *http.Request) {
 		w.mu.Lock()
@@ -515,5 +516,37 @@ func TestAnAllowWithoutAFolderGrantsNothing(t *testing.T) {
 	wantReply(t, connectAs(t, g.Port, map[string]any{"mode": "browser"}, page), 503, map[string]any{"reason": "no-dialog"})
 	if len(w.reg.Browsers) != 0 || len(w.reg.Apps) != 0 {
 		t.Fatalf("saved %+v", w.reg)
+	}
+}
+
+func TestAConnectWithoutANameIsRefusedBeforeAnyDialog(t *testing.T) {
+	for _, body := range []map[string]any{
+		{"mode": "browser"}, {"mode": "server", "code": code},
+		{"mode": "browser", "name": ""}, {"mode": "browser", "name": "‮ "},
+	} {
+		ask, ran := dialog(t, 0, 0)
+		w := newWorld()
+		w.ask = ask
+		g := startGateway(t, w.deps(), nil)
+		wantReply(t, connectRaw(t, g.Port, body, page), 400, map[string]any{"reason": "malformed"})
+		if ran() != 0 || len(w.asks()) != 0 {
+			t.Errorf("%v: the user was asked about an app that did not say who it is", body)
+		}
+	}
+}
+
+func TestTheNameTheAppGaveIsAskedAboutAndSavedWithTheGrant(t *testing.T) {
+	w := newWorld()
+	g := startGateway(t, w.deps(), nil)
+	wantReply(t, connectRaw(t, g.Port, map[string]any{"mode": "browser", "name": "  Docs‮ "}, page), 200, map[string]any{"granted": true})
+	wantReply(t, connectRaw(t, g.Port, map[string]any{"mode": "server", "code": code, "name": "AIOcean"}, "https://app.example.com"), 200, map[string]any{"granted": true})
+	asked := w.asks()
+	if len(asked) != 2 || asked[0].Name != "Docs" || asked[1].Name != "AIOcean" {
+		t.Fatalf("the questions carry the names %q, want the cleaned ones", []string{asked[0].Name, asked[1].Name})
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.reg.Browsers[0].Name != "Docs" || w.reg.Apps[0].Name != "AIOcean" {
+		t.Errorf("saved names %q and %q", w.reg.Browsers[0].Name, w.reg.Apps[0].Name)
 	}
 }

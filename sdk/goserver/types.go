@@ -1,6 +1,7 @@
 package goserver
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
@@ -122,8 +123,15 @@ type Conn interface {
 	// Read is the agent's stdout; io.EOF once the process is gone and everything it wrote was read. Write is its
 	// stdin, whole lines.
 	io.ReadWriter
-	// Cwd is the directory the daemon started the agent in.
+	// Cwd is the directory the agent runs in: the one the daemon started it in, or the last Chdir moved it to.
 	Cwd() string
+	// Chdir moves the agent to dir, an absolute path to a directory the user allowed this app. The daemon ends the
+	// agent and starts the same program in dir, with this Conn's Read and Write carrying on to the new process; it is
+	// a new agent that has not been initialized, so the app speaks ACP to it from the start (initialize, then
+	// session/new or session/load). Lines written before Chdir reached the old agent. The agent stays where it is
+	// when the error is the daemon's refusal (the text starts "your daemon:"). A daemon that predates Chdir refuses
+	// it as an unknown call.
+	Chdir(ctx context.Context, dir string) error
 	// Stderr is the last of what the agent wrote on its standard error.
 	Stderr() string
 	// Close ends the process and everything it started. It does not block.
@@ -173,8 +181,6 @@ type List struct {
 	Daemons []Info `json:"daemons"`
 	// Pairing is the pending pairing code; its Code is empty when there is none.
 	Pairing Pairing `json:"pairing"`
-	// LatestVersion is the newest daemon release the app knows of (Options.LatestVersion): empty when it does not say.
-	LatestVersion string `json:"latestVersion"`
 }
 
 // Info is one paired daemon.

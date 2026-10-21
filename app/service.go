@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 )
 
-// CLIService names the launchd job of an agentd installed from the terminal (`agentd service install`), and its plist;
-// AGENTD_SERVICE_LABEL and AGENTD_SERVICE_DIR name another, as for the engine, so that a test never touches the user's.
+// CLIService names the launchd job of an agentd that an earlier version installed from a terminal, and its plist;
+// AGENTD_SERVICE_LABEL and AGENTD_SERVICE_DIR name another, so that a test never touches the user's.
 func CLIService(home string, env func(string) string) (label, plist string) {
 	label = env("AGENTD_SERVICE_LABEL")
 	if label == "" {

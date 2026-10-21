@@ -711,6 +711,11 @@ func (rpc_c *Client) CallWrite(ctx context.Context, sessionID string, line strin
 	return
 }
 
+func (rpc_c *Client) CallChdir(ctx context.Context, sessionID string, dir string) (rpc_result Opened, rpc_err error) {
+	rpc_err = rpc_request(rpc_c, ctx, "chdir", &rpc_result, sessionID, dir)
+	return
+}
+
 func (rpc_c *Client) CallClose(ctx context.Context, sessionID string) error {
 	return rpc_emit(rpc_c, ctx, "close", sessionID)
 }

@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Where the pins are written: scripts/pins.sh rewrites the same files.
-PIN_FILES=(README.md sdk/web/README.md sdk/goclient/README.md sdk/goserver/README.md sdk/release/README.md examples/minimal-app/README.md examples/minimal-app/page/package.json)
+PIN_FILES=(README.md sdk/web/README.md sdk/goclient/README.md sdk/goserver/README.md examples/minimal-app/README.md examples/minimal-app/page/package.json)
 SDK_URL_PIN='releases/download/v[0-9][0-9.]*/agentd-client-[0-9][0-9.]*\.tgz'
 GO_PIN='github\.com/nguyenvanduocit/agentd(/[A-Za-z0-9_/-]+)?@v[0-9][0-9.]*'
 

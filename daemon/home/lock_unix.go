@@ -11,7 +11,7 @@ import (
 
 // AcquireInstanceLock takes the lock of a home: file is its LockFile. It never waits: a lock that is held is a
 // *HeldError carrying what the holder wrote, any other failure (no permission, a file system without locks) is an
-// ordinary error. The file is opened close-on-exec (Go's default), so no agent or tray program the daemon starts can
+// ordinary error. The file is opened close-on-exec (Go's default), so no agent the daemon starts can
 // inherit the lock and keep a later daemon out after this one is gone; and it is not truncated, so the record of the
 // holder survives a failed attempt.
 func AcquireInstanceLock(file string) (*InstanceLock, error) {

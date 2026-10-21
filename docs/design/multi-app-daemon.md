@@ -27,8 +27,8 @@ HTTP and WebSocket on `127.0.0.1`: port 47615, the next free one up to 47624; `A
 | Request | Answer |
 |---------|--------|
 | `GET /v1/status` | `{name:"agentd", version, granted:{server,browser}}`; `agents` only for a granted origin. `granted.server` means linked now. |
-| `POST /v1/connect {mode:"server", code}` | Dialog. On Allow: pairs with the server at the caller's origin using `code`, saves, links at once (an app already linked is linked again with the new token). A body that names a server is `400`. |
-| `POST /v1/connect {mode:"browser"}` | Dialog (none when already granted). On Allow: saves the origin as a browser grant. |
+| `POST /v1/connect {mode:"server", name, code}` | Dialog. On Allow: pairs with the server at the caller's origin using `code`, saves, links at once (an app already linked is linked again with the new token). A body that names a server is `400`. |
+| `POST /v1/connect {mode:"browser", name}` | Dialog (none when already granted). On Allow: saves the origin as a browser grant. |
 | `DELETE /v1/connect` | Forgets the caller's browser grant and the app at its origin; ends their sessions and the page's open sockets; the daemon stays up. |
 | `GET /v1/session` (WebSocket) | Browser grants only. |
 
@@ -40,13 +40,13 @@ Refusals: `403 denied|timeout`, `429 cooldown` (30 s per origin, and a lockout o
 
 ### Folders
 
-The chosen folders are saved with the grant in `daemon.json` (`folders` of an `apps` or `browsers` entry); a grant without `folders` (made by `agentd pair`, or before folders existed) has no limit and `agentd apps` lists it as `any folder`. Every line to an agent goes through `Fleet.Write`, for server apps and pages alike. A `session/...` request whose `cwd` or `additionalDirectories` is not a chosen folder or below one (symlinks resolved, relative paths refused) is not forwarded: the client gets a JSON-RPC error (`-32602`) on that request id. The agent starts in the first chosen folder that exists. The folders are read from the registry each time, so removing a grant applies to open sockets and a registry that cannot be read refuses sessions rather than lifting the limit. This is a guard on what the app asks, not a sandbox: an agent's shell can leave the folder.
+The chosen folders are saved with the grant in `daemon.json` (`folders` of an `apps` or `browsers` entry); a grant without `folders` (made by `agentd pair`, or before folders existed) has no limit and `agentd apps` lists it as `any folder`. Every line to an agent goes through `Fleet.Write`, for server apps and pages alike. A `session/...` request whose `cwd` or `additionalDirectories` is not a chosen folder or below one (symlinks resolved, relative paths refused) is not forwarded: the client gets a JSON-RPC error (`-32602`) on that request id. The agent starts in the first chosen folder that exists. A `chdir` (a page's message, a server app's call) moves a running session: `Fleet.Chdir` ends the agent without an exit frame and starts the same program again in the new folder under the same session id, on the same stream; the folder passes the same check as the `cwd` of a `session/...` request and must be an existing directory, and a refusal leaves the agent where it is. The new agent is a new process, so the client initializes it again. The `/acp` socket has no such message: it is the agent's own stdio, and its client names the folder in `session/new`. The folders are read from the registry each time, so removing a grant applies to open sockets and a registry that cannot be read refuses sessions rather than lifting the limit. This is a guard on what the app asks, not a sandbox: an agent's shell can leave the folder.
 
 The question is a window of the tray program or agentd.app (decided by the user, 2026-10-20): the dialog's title and text, the chosen folders as a list (Add folder… opens the system's chooser, Remove drops one), Deny and Allow, which needs a folder; closing the window is a Deny. The daemon asks over the channel that carries its state: `{"t":"consent","id","origin","mode","agents","title","body","timeoutS"}` shows it and `{"t":"consent-end","id"}` withdraws it; the UI answers `{"t":"consent-shown","id"}` when the window is up and `{"t":"consent-answer","id","answer","folders"}`. The id is 128 random bits, and only a reply that carries it is heard; the daemon cleans the folders itself (absolute, once each) and takes an Allow without one as a Deny. A UI that does not say `consent-shown` within 2 s (an older tray program), that goes away, or `AGENTD_CONSENT` being set, makes the daemon ask in the native dialogs above.
 
 ### 3. Browser sessions (`daemon/gateway/sessions.go`, `daemon/pagetools/localproto.go`)
 
-One socket is one fleet, ended when the socket closes; at most 5 sessions per socket. Page to daemon: `open`, `write`, `close`, `mcp`. Daemon to page: `hello`, `opened`, `error`, `frame`, `mcp`. The page is the ACP client.
+One socket is one fleet, ended when the socket closes; at most 5 sessions per socket. Page to daemon: `open`, `write`, `close`, `chdir`, `mcp`. Daemon to page: `hello`, `opened`, `moved`, `error`, `frame`, `mcp`. The page is the ACP client.
 
 ### 3a. Tools from the page (`daemon/pagetools/relay.go`, `daemon/pagetools/bridge.go`, `mcp --page` in `daemon/mcpbridge/page.go`)
 
@@ -62,7 +62,7 @@ Each app has its own socket, fleet and MCP wrapper (`bin/<n>/agentd-mcp --config
 
 ### 6. Client library (`daemon-client/`)
 
-`detect`, `connectServer(d, {code})`, `connectBrowser`, `disconnect`, `openSession(d, agent)`, `reasonText`. A page imports it by path.
+`detect`, `connectServer(d, {name, code})`, `connectBrowser(d, {name})`, `disconnect`, `openSession(d, agent)`, `reasonText`. A page imports it by path.
 
 ### 7. MindChains UI (`frontend/src/composables/createLocalDaemon.ts`, `frontend/src/components/DaemonLocal.vue`)
 

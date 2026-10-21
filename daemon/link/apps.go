@@ -288,6 +288,14 @@ func (a handler) HandleWrite(_ context.Context, sessionID, line string) (bool, e
 	return a.e.fleet.Write(sessionID, line), nil
 }
 
+func (a handler) HandleChdir(ctx context.Context, sessionID, dir string) (contract.Opened, error) {
+	moved, err := a.e.fleet.Chdir(ctx, sessionID, dir)
+	if err != nil {
+		return contract.Opened{}, err
+	}
+	return contract.Opened{Pid: float64(moved.PID), Cwd: moved.Cwd}, nil
+}
+
 func (a handler) HandleClose(_ context.Context, sessionID string) error {
 	a.e.fleet.Close(sessionID)
 	return nil

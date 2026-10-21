@@ -10,8 +10,6 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/proc"
 )
 
-const grantedDateRunes = 10 // "2026-10-19" of an ISO timestamp
-
 // foldersNote is what a listing says of a grant's folders: where it may work, or that nothing limits it.
 func foldersNote(folders []string) string {
 	if len(folders) == 0 {
@@ -20,17 +18,48 @@ func foldersNote(folders []string) string {
 	return ", in " + strings.Join(folders, ", ")
 }
 
-// browserNote is what a listing says of a page grant's time: when it was made and ends, or that it lapsed.
-func browserNote(g BrowserGrant, now time.Time) string {
-	end, ok := g.ExpiresAt()
+const grantedDateRunes = 10 // "2026-10-19" of an ISO timestamp
+
+// endNote is what a listing says of access's end: when it ends, that it never does, or that it ended.
+func endNote(end time.Time, ends, ok, live bool) string {
 	switch {
 	case !ok:
 		return "expired"
-	case !g.Live(now):
+	case !ends:
+		return "no end"
+	case !live:
 		return "expired " + end.UTC().Format(time.DateOnly)
 	}
+	return "expires " + end.UTC().Format(time.DateOnly)
+}
+
+// appNote is what a listing says of an app's end: nothing for an app that names none (the way it was before the user
+// chose a time), else the end.
+func appNote(a App, now time.Time) string {
+	if a.ExpiresAt == "" {
+		return ""
+	}
+	end, ends, ok := a.End()
+	return ", " + endNote(end, ends, ok, a.Live(now))
+}
+
+// browserNote is what a listing says of a page grant's time: when it was made and ends, or that it lapsed.
+func browserNote(g BrowserGrant, now time.Time) string {
+	end, ends, ok := g.End()
+	note := endNote(end, ends, ok, g.Live(now))
+	if !g.Live(now) {
+		return note
+	}
 	day := []rune(g.GrantedAt)
-	return fmt.Sprintf("granted %s, expires %s", string(day[:min(len(day), grantedDateRunes)]), end.UTC().Format(time.DateOnly))
+	return fmt.Sprintf("granted %s, %s", string(day[:min(len(day), grantedDateRunes)]), note)
+}
+
+// label is the name an app gave itself in front of its origin, or the origin alone when it gave none.
+func label(origin, name string) string {
+	if name == "" {
+		return origin
+	}
+	return name + " (" + origin + ")"
 }
 
 // RunApps is RunAppsAt at the present time.
@@ -52,10 +81,10 @@ func RunAppsAt(cmd cli.Apps, h home.Host, log *proc.Logger, now time.Time) (int,
 			return 0, nil
 		}
 		for _, a := range r.Apps {
-			log.Say(a.Server + "  app" + foldersNote(a.Folders))
+			log.Say(label(a.Server, a.Name) + "  app" + appNote(a, now) + foldersNote(a.Folders))
 		}
 		for _, g := range r.Browsers {
-			log.Say(fmt.Sprintf("%s  browser, %s%s", g.Origin, browserNote(g, now), foldersNote(g.Folders)))
+			log.Say(fmt.Sprintf("%s  browser, %s%s", label(g.Origin, g.Name), browserNote(g, now), foldersNote(g.Folders)))
 		}
 		return 0, nil
 	}
@@ -63,7 +92,7 @@ func RunAppsAt(cmd cli.Apps, h home.Host, log *proc.Logger, now time.Time) (int,
 	if err != nil {
 		return 0, err
 	}
-	if !r.HasApp(origin) && !r.HasGrant(origin) {
+	if !r.HasSavedApp(origin) && !r.HasGrant(origin) {
 		log.Warn("not connected to " + origin)
 		return 1, nil
 	}

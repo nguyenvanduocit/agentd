@@ -182,8 +182,8 @@ func startRig(t *testing.T, agent string) *rig {
 			return r.linked[server]
 		},
 		// The daemon's own pairing: it posts the code to <server>/agentd/pair and saves the app it gets a token from.
-		ConnectServer: func(server, code string, folders []string) error {
-			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.MachineOf("host", "linux", "amd64"), server, code, r.regFile, folders)
+		ConnectServer: func(server, code string, access registry.Access) error {
+			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.MachineOf("host", "linux", "amd64"), server, code, r.regFile, access)
 			if err != nil {
 				return err
 			}
@@ -193,10 +193,10 @@ func startRig(t *testing.T, agent string) *rig {
 			r.linked[app.Server] = true
 			return nil
 		},
-		GrantBrowser: func(origin string, folders []string) error {
+		GrantBrowser: func(origin string, access registry.Access) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.reg = r.reg.AddBrowser(origin, time.Now(), folders)
+			r.reg = r.reg.AddBrowser(origin, time.Now(), access)
 			return nil
 		},
 		Revoke: func(origin string) error {
@@ -259,7 +259,7 @@ func firstLine(t *testing.T, r io.Reader) string {
 
 func localOf(t *testing.T, r *rig, mode goclient.Mode, origin string) *goclient.LocalDaemon {
 	t.Helper()
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: origin, Mode: mode, Options: r.options(),
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: origin, Mode: mode, Options: r.options(),
 		StartPairing: func(context.Context) (string, error) { return "unused", nil }, CancelPairing: func() {}})
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestBrowserModeDetectConnectOpenWriteReadClose(t *testing.T) {
 
 func TestAnUnknownAgentIsRefusedWithTheDaemonsMessage(t *testing.T) {
 	r := startRig(t, "cat")
-	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin); !res.Granted {
+	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app"); !res.Granted {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
 	_, err := goclient.OpenSession(bg, r.daemon(), appOrigin, "rm -rf")
@@ -393,7 +393,7 @@ func TestADeniedDialogIsAReasonInPlainWordsAndTheCooldownFollows(t *testing.T) {
 	if got := local.State().Error; got != goclient.ReasonText(goclient.ReasonDenied) {
 		t.Fatalf("error = %q", got)
 	}
-	res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin)
+	res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app")
 	if res.Granted || res.Reason != goclient.ReasonCooldown {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
@@ -405,7 +405,7 @@ func TestADeniedDialogIsAReasonInPlainWordsAndTheCooldownFollows(t *testing.T) {
 func TestADaemonWithoutADialogGrantsNothing(t *testing.T) {
 	r := startRig(t, "cat")
 	r.setAnswer(consent.AnswerUnavailable)
-	res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin)
+	res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app")
 	if res.Granted || res.Reason != goclient.ReasonNoDialog {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
@@ -417,7 +417,7 @@ func TestTheGatewayRefusesAnOriginThatIsNotHttpsOrLoopback(t *testing.T) {
 		if got := goclient.Detect(bg, origin, r.options()...); got.Found {
 			t.Errorf("Detect(%q) found %+v", origin, got)
 		}
-		res := goclient.ConnectBrowser(bg, r.daemon(), origin)
+		res := goclient.ConnectBrowser(bg, r.daemon(), origin, "Test app")
 		if res.Granted || res.Reason != goclient.ReasonOrigin {
 			t.Errorf("ConnectBrowser(%q) = %+v", origin, res)
 		}
@@ -503,7 +503,7 @@ func (a *appServer) cancelPairing() {
 func TestServerModeDetectConnectPairsTheDaemonWithTheAppsServer(t *testing.T) {
 	r := startRig(t, "cat")
 	app := startAppServer(t)
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: app.URL, Options: r.options(), StartPairing: app.startPairing, CancelPairing: app.cancelPairing})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: app.URL, Options: r.options(), StartPairing: app.startPairing, CancelPairing: app.cancelPairing})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestServerModeDetectConnectPairsTheDaemonWithTheAppsServer(t *testing.T) {
 func TestServerModeAnAppThatRefusesTheCodeIsPairingAndTheAppsPairingIsCancelled(t *testing.T) {
 	r := startRig(t, "cat")
 	app := startAppServer(t)
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: app.URL, Options: r.options(),
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: app.URL, Options: r.options(),
 		StartPairing: func(context.Context) (string, error) { return "WRONG-CODE", nil }, CancelPairing: app.cancelPairing})
 	if err != nil {
 		t.Fatal(err)
@@ -553,7 +553,7 @@ func TestServerModeAnAppThatRefusesTheCodeIsPairingAndTheAppsPairingIsCancelled(
 func TestServerModeTheRefusalCarriesTheDaemonsMessage(t *testing.T) {
 	r := startRig(t, "cat")
 	app := startAppServer(t)
-	res := goclient.ConnectServer(bg, r.daemon(), app.URL, "NOT-ISSUED")
+	res := goclient.ConnectServer(bg, r.daemon(), app.URL, "Test app", "NOT-ISSUED")
 	if res.Granted || res.Reason != goclient.ReasonPairing || !strings.Contains(res.Message, "refused the pairing code") {
 		t.Fatalf("ConnectServer = %+v", res)
 	}
@@ -562,7 +562,7 @@ func TestServerModeTheRefusalCarriesTheDaemonsMessage(t *testing.T) {
 func TestServerModeDisconnectForgetsTheApp(t *testing.T) {
 	r := startRig(t, "cat")
 	app := startAppServer(t)
-	local, _ := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: app.URL, Options: r.options(), StartPairing: app.startPairing, CancelPairing: app.cancelPairing})
+	local, _ := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: app.URL, Options: r.options(), StartPairing: app.startPairing, CancelPairing: app.cancelPairing})
 	local.Detect(bg)
 	if !local.Connect(bg) {
 		t.Fatalf("Connect = false: %q", local.State().Error)
@@ -627,7 +627,7 @@ func (b *bridge) send(t *testing.T, m any) {
 
 func TestThePagesToolsReachTheAgentThroughTheDaemonsBridge(t *testing.T) {
 	r := startRig(t, "cat")
-	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin); !res.Granted {
+	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app"); !res.Granted {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
 	s, err := goclient.OpenSession(bg, r.daemon(), appOrigin, "claude")
@@ -697,7 +697,7 @@ func TestTheACPLibraryTalksToARealAgentThroughASession(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := startRig(t, script(t, fakeAgentEnv+"=1 exec "+exe))
-	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin); !res.Granted {
+	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app"); !res.Granted {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
 	s, err := goclient.OpenSession(bg, r.daemon(), appOrigin, "claude")
@@ -738,7 +738,7 @@ func TestTheACPLibraryTalksToARealAgentThroughASession(t *testing.T) {
 
 func TestTheGoMCPSDKServesThePagesToolsOverMcp(t *testing.T) {
 	r := startRig(t, "cat")
-	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin); !res.Granted {
+	if res := goclient.ConnectBrowser(bg, r.daemon(), appOrigin, "Test app"); !res.Granted {
 		t.Fatalf("ConnectBrowser = %+v", res)
 	}
 	s, err := goclient.OpenSession(bg, r.daemon(), appOrigin, "claude")

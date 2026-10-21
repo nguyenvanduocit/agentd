@@ -63,9 +63,6 @@ type Options struct {
 	Tokens Tokens
 	// Tools serves the MCP tools of an agent session to the bridge the daemon starts for it. Nil: bridges are refused.
 	Tools Tools
-	// LatestVersion is the newest daemon release the app knows of, for List.LatestVersion; nil says none.
-	// release.Watch(...).Version reads it from agentd's releases page without blocking.
-	LatestVersion func() string
 	// ClientIPHeader names the request header in which a trusted proxy puts the client's address; empty counts the
 	// connection's own address. Set it only when every request passes through that proxy, which overwrites the header.
 	ClientIPHeader string
@@ -590,14 +587,6 @@ func agentsOf(reported []contract.AgentInfo) []Agent {
 	return out
 }
 
-// latestVersion is the newest daemon release the app says it knows of.
-func (h *Server) latestVersion() string {
-	if h.opts.LatestVersion == nil {
-		return ""
-	}
-	return h.opts.LatestVersion()
-}
-
 // List is the user's daemons as the browser shows them, with the pending pairing code, if any. The only error is the
 // Tokens store failing. A pairing store that cannot say which code is pending leaves the code off the list.
 func (h *Server) List(userID string) (List, error) {
@@ -612,7 +601,7 @@ func (h *Server) List(userID string) (List, error) {
 			sessions[s.p]++
 		}
 	}
-	list := List{Daemons: make([]Info, 0, len(recs)), LatestVersion: h.latestVersion()}
+	list := List{Daemons: make([]Info, 0, len(recs))}
 	for _, rec := range recs {
 		info := Info{
 			ID: rec.ID, Name: rec.Name, Hostname: rec.Hostname, State: StateOffline, OS: rec.OS, Agents: []Agent{},

@@ -40,6 +40,4 @@ export interface Pairing {
 export interface DaemonList {
   daemons: DaemonInfo[]
   pairing: Pairing
-  /** The newest agentd release the app knows of; "" when it does not say. A daemon is behind when its `version` is older. */
-  latestVersion: string
 }

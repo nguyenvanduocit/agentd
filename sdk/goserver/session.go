@@ -159,6 +159,25 @@ func (s *session) sendLine(line string) error {
 	return nil
 }
 
+// Chdir has the daemon end the agent and start it again in dir, as Conn says. It waits for the writes in flight, so
+// every line written before it reached the old agent and every one after it reaches the new.
+func (s *session) Chdir(ctx context.Context, dir string) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	select {
+	case <-s.done:
+		return errSessionEnded
+	default:
+	}
+	s.wbuf = nil // the rest of a line the old agent never got is not the start of a line for the new one
+	moved, err := s.p.client.CallChdir(ctx, s.id, dir)
+	if err != nil {
+		return daemonError(err)
+	}
+	s.setCwd(moved.Cwd)
+	return nil
+}
+
 func (s *session) Cwd() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

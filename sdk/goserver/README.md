@@ -15,7 +15,7 @@ For the page that lets a user connect their computer, see [`sdk/web`](../web/REA
 ## Install
 
 ```sh
-go get github.com/nguyenvanduocit/agentd@v0.8.0
+go get github.com/nguyenvanduocit/agentd@v0.9.0
 ```
 
 The package is `sdk/goserver` from v0.7.0. Releases up to v0.6.0 carry the same library as `github.com/nguyenvanduocit/agentd/hub`, without the names marked "Since 0.7.0" below.
@@ -97,7 +97,7 @@ func ask(ctx context.Context, h *goserver.Server, userID string) (string, error)
 }
 ```
 
-`OpenLatest` picks the computer; `Open(ctx, userID, daemonID, "claude")` opens on the one the user chose (`h.Online(userID)` lists the ones that are up). The agent runs in a directory the daemon chooses; `conn.Cwd()` says which.
+`OpenLatest` picks the computer; `Open(ctx, userID, daemonID, "claude")` opens on the one the user chose (`h.Online(userID)` lists the ones that are up). The agent starts in a directory the daemon chooses; `conn.Cwd()` says which. `conn.Chdir(ctx, dir)` moves it to another directory the user allowed this app (absolute path): the daemon ends the agent and starts the same program in `dir`, and `conn` carries on with the new process. That is a new agent that has not been initialized, so speak ACP to it from the start (`initialize`, then `session/new` or `session/load`). The daemon's refusal is an error that starts "your daemon:" and leaves the agent where it is.
 
 `Conn` is a raw byte stream: agentd relays the agent's lines and does not interpret them. For a real conversation run an ACP client over it. [`github.com/coder/acp-go-sdk`](https://github.com/coder/acp-go-sdk) does:
 
@@ -171,7 +171,6 @@ W=$(mktemp -d)
 export HOME=$W AGENTD_HOME=$W/agentd XDG_CONFIG_HOME=$W/config XDG_STATE_HOME=$W/state   # a home of its own
 export AGENTD_LOCAL_PORT=47681       # the gateway pages use; 0 for any free port
 export AGENTD_ADAPTERS=off           # no npm install of the Claude and Codex adapters
-export AGENTD_TRAY=off AGENTD_RELEASE_URL=   # no tray icon, no update check
 export AGENTD_AGENT_CLAUDE=/tmp/fake-agent   # "claude" is this program: it answers initialize and echoes
 
 /tmp/agentd pair --app http://127.0.0.1:8090 --code XXXXX-XXXXX   # the code your app showed

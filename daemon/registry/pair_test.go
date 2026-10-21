@@ -40,7 +40,7 @@ var testMachine = Machine{Hostname: "box", OS: "linux", Arch: "x64"}
 
 func pairWith(t *testing.T, client Doer, server, code, file string) (App, error) {
 	t.Helper()
-	return Pair(context.Background(), client, testMachine, server, code, file, nil)
+	return Pair(context.Background(), client, testMachine, server, code, file, Access{})
 }
 
 func TestPairPostsTheCodeWithThisMachinesFactsAndSavesTheToken(t *testing.T) {
@@ -181,7 +181,7 @@ func TestPairGivesUpAfterTheTimeout(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})
-	_, err := Pair(ctx, slow, testMachine, "https://s", "c", filepath.Join(t.TempDir(), "d.json"), nil)
+	_, err := Pair(ctx, slow, testMachine, "https://s", "c", filepath.Join(t.TempDir(), "d.json"), Access{})
 	if err == nil || !strings.Contains(err.Error(), "cannot reach https://s (context deadline exceeded)") {
 		t.Errorf("error = %v", err)
 	}

@@ -4,7 +4,7 @@ export const DEFAULT_PORTS: readonly number[] = Array.from({ length: 10 }, (_, i
 const DETECT_TIMEOUT_MS = 800
 
 /** The versions of the daemon's page protocol (`protocol` of GET /v1/status) this SDK speaks. */
-export const SUPPORTED_PROTOCOLS: readonly number[] = [1]
+export const SUPPORTED_PROTOCOLS: readonly number[] = [1, 2]
 
 export interface AgentInfo {
   name: string
@@ -185,15 +185,16 @@ const post = (body: object): RequestInit => ({ method: "POST", headers: { "conte
 
 /**
  * Asks the user (in a dialog on their machine) to let the daemon connect to this page's own server with this pairing
- * code. The server is the page's origin: the daemon refuses to connect to any other.
+ * code. The server is the page's origin: the daemon refuses to connect to any other. `name` is what the app calls
+ * itself: the dialog and the daemon's menu show it beside the origin, and the daemon refuses a request without one.
  */
-export function connectServer(d: Daemon, a: { code: string }, o: FetchOptions = {}): Promise<ConnectResult> {
-  return connectRequest(d, post({ mode: "server", code: a.code }), "/v1/connect", o)
+export function connectServer(d: Daemon, a: { name: string; code: string }, o: FetchOptions = {}): Promise<ConnectResult> {
+  return connectRequest(d, post({ mode: "server", name: a.name, code: a.code }), "/v1/connect", o)
 }
 
-/** Asks the user to let this page run agents on their machine directly. */
-export function connectBrowser(d: Daemon, o: FetchOptions = {}): Promise<ConnectResult> {
-  return connectRequest(d, post({ mode: "browser" }), "/v1/connect", o)
+/** Asks the user to let this page run agents on their machine directly. `name` is what the app calls itself, as for `connectServer`. */
+export function connectBrowser(d: Daemon, a: { name: string }, o: FetchOptions = {}): Promise<ConnectResult> {
+  return connectRequest(d, post({ mode: "browser", name: a.name }), "/v1/connect", o)
 }
 
 /** Whether `disconnect` took the page's grant back; if not, the reason, as for a refused connection. */
@@ -295,6 +296,17 @@ export interface AgentSession {
    * `mcp`. Throws on a daemon that does not bridge a page's MCP server (agentd 0.3 and older).
    */
   mcpServer(name: string): McpServer
+  /**
+   * Moves the agent to `dir`, an absolute path to a directory the user allowed this page. The daemon ends the agent and
+   * starts the same program in `dir` on this session's streams: `readable` and `writable` carry on with the new process,
+   * and `pid` and `cwd` are its own once this resolves. It is a new agent that has not been initialized, so the page
+   * speaks ACP to it from the start (`initialize`, then `session/new` or `session/load`); lines the old agent said and
+   * the page has not read yet stay in `readable`. Rejects with a SessionError carrying the daemon's message when the
+   * daemon refuses (a folder the user did not allow, not a directory), and the agent stays where it is, except that an
+   * agent which cannot start in `dir` is gone and ends the session. An agentd that predates `chdir` refuses it as an
+   * unknown message.
+   */
+  chdir(dir: string): Promise<void>
   /** One line to the agent's stdin. */
   write(line: string): void
   /**
@@ -405,6 +417,7 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
   const stdout = lineReader()
   const mcpIn = lineReader()
   let version = "(unknown version)"
+  let moving: { resolve: (m: Incoming) => void; reject: (e: SessionError) => void } | undefined
   const send = (m: object): void => ws.send(JSON.stringify(m))
   const write = (line: string): void => send({ t: "write", id, line })
   const end = (): void => {
@@ -415,6 +428,7 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
     ws.onerror = () => reject(new SessionError("cannot open a session: the daemon refused the connection (is this page allowed?)", "unreachable"))
     ws.onclose = () => {
       reject(new SessionError("the daemon closed the session", "unreachable"))
+      moving?.reject(new SessionError("the daemon closed the session", "unreachable"))
       end()
       for (const c of closers) c()
     }
@@ -424,7 +438,10 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
         version = m.version ?? version
         send({ t: "open", id, agent })
       } else if (m.id !== id) return
-      else if (m.t === "error") reject(new SessionError(m.message ?? "the daemon refused to open the agent", "error"))
+      else if (m.t === "error") {
+        reject(new SessionError(m.message ?? "the daemon refused to open the agent", "error"))
+        moving?.reject(new SessionError(m.message ?? "the daemon refused to move the agent", "error"))
+      } else if (m.t === "moved") moving?.resolve(m)
       else if (m.t === "mcp") mcpIn.line(m.line ?? "")
       else if (m.t === "frame") {
         const frame: Frame = { kind: m.kind ?? "out", data: m.data ?? "", code: m.code ?? 0 }
@@ -433,7 +450,7 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
         for (const f of frames) f(frame)
       } else if (m.t === "opened") {
         const mcpOut = lineWriter((line) => send({ t: "mcp", id, line }))
-        resolve({
+        const session: AgentSession = {
           pid: m.pid ?? -1,
           cwd: m.cwd ?? "",
           mcp: {
@@ -443,6 +460,27 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
             writable: mcpOut,
           },
           mcpServer: (name) => mcpServerOf(m.mcp, version, name),
+          chdir: (dir) => {
+            if (moving) return Promise.reject(new SessionError("the agent is already moving", "error"))
+            return new Promise<void>((done, fail) => {
+              const settle = (): void => {
+                moving = undefined
+              }
+              moving = {
+                resolve: (moved) => {
+                  settle()
+                  session.pid = moved.pid ?? -1
+                  session.cwd = moved.cwd ?? ""
+                  done()
+                },
+                reject: (e) => {
+                  settle()
+                  fail(e)
+                },
+              }
+              send({ t: "chdir", id, dir })
+            })
+          },
           write,
           get readable() {
             return stdout.stream
@@ -454,7 +492,8 @@ export function openSession(d: Daemon, agent: string, o: SessionOptions = {}): P
             send({ t: "close", id })
             ws.close()
           },
-        })
+        }
+        resolve(session)
       }
     }
   })

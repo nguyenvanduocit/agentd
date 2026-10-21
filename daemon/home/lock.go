@@ -16,26 +16,19 @@ import (
 // file also holds a small record of who has the lock; it is read to word the message of the one that stays out, and
 // never decides anything.
 //
-// The one that stays out exits with ExitStopped (0), on purpose. The exit codes are the daemon's protocol with whatever
-// restarts it (exit.go): 0 stays stopped, so launchd (KeepAlive SuccessfulExit=false), systemd (Restart=on-failure) and
-// the launcher's loop all leave it alone. Any other code would be started again at once, and the launcher counts a quick
-// non-zero exit as a crash: after two it rolls a good version back.
+// The one that stays out exits with ExitStopped (0), on purpose. The exit codes are the daemon's protocol with
+// agentd.app (exit.go): 0 stays stopped. Any other code would be started again at once and counted as a crash.
 
 // What started the daemon that holds the lock, as it is written in the record.
 const (
-	KindApp      = "app"      // agentd.app: it runs the daemon as its child and talks to it over a channel
-	KindService  = "service"  // a launchd job, a systemd unit or the restart loop (AGENTD_MANAGED=1 without a channel)
+	KindApp      = "app"      // agentd.app: it runs the daemon in its own process
 	KindTerminal = "terminal" // `agentd run` by hand
 )
 
-// InstanceKind is what started a daemon: the app, when it has the channel to the app (the app sets AGENTD_MANAGED too),
-// a service when a service manager restarts it, else a person at a terminal.
-func InstanceKind(managed, hasUIChannel bool) string {
-	switch {
-	case hasUIChannel:
+// InstanceKind is what started a daemon: the app, when it gave the daemon its UI, else a person at a terminal.
+func InstanceKind(hasUI bool) string {
+	if hasUI {
 		return KindApp
-	case managed:
-		return KindService
 	}
 	return KindTerminal
 }
@@ -71,8 +64,6 @@ func (r LockRecord) describe(now time.Time) string {
 	switch r.Kind {
 	case KindApp:
 		parts = append(parts, "started by the app")
-	case KindService:
-		parts = append(parts, "started as a service")
 	case KindTerminal:
 		parts = append(parts, "started from a terminal")
 	}

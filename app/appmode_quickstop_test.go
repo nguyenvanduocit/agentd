@@ -21,8 +21,8 @@ type scripted struct {
 
 func newScripted(engines ...*Engine) *scripted {
 	s := &scripted{engines: engines}
-	s.d = &desktop{files: EngineFiles{Engine: "/engine"}}
-	s.d.launch = func(EngineFiles, string, string, func([]byte)) (*Engine, error) {
+	s.d = &desktop{}
+	s.d.launch = func(EngineFiles, string, string, OpenLink) (*Engine, error) {
 		e := s.engines[s.launched]
 		s.launched++
 		return e, nil

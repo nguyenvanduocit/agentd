@@ -3,7 +3,6 @@ package proc
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"runtime/debug"
 	"sync"
@@ -53,8 +52,7 @@ func (l *Logger) Warn(message string) {
 }
 
 // CrashOnPanic is deferred first thing in main and in every goroutine the daemon starts. A panic nobody recovered
-// leaves the daemon in an unknown state: it logs the panic with its stack and exits 1, so the service manager (or the
-// launcher's loop) starts a fresh process. The groups in tracker (an adapter install running in the background) go
+// leaves the daemon in an unknown state: it logs the panic with its stack and exits 1. The groups in tracker (an adapter install running in the background) go
 // down with the daemon.
 func (l *Logger) CrashOnPanic(tracker *Tracker) {
 	r := recover()
@@ -64,67 +62,4 @@ func (l *Logger) CrashOnPanic(tracker *Tracker) {
 	l.Warn(fmt.Sprintf("fatal: uncaught exception: %v\n%s", r, debug.Stack()))
 	tracker.KillAll()
 	l.exit(1)
-}
-
-const (
-	LogMaxBytes int64 = 5 * 1024 * 1024
-	LogKeep           = 3
-)
-
-// RotateLog rotates file when it is larger than maxBytes, keeping keep files in all; it returns whether it did. A
-// missing file is not an error.
-func RotateLog(file string, maxBytes int64, keep int) bool {
-	info, err := os.Stat(file)
-	if err != nil || !NeedsRotation(info.Size(), maxBytes) {
-		return false
-	}
-	for _, step := range RotateSteps(file, keep) {
-		// A missing older file is the normal case; a log must never stop the daemon.
-		switch step.Op {
-		case RotateRemove:
-			_ = os.Remove(step.File)
-		case RotateRename:
-			_ = os.Rename(step.From, step.To)
-		case RotateCopy:
-			_ = copyFile(step.From, step.To)
-		case RotateTruncate:
-			_ = os.Truncate(step.File, 0)
-		}
-	}
-	return true
-}
-
-func copyFile(from, to string) error {
-	src, err := os.Open(from)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = src.Close() }()
-	info, err := src.Stat()
-	if err != nil {
-		return err
-	}
-	dst, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm()&fs.ModePerm)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
-		return err
-	}
-	return dst.Close()
-}
-
-// StdoutIs reports whether this process writes its stdout into file (a service manager or the launcher redirected it
-// there).
-func StdoutIs(file string) bool {
-	out, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	log, err := os.Stat(file)
-	if err != nil {
-		return false
-	}
-	return os.SameFile(out, log)
 }

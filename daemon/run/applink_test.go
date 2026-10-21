@@ -1,80 +1,70 @@
 package run
 
 import (
-	"bufio"
-	"encoding/json"
-	"net"
-	"os"
-	"path/filepath"
+	"context"
+	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/nguyenvanduocit/agentd/daemon/cli"
+	"github.com/nguyenvanduocit/agentd/daemon/home"
+	"github.com/nguyenvanduocit/agentd/daemon/proc"
 	"github.com/nguyenvanduocit/agentd/daemon/registry"
+	"github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
-// The daemon as agentd.app runs it: the app starts it with a channel on fd 3 (AGENTD_UI_FD) and shows its state; the
-// daemon starts no tray program of its own, does what the app chooses, and ends when the app goes.
+// The daemon as agentd.app runs it: inside the app's process, with a UI that shows its state and does what the app
+// chooses. The tests run it inside the test process, with a fake UI in the app's place.
 
 const pageOrigin = "http://localhost:5173"
 
-// appChannel is the app's end of the channel, and the lines the daemon sent on it.
-type appChannel struct {
-	conn net.Conn
-	mu   sync.Mutex
-	got  []map[string]any
+// fakeUI is the app: it keeps the states the daemon sends and can choose.
+type fakeUI struct {
+	mu       sync.Mutex
+	states   []ui.State
+	onAction func(ui.Action)
 }
 
-// startWithApp starts `agentd run` with its UI channel on fd 3, as agentd.app does.
-func startWithApp(t *testing.T, box *sandbox, env map[string]string) (*daemonProc, *appChannel) {
-	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	theirs := os.NewFile(uintptr(fds[1]), "daemon-end")
-	mine := os.NewFile(uintptr(fds[0]), "app-end")
-	conn, err := net.FileConn(mine)
-	_ = mine.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	merged := map[string]string{"AGENTD_UI_FD": "3"}
-	for k, v := range env {
-		merged[k] = v
-	}
-	d := startWith(t, box, []string{"run"}, merged, []*os.File{theirs})
-	t.Cleanup(d.stop)
-	_ = theirs.Close()
-	app := &appChannel{conn: conn}
-	t.Cleanup(func() { _ = conn.Close() })
-	go func() {
-		lines := bufio.NewScanner(conn)
-		lines.Buffer(make([]byte, 0, 64*1024), 10<<20)
-		for lines.Scan() {
-			var m map[string]any
-			if json.Unmarshal(lines.Bytes(), &m) == nil {
-				app.mu.Lock()
-				app.got = append(app.got, m)
-				app.mu.Unlock()
-			}
-		}
-	}()
-	return d, app
+// open is run.Deps.UI.
+func (f *fakeUI) open(onAction func(ui.Action)) ui.Link {
+	f.mu.Lock()
+	f.onAction = onAction
+	f.mu.Unlock()
+	return f
 }
 
-// state is the first state line that pred accepts.
-func (a *appChannel) state(t *testing.T, what string, pred func(map[string]any) bool) map[string]any {
+func (f *fakeUI) Start() {}
+func (f *fakeUI) Stop()  {}
+func (f *fakeUI) Update(s ui.State) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states = append(f.states, s)
+}
+
+// choose is the user choosing in the app's menu.
+func (f *fakeUI) choose(t *testing.T, a ui.Action) {
 	t.Helper()
-	var found map[string]any
+	f.mu.Lock()
+	act := f.onAction
+	f.mu.Unlock()
+	if act == nil {
+		t.Fatal("the daemon never opened the link")
+	}
+	act(a)
+}
+
+// state is the first state that pred accepts.
+func (f *fakeUI) state(t *testing.T, what string, pred func(ui.State) bool) ui.State {
+	t.Helper()
+	var found ui.State
 	waitFor(t, what, func() bool {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		for _, m := range a.got {
-			if m["t"] == "state" && pred(m) {
-				found = m
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, s := range f.states {
+			if pred(s) {
+				found = s
 				return true
 			}
 		}
@@ -83,95 +73,84 @@ func (a *appChannel) state(t *testing.T, what string, pred func(map[string]any) 
 	return found
 }
 
-func (a *appChannel) send(t *testing.T, line string) {
-	t.Helper()
-	if _, err := a.conn.Write([]byte(line + "\n")); err != nil {
-		t.Fatal(err)
+// latest is the newest state; false before there is one.
+func (f *fakeUI) latest() (ui.State, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.states) == 0 {
+		return ui.State{}, false
 	}
+	return f.states[len(f.states)-1], true
 }
 
-func pagesOf(m map[string]any) []any {
-	pages, _ := m["pages"].([]any)
-	return pages
+func anyState(ui.State) bool { return true }
+
+// startWithApp runs the daemon inside this process with a fake app as its UI, as agentd.app does.
+func startWithApp(t *testing.T, box *sandbox, env map[string]string) (*daemonProc, *fakeUI) {
+	t.Helper()
+	app := &fakeUI{}
+	environ := home.Env{}
+	for _, kv := range box.environ(env) {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			environ[k] = v
+		}
+	}
+	out := &syncBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &daemonProc{out: out, exited: make(chan struct{}), end: cancel}
+	deps := Deps{
+		Log:        proc.NewLogger(out, out),
+		Host:       home.Host{Platform: runtime.GOOS, Env: environ, Home: box.root},
+		Executable: binaries.agentd,
+		UI:         app.open,
+	}
+	go func() {
+		d.code = Daemon(ctx, cli.Run{Dir: &box.work}, deps)
+		close(d.exited)
+	}()
+	t.Cleanup(d.stop)
+	return d, app
 }
 
-func startAppMode(t *testing.T) (*sandbox, *daemonProc, *appChannel, string) {
+func startAppMode(t *testing.T) (*sandbox, *daemonProc, *fakeUI) {
 	t.Helper()
 	box := newSandbox(t)
 	box.writeApps(t, nil, []registry.BrowserGrant{{Origin: pageOrigin, GrantedAt: registry.GrantStamp(time.Now())}})
-	marker := filepath.Join(box.root, "tray-started")
-	d, app := startWithApp(t, box, map[string]string{"AGENTD_TRAY": sh("touch " + marker + "; sleep 60")})
-	return box, d, app, marker
+	d, app := startWithApp(t, box, nil)
+	return box, d, app
 }
 
-func TestAppModeSendsItsStateOnTheDescriptorAndStartsNoTrayProgram(t *testing.T) {
-	_, _, app, marker := startAppMode(t)
-	state := app.state(t, "a state on fd 3", func(map[string]any) bool { return true })
-	pages := pagesOf(state)
-	if len(pages) != 1 || pages[0] != pageOrigin {
-		t.Fatalf("pages = %v", pages)
+func TestAppModeSendsItsStateToTheApp(t *testing.T) {
+	_, _, app := startAppMode(t)
+	state := app.state(t, "a state", anyState)
+	if len(state.Pages) != 1 || state.Pages[0] != pageOrigin {
+		t.Fatalf("pages = %v", state.Pages)
 	}
-	if v, _ := state["version"].(string); v != testVersion {
-		t.Fatalf("version = %v", state["version"])
-	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the daemon started a tray program of its own")
+	if state.Version != testVersion && state.Version != home.Version {
+		t.Fatalf("version = %v", state.Version)
 	}
 }
 
 func TestAppModeDoesWhatTheAppChooses(t *testing.T) {
-	box, _, app, _ := startAppMode(t)
-	app.state(t, "a state on fd 3", func(map[string]any) bool { return true })
-	app.send(t, `{"t":"action","id":"disconnect:`+pageOrigin+`"}`)
-	waitFor(t, "the page disconnected", func() bool {
-		data, err := os.ReadFile(box.configFile())
-		return err == nil && !strings.Contains(string(data), pageOrigin)
-	})
-	after := app.state(t, "a state without the page", func(m map[string]any) bool { return len(pagesOf(m)) == 0 })
-	if len(pagesOf(after)) != 0 {
-		t.Fatalf("pages = %v", pagesOf(after))
+	box, _, app := startAppMode(t)
+	app.state(t, "a state", anyState)
+	app.choose(t, ui.Action{Kind: ui.ActionDisconnect, Origin: pageOrigin})
+	reg := func() registry.Registry {
+		r, err := registry.Load(box.configFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
 	}
+	waitFor(t, "the page disconnected", func() bool { return len(reg().Browsers) == 0 })
+	app.state(t, "a state without the page", func(s ui.State) bool { return len(s.Pages) == 0 })
 }
 
-func TestAppModeEndsWhenTheAppGoes(t *testing.T) {
-	_, d, app, _ := startAppMode(t)
-	app.state(t, "a state on fd 3", func(map[string]any) bool { return true })
-	_ = app.conn.Close()
+func TestAppModeEndsWhenTheAppEndsIt(t *testing.T) {
+	_, d, app := startAppMode(t)
+	app.state(t, "a state", anyState)
+	d.signal(0)
 	if code := d.exitCode(t, 15*time.Second); code != 0 {
 		t.Fatalf("exit code %d, want 0", code)
-	}
-	if !d.says("agentd.app closed its channel: stopping") {
-		t.Fatalf("output:\n%s", d.out)
-	}
-}
-
-func TestATrayProgramOfItsOwnStartsWhenThereIsNoAppAndEndsWithTheDaemon(t *testing.T) {
-	box := newSandbox(t)
-	started, ended := filepath.Join(box.root, "tray-started"), filepath.Join(box.root, "tray-ended")
-	program := filepath.Join(box.root, "tray")
-	script := "#!/bin/sh\ntouch " + started + "\ncat > /dev/null\ntouch " + ended + "\n"
-	if err := os.WriteFile(program, []byte(script), 0o755); err != nil { //nolint:gosec // a test program
-		t.Fatal(err)
-	}
-	d := startDaemon(t, box, []string{"run"}, map[string]string{"AGENTD_TRAY": program})
-	waitFor(t, "the tray program to start", func() bool { _, err := os.Stat(started); return err == nil })
-	d.stop()
-	if d.code != 0 {
-		t.Fatalf("exit code %d", d.code)
-	}
-	// its stdin closes with the daemon
-	waitFor(t, "the tray program to end", func() bool { _, err := os.Stat(ended); return err == nil })
-}
-
-// agentd.app runs the engine from its bundle and updates itself: the log must not tell its user to run an installer.
-func TestAppModeDoesNotBlameTheInstallerForUpdatesBeingOff(t *testing.T) {
-	_, d, app, _ := startAppMode(t)
-	app.state(t, "a state on fd 3", func(map[string]any) bool { return true })
-	waitFor(t, "the log to say who updates", func() bool { return d.says("updates are off") })
-	if d.says("the installer does that") {
-		t.Errorf("an engine run by agentd.app was told to be installed by the installer:\n%s", d.out.String())
-	}
-	if !d.says("agentd.app updates itself") {
-		t.Errorf("the log does not say that agentd.app updates the engine:\n%s", d.out.String())
 	}
 }

@@ -26,6 +26,8 @@ type ClientHandler interface {
 	HandleOpen(ctx context.Context, sessionID, agent string) (contract.Opened, error)
 	// HandleWrite writes one line to a session's agent.
 	HandleWrite(ctx context.Context, sessionID, line string) (bool, error)
+	// HandleChdir starts a session's agent again in another directory, under the same session id.
+	HandleChdir(ctx context.Context, sessionID, dir string) (contract.Opened, error)
 	// HandleClose ends a session's agent.
 	HandleClose(ctx context.Context, sessionID string) error
 	// HandleRestart ends every agent and exits for a start again.
@@ -94,6 +96,16 @@ func (l *Link) dispatch(c *conn, ln *lanes, name string, args []json.RawMessage,
 					return false, err
 				}
 				return l.h.HandleWrite(c.ctx, id, line)
+			})
+		})
+	case "chdir":
+		ln.run(sessionKey(args), func() {
+			serveCall(c, name, ack, func() (contract.Opened, error) {
+				var id, dir string
+				if err := decodeArgs(args, &id, &dir); err != nil {
+					return contract.Opened{}, err
+				}
+				return l.h.HandleChdir(c.ctx, id, dir)
 			})
 		})
 	case "close":

@@ -19,7 +19,7 @@ func fcntlGetFD(fd int) (int, error) {
 	return int(flags), nil
 }
 
-// A program the daemon starts (an agent, the tray) must not inherit the lock: the lock belongs to the daemon alone, and
+// A program the daemon starts (an agent) must not inherit the lock: the lock belongs to the daemon alone, and
 // an agent that outlives a killed daemon would otherwise keep every later daemon out.
 func TestTheLockDescriptorIsNotInheritedByWhatTheDaemonStarts(t *testing.T) {
 	l, err := AcquireInstanceLock(filepath.Join(t.TempDir(), "run", "daemon.lock"))

@@ -76,8 +76,8 @@ func TestABadOriginNeverReachesTheDaemon(t *testing.T) {
 		t.Errorf("Detect = %+v, want not found and refused for the origin", got)
 	}
 	for name, got := range map[string]goclient.ConnectResult{
-		"ConnectBrowser": goclient.ConnectBrowser(ctx, found, bad, c),
-		"ConnectServer":  goclient.ConnectServer(ctx, found, bad, "CODE", c),
+		"ConnectBrowser": goclient.ConnectBrowser(ctx, found, bad, "Test app", c),
+		"ConnectServer":  goclient.ConnectServer(ctx, found, bad, "Test app", "CODE", c),
 	} {
 		if got.Granted || got.Reason != goclient.ReasonOrigin || !strings.Contains(got.Message, `use "http://127.0.0.1:5199"`) {
 			t.Errorf("%s = %+v", name, got)
@@ -96,12 +96,12 @@ func TestABadOriginNeverReachesTheDaemon(t *testing.T) {
 }
 
 func TestNewLocalDaemonRefusesABadOriginAtOnce(t *testing.T) {
-	_, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://127.0.0.1:5199/", Mode: goclient.ModeBrowser})
+	_, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: "http://127.0.0.1:5199/", Mode: goclient.ModeBrowser})
 	var bad *goclient.OriginError
 	if !errors.As(err, &bad) || !strings.Contains(err.Error(), `use "http://127.0.0.1:5199"`) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "http://localhost:5173", Mode: goclient.ModeBrowser}); err != nil {
+	if _, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: "http://localhost:5173", Mode: goclient.ModeBrowser}); err != nil {
 		t.Fatalf("a good origin: %v", err)
 	}
 	// A client of the caller's own (a test) needs no origin.

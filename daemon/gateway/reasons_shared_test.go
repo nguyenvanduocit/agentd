@@ -161,13 +161,13 @@ func triggers() map[Reason]func(t *testing.T) reply {
 		},
 		ReasonPairing: func(t *testing.T) reply {
 			deps := newWorld().deps()
-			deps.ConnectServer = func(server, _ string, _ []string) error { return errors.New(server + " refused the code") }
+			deps.ConnectServer = func(server, _ string, _ registry.Access) error { return errors.New(server + " refused the code") }
 			g := startGateway(t, deps, nil)
 			return connectAs(t, g.Port, map[string]any{"mode": "server", "code": "WRONG"}, "https://app.example.com")
 		},
 		ReasonNotSaved: func(t *testing.T) reply {
 			deps := newWorld().deps()
-			deps.GrantBrowser = func(string, []string) error { return errors.New("disk full") }
+			deps.GrantBrowser = func(string, registry.Access) error { return errors.New("disk full") }
 			g := startGateway(t, deps, nil)
 			return connectAs(t, g.Port, browser, page)
 		},

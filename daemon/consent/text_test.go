@@ -1,9 +1,9 @@
 package consent
 
 import (
-	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const origin = "https://app.example.com"
@@ -11,12 +11,8 @@ const origin = "https://app.example.com"
 var (
 	agentTitles = []string{"Claude Code", "Codex"}
 	serverText  = ConsentText(Question{Origin: origin, Mode: ModeServer, Agents: []string{"claude", "codex"}, Titles: agentTitles})
-	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}, Titles: agentTitles, GrantDays: 30})
+	browserText = ConsentText(Question{Origin: origin, Mode: ModeBrowser, Agents: []string{"claude", "codex"}, Titles: agentTitles})
 )
-
-func has(found ...string) func(string) bool {
-	return func(cmd string) bool { return slices.Contains(found, cmd) }
-}
 
 func mustContain(t *testing.T, s string, parts ...string) {
 	t.Helper()
@@ -86,19 +82,49 @@ func TestConsentTextUsesTheWordsOfTheProduct(t *testing.T) {
 	}
 }
 
-// The access of an app has no end of its own, a page's has: both are said, because a person who allows something
-// should know whether it lasts.
-func TestConsentTextSaysHowLongTheAccessLasts(t *testing.T) {
-	mustContain(t, serverText.Body, "The access lasts until you disconnect it")
-	mustContain(t, browserText.Body, "The access lasts 30 days; then the site has to ask again.", "disconnect it sooner")
-	if strings.Contains(serverText.Body, "days") || strings.Contains(browserText.Body, "until you disconnect it") {
-		t.Errorf("an app's access has no end of its own and a page's does:\nserver: %q\nbrowser: %q", serverText.Body, browserText.Body)
+// Whether the access lasts is the user's choice, made in the same window: the text points at it.
+func TestConsentTextSaysTheUserChoosesHowLongTheAccessLasts(t *testing.T) {
+	for _, text := range []Text{serverText, browserText} {
+		mustContain(t, text.Body, "You also choose how long the access lasts", "disconnect it sooner")
+		if strings.Contains(text.Body, "until you disconnect it") || strings.Contains(text.Body, "30 days") {
+			t.Errorf("the text decides a time the user has not chosen: %q", text.Body)
+		}
 	}
-	if text := ConsentText(Question{Origin: origin, Mode: ModeBrowser}); !strings.Contains(text.Body, "The access lasts for a limited time;") {
-		t.Errorf("a page's grant without a number of days must still say that it ends: %q", text.Body)
+}
+
+// A name is whatever the app calls itself, so the title carries the origin beside it: it is the part a site cannot choose.
+func TestConsentTextNamesTheAppAndKeepsItsOriginInTheTitle(t *testing.T) {
+	named := ConsentText(Question{Origin: origin, Mode: ModeServer, Name: "AIOcean"})
+	mustContain(t, named.Title, "AIOcean", origin)
+	mustContain(t, named.Body, "AIOcean", origin)
+	mustContain(t, ConsentText(Question{Origin: origin, Mode: ModeBrowser, Name: "Docs"}).Body, "Docs", origin)
+	if unnamed := ConsentText(Question{Origin: origin, Mode: ModeServer}); strings.Contains(unnamed.Title, "()") || !strings.Contains(unnamed.Title, origin) {
+		t.Errorf("a question without a name still names the origin: %q", unnamed.Title)
 	}
-	if text := ConsentText(Question{Origin: origin, Mode: ModeBrowser, GrantDays: 1}); !strings.Contains(text.Body, "The access lasts 1 day;") {
-		t.Errorf("one day is not 1 days: %q", text.Body)
+}
+
+func TestTheChoicesOfHowLongAccessLastsEndWithNever(t *testing.T) {
+	var labels []string
+	for _, c := range LastsChoices {
+		labels = append(labels, c.Label)
+	}
+	want := []string{"1 hour", "1 day", "7 days", "30 days", "Never"}
+	if strings.Join(labels, ",") != strings.Join(want, ",") {
+		t.Errorf("choices %v, want %v", labels, want)
+	}
+	if LastsChoices[len(LastsChoices)-1].Lasts != NoEnd {
+		t.Error("the last choice has no end")
+	}
+	if got := LastsChoices[DefaultLastsChoice]; got.Lasts != DefaultLasts || got.Label != "30 days" {
+		t.Errorf("the default choice is %+v, want 30 days", got)
+	}
+}
+
+func TestADecisionThatChoseNoTimeLastsTheDefault(t *testing.T) {
+	for _, tc := range []struct{ lasts, want time.Duration }{{0, DefaultLasts}, {time.Hour, time.Hour}, {NoEnd, NoEnd}} {
+		if got := (Decision{Lasts: tc.lasts}).LastsOrDefault(); got != tc.want {
+			t.Errorf("Lasts %v gives %v, want %v", tc.lasts, got, tc.want)
+		}
 	}
 }
 
@@ -107,121 +133,6 @@ func TestConsentTextSaysHowToTakeTheAccessBack(t *testing.T) {
 		mustContain(t, text.Body, "agentd icon in the menu bar", "Only allow sites you trust.")
 		if strings.Contains(text.Body, "agentd apps remove") {
 			t.Errorf("the window's words carry a terminal command: %q", text.Body)
-		}
-	}
-}
-
-func TestDialogTextIsTheSameWordsPlusTheTerminalCommand(t *testing.T) {
-	q := Question{Origin: origin, Mode: ModeBrowser, Titles: agentTitles}
-	window, dialog := ConsentText(q), DialogText(q)
-	if window.Title != dialog.Title {
-		t.Errorf("titles differ: %q vs %q", window.Title, dialog.Title)
-	}
-	mustContain(t, dialog.Body, "agentd icon in the menu bar", "agentd apps remove "+origin, "Only allow sites you trust.")
-	if strings.Contains(window.Body, "agentd apps remove") {
-		t.Errorf("the window's words carry a terminal command: %q", window.Body)
-	}
-	if strings.ReplaceAll(dialog.Body, " or in a terminal with: agentd apps remove "+origin, ".") != window.Body {
-		t.Errorf("the dialog says more than the terminal command:\n%q\n%q", dialog.Body, window.Body)
-	}
-}
-
-// scripts are the arguments that follow a -e.
-func scripts(args []string) []string {
-	var out []string
-	for i, a := range args {
-		if i > 0 && args[i-1] == "-e" {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func TestPlanMacOSOsascriptTheTextOnlyAsArguments(t *testing.T) {
-	plan, ok := Plan("darwin", has("osascript"), serverText, 60)
-	if !ok || plan.File != "osascript" || plan.Kind != KindOsascript {
-		t.Fatalf("plan = %+v, %v", plan, ok)
-	}
-	s := scripts(plan.Args)
-	if len(s) == 0 {
-		t.Fatal("no script")
-	}
-	for _, line := range s {
-		if strings.Contains(line, origin) {
-			t.Errorf("script line contains the origin: %q", line)
-		}
-	}
-	mustContain(t, strings.Join(s, "\n"), "giving up after 60", `default button "Deny"`)
-	if got := plan.Args[len(plan.Args)-2:]; got[0] != serverText.Title || got[1] != serverText.Body {
-		t.Errorf("trailing args = %q", got)
-	}
-}
-
-// A quote, a backslash or AppleScript in an origin changes no line of the script.
-func TestPlanAnOriginCannotAlterTheScript(t *testing.T) {
-	hostile := `https://x" & (do shell script "touch /tmp/pwned") & "\` + "\n" + `end run`
-	benign, _ := Plan("darwin", has("osascript"), serverText, 60)
-	evil, ok := Plan("darwin", has("osascript"), ConsentText(Question{Origin: hostile, Mode: ModeServer}), 60)
-	if !ok {
-		t.Fatal("no plan")
-	}
-	if !slices.Equal(scripts(benign.Args), scripts(evil.Args)) {
-		t.Errorf("scripts differ:\n%q\n%q", scripts(benign.Args), scripts(evil.Args))
-	}
-	if len(evil.Args) != len(benign.Args) {
-		t.Errorf("argument count differs: %d vs %d", len(evil.Args), len(benign.Args))
-	}
-	if got := evil.Args[len(evil.Args)-2]; !strings.Contains(got, hostile) {
-		t.Errorf("the title does not carry the origin as it is: %q", got)
-	}
-}
-
-func TestPlanLinuxZenityThenKdialogElseNothing(t *testing.T) {
-	z, ok := Plan("linux", has("zenity", "kdialog"), serverText, 60)
-	if !ok || z.File != "zenity" {
-		t.Fatalf("zenity plan = %+v", z)
-	}
-	if !slices.Contains(z.Args, "--no-markup") || !slices.Contains(z.Args, "--timeout=60") {
-		t.Errorf("zenity args = %q", z.Args)
-	}
-	if !slices.Contains(z.Args, "--default-cancel") {
-		t.Errorf("zenity does not give Deny the focus: %q", z.Args)
-	}
-	if k, ok := Plan("linux", has("kdialog"), serverText, 60); !ok || k.File != "kdialog" {
-		t.Errorf("kdialog plan = %+v", k)
-	}
-	if _, ok := Plan("linux", has(), serverText, 60); ok {
-		t.Error("a plan without a tool")
-	}
-	if _, ok := Plan("windows", has("zenity"), serverText, 60); ok {
-		t.Error("a plan on Windows")
-	}
-	if _, ok := Plan("darwin", has("zenity"), serverText, 60); ok {
-		t.Error("a zenity plan on macOS")
-	}
-}
-
-func TestAnswerOf(t *testing.T) {
-	cases := []struct {
-		kind   DialogKind
-		code   int
-		stdout string
-		want   Answer
-	}{
-		{KindOsascript, 0, "Allow,false\n", AnswerAllow},
-		{KindOsascript, 0, "Deny,false\n", AnswerDeny},
-		{KindOsascript, 0, ",true\n", AnswerTimeout},
-		{KindOsascript, 1, "", AnswerDeny},
-		{KindZenity, 0, "", AnswerAllow},
-		{KindZenity, 1, "", AnswerDeny},
-		{KindZenity, 5, "", AnswerTimeout},
-		{KindZenity, 255, "", AnswerDeny},
-		{KindKdialog, 0, "", AnswerAllow},
-		{KindKdialog, 1, "", AnswerDeny},
-	}
-	for _, c := range cases {
-		if got := AnswerOf(c.kind, c.code, c.stdout); got != c.want {
-			t.Errorf("AnswerOf(%s, %d, %q) = %s, want %s", c.kind, c.code, c.stdout, got, c.want)
 		}
 	}
 }

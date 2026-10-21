@@ -61,7 +61,7 @@ func Load(file string) (Registry, error) {
 	return r, nil
 }
 
-// One change at a time per file within this process: the gateway, the tray and `pair` all change the registry, and
+// One change at a time per file within this process: the gateway, the app's menu and `pair` all change the registry, and
 // two read-modify-write cycles at once would lose one of them.
 var locks sync.Map // file -> *sync.Mutex
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 )
@@ -176,7 +177,7 @@ func TestUpdateChangesMadeAtTheSameTimeAllLand(t *testing.T) {
 		t.Fatalf("saved %d apps, want 20", len(saved.Apps))
 	}
 	for i := range 20 {
-		if !saved.HasApp(fmt.Sprintf("https://app%d.example", i)) {
+		if !saved.HasApp(fmt.Sprintf("https://app%d.example", i), time.Now()) {
 			t.Errorf("app%d is lost", i)
 		}
 	}

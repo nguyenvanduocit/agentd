@@ -165,7 +165,7 @@ func (d *Daemon) PID() int {
 // Log is everything the daemon has printed so far (its stdout and stderr).
 func (d *Daemon) Log() string { return d.log.String() }
 
-// Stop ends the daemon the way a service manager would (SIGTERM, which makes it end its agents and leave), waits for
+// Stop ends the daemon with SIGTERM, which makes it end its agents and leave, waits for
 // it to exit, and returns once the app lists it as offline: a test of how the app behaves with a daemon gone can go
 // on from there. Stop twice is fine.
 func (d *Daemon) Stop() {
@@ -404,8 +404,6 @@ func (d *Daemon) env() []string {
 		"XDG_STATE_HOME":      filepath.Join(d.dir, "state"),
 		"AGENTD_LOCAL_PORT":   "0",
 		"AGENTD_ADAPTERS":     "off",
-		"AGENTD_TRAY":         "off",
-		"AGENTD_RELEASE_URL":  "",
 		"AGENTD_AGENT_CLAUDE": fake,
 		"AGENTD_AGENT_CODEX":  fake,
 		"AGENTD_AGENT_GROK":   fake,

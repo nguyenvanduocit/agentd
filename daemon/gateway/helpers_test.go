@@ -66,7 +66,7 @@ func dialog(t *testing.T, code int, delayS int) (ask func(consent.Question) cons
 
 func askWith(file string) func(consent.Question) consent.Answer {
 	return func(q consent.Question) consent.Answer {
-		return consent.Ask(q, home.Env{"AGENTD_CONSENT": file}, consent.TimeoutS)
+		return consent.Decide(q, home.Env{"AGENTD_CONSENT": file}, consent.TimeoutS).Answer
 	}
 }
 
@@ -82,7 +82,8 @@ type world struct {
 	upgraded []string
 	agents   []pagetools.AgentInfo
 	ask      func(consent.Question) consent.Answer
-	chosen   []string // the folders the user picks after an Allow; none by default means /work
+	chosen   []string      // the folders the user picks after an Allow; none by default means /work
+	lasts    time.Duration // how long the user says the access lasts; zero is no choice
 	sessions *BrowserSessions
 	now      func() time.Time // the clock of the grants it makes; nil is time.Now
 }
@@ -126,28 +127,28 @@ func (w *world) deps() Deps {
 			if folders == nil {
 				folders = []string{"/work"}
 			}
-			return consent.Decision{Answer: answer, Folders: folders}
+			return consent.Decision{Answer: answer, Folders: folders, Lasts: w.lasts}
 		},
 		Linked: func(server string) bool {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			return w.linked[server]
 		},
-		ConnectServer: func(server, code string, folders []string) error {
+		ConnectServer: func(server, code string, access registry.Access) error {
 			if code == "WRONG" {
 				return fmt.Errorf("%s refused the code", server)
 			}
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			w.paired = append(w.paired, server+" "+code)
-			w.reg = w.reg.AddApp(registry.App{Server: server, Token: "token", Folders: folders})
+			w.reg = w.reg.AddApp(registry.App{Server: server, Token: "token", Name: access.Name, Folders: access.Folders, ExpiresAt: access.ExpiresAt})
 			w.linked[server] = true
 			return nil
 		},
-		GrantBrowser: func(origin string, folders []string) error {
+		GrantBrowser: func(origin string, access registry.Access) error {
 			w.mu.Lock()
 			defer w.mu.Unlock()
-			w.reg = w.reg.AddBrowser(origin, w.clock(), folders)
+			w.reg = w.reg.AddBrowser(origin, w.clock(), access)
 			return nil
 		},
 		Revoke: func(origin string) error {
@@ -266,7 +267,26 @@ func call(t *testing.T, port int, method, path string, o callOpts) reply {
 	return r
 }
 
+// connectAs asks to connect as origin. A body that names no app gets the name appName: what these tests are about is
+// not the name. Tests of the name call with the body as it is (connectRaw).
 func connectAs(t *testing.T, port int, body any, origin string) reply {
+	t.Helper()
+	if m, ok := body.(map[string]any); ok {
+		if _, named := m["name"]; !named {
+			named := map[string]any{"name": appName}
+			for k, v := range m {
+				named[k] = v
+			}
+			body = named
+		}
+	}
+	return connectRaw(t, port, body, origin)
+}
+
+// appName is the name the app calls itself in the tests that do not look at it.
+const appName = "Test app"
+
+func connectRaw(t *testing.T, port int, body any, origin string) reply {
 	t.Helper()
 	return call(t, port, http.MethodPost, "/v1/connect", callOpts{origin: origin, body: body})
 }

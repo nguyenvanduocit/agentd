@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 // A refusal is `reason`, the legacy value every page SDK since 0.4 knows, and for the cases a newer SDK can say
@@ -77,7 +78,7 @@ func TestAnAllowWithoutAFolderIsNoFolderOnANoDialogReason(t *testing.T) {
 func TestABrowserGrantThatCannotBeSavedIsNotSavedOnAPairingReason(t *testing.T) {
 	w := newWorld()
 	deps := w.deps()
-	deps.GrantBrowser = func(string, []string) error { return errors.New("disk full") }
+	deps.GrantBrowser = func(string, registry.Access) error { return errors.New("disk full") }
 	g := startGateway(t, deps, nil)
 	r := connectAs(t, g.Port, map[string]any{"mode": "browser"}, page)
 	wantReply(t, r, 502, map[string]any{"granted": false, "reason": "pairing", "code": "not-saved", "message": "disk full"})
@@ -86,7 +87,7 @@ func TestABrowserGrantThatCannotBeSavedIsNotSavedOnAPairingReason(t *testing.T) 
 func TestAnAppThatRefusesTheCodeIsPairingWithNoCode(t *testing.T) {
 	w := newWorld()
 	deps := w.deps()
-	deps.ConnectServer = func(server, _ string, _ []string) error { return errors.New(server + " refused the code") }
+	deps.ConnectServer = func(server, _ string, _ registry.Access) error { return errors.New(server + " refused the code") }
 	g := startGateway(t, deps, nil)
 	r := connectAs(t, g.Port, map[string]any{"mode": "server", "code": "WRONG"}, "https://app.example.com")
 	wantReply(t, r, 502, map[string]any{"granted": false, "reason": "pairing"})

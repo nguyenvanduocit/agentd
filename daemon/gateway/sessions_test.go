@@ -23,6 +23,7 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/agents"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 type noState struct{}
@@ -88,7 +89,7 @@ func startRig(t *testing.T, agent string) *rig {
 		Relay:         relay,
 		BridgeCommand: r.bridge,
 	})
-	r.world.reg = r.world.reg.AddBrowser(page, time.Now(), nil)
+	r.world.reg = r.world.reg.AddBrowser(page, time.Now(), registry.Access{})
 	r.world.sessions = r.sessions
 	deps := r.world.deps()
 	deps.Upgrade = r.sessions.Upgrade
@@ -495,7 +496,7 @@ func TestDeleteFromThePageEndsItsOpenSocketAndTheAgentsOnIt(t *testing.T) {
 
 func TestEndOriginClosesTheSocketsOfThatOriginOnly(t *testing.T) {
 	r := startRig(t, "cat")
-	r.world.reg = r.world.reg.AddBrowser(other, time.Now(), nil)
+	r.world.reg = r.world.reg.AddBrowser(other, time.Now(), registry.Access{})
 	a := mustDial(t, r.port)
 	b, err := dialPage(t, r.port, other, "")
 	if err != nil {
@@ -574,7 +575,7 @@ func TestARefusedUpgradeNeverGetsASocket(t *testing.T) {
 
 func TestAnUpgradeWithoutAnUpgradeHandlerIsRefused(t *testing.T) {
 	w := newWorld()
-	w.reg = w.reg.AddBrowser(page, time.Now(), nil)
+	w.reg = w.reg.AddBrowser(page, time.Now(), registry.Access{})
 	g := startGateway(t, w.deps(), nil)
 	if err := dialSession(t, g.Port); err == nil {
 		t.Fatal("got a socket")
@@ -928,5 +929,57 @@ func TestAPageIsKeptToTheFoldersItWasGranted(t *testing.T) {
 	}
 	if !strings.Contains(refused, `"id":2`) || !strings.Contains(refused, "outside the folders you allowed") {
 		t.Errorf("the request outside should be answered with an error, got %q", refused)
+	}
+}
+
+func TestAChdirMovesTheSessionToTheNewFolderAndAnswersMovedWithoutEndingIt(t *testing.T) {
+	r := startRig(t, agentScript(t, "pwd; cat"))
+	p := mustDial(t, r.port)
+	opened := p.open("s1")
+	p.next("the first pwd", frameOf("out"))
+	target := t.TempDir()
+
+	p.send(map[string]any{"t": "chdir", "id": "s1", "dir": target})
+	moved := p.next("moved", kind("moved"))
+	if moved["id"] != "s1" || moved["cwd"] != target || pidOf(moved) == pidOf(opened) {
+		t.Fatalf("moved = %v, opened = %v", moved, opened)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pidOf(moved), syscall.SIGKILL) })
+	waitFor(t, "the pwd of the new agent", wait, func() bool {
+		count := 0
+		for _, m := range p.all() {
+			if frameOf("out")(m) {
+				count++
+			}
+		}
+		return count == 2
+	})
+	p.send(map[string]any{"t": "write", "id": "s1", "line": numbered(7)})
+	p.next("the echo of the new agent", func(m map[string]any) bool { return frameOf("out")(m) && m["data"] == numbered(7) })
+	if _, ended := p.find(frameOf("exit")); ended {
+		t.Fatal("the move ended the session")
+	}
+	if r.sessions.Size() != 1 {
+		t.Fatalf("size %d", r.sessions.Size())
+	}
+}
+
+func TestAChdirOutsideTheGrantedFoldersIsAnErrorAndKeepsTheAgentWhereItIs(t *testing.T) {
+	r := startRig(t, "cat")
+	allowed, elsewhere := t.TempDir(), t.TempDir()
+	r.sessions.o.Folders = func(string) ([]string, error) { return []string{allowed}, nil }
+	p := mustDial(t, r.port)
+	opened := p.open("s1")
+
+	p.send(map[string]any{"t": "chdir", "id": "s1", "dir": elsewhere})
+	failure := p.next("an error", func(m map[string]any) bool { return m["t"] == "error" && m["id"] == "s1" })
+	if !strings.Contains(failure["message"].(string), "outside the folders you allowed") {
+		t.Fatalf("error = %v", failure)
+	}
+	if syscall.Kill(pidOf(opened), 0) != nil {
+		t.Fatal("the agent is gone")
+	}
+	if _, moved := p.find(kind("moved")); moved {
+		t.Fatal("moved")
 	}
 }

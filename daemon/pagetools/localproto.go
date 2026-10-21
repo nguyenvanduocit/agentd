@@ -29,18 +29,20 @@ const (
 	ToWrite = "write"
 	ToClose = "close"
 	ToMcp   = "mcp"
+	ToChdir = "chdir"
 )
 
 // ToDaemon is one message of a page. T picks the fields that are set: Agent for open, Line for write and mcp (a line
-// of the page's own MCP server for the session's bridge). ID is never empty.
+// of the page's own MCP server for the session's bridge), Dir for chdir. ID is never empty.
 type ToDaemon struct {
 	T     string
 	ID    string
 	Agent string
 	Line  string
+	Dir   string
 }
 
-// ParseToDaemon reads a message of a page; false when it is not one of the four the daemon accepts.
+// ParseToDaemon reads a message of a page; false when it is not one of the five the daemon accepts.
 func ParseToDaemon(text string) (ToDaemon, bool) {
 	var m map[string]any
 	if json.Unmarshal([]byte(text), &m) != nil {
@@ -58,6 +60,10 @@ func ParseToDaemon(text string) (ToDaemon, bool) {
 		if agent, ok := m["agent"].(string); ok {
 			return ToDaemon{T: ToOpen, ID: id, Agent: agent}, true
 		}
+	case ToChdir:
+		if dir, ok := m["dir"].(string); ok {
+			return ToDaemon{T: ToChdir, ID: id, Dir: dir}, true
+		}
 	case ToWrite, ToMcp:
 		if line, ok := m["line"].(string); ok {
 			return ToDaemon{T: t, ID: id, Line: line}, true
@@ -66,7 +72,7 @@ func ParseToDaemon(text string) (ToDaemon, bool) {
 	return ToDaemon{}, false
 }
 
-// FromDaemon is a message the daemon sends a page: Hello, Opened, Error, Frame or Mcp. Encode makes its wire form.
+// FromDaemon is a message the daemon sends a page: Hello, Opened, Moved, Error, Frame or Mcp. Encode makes its wire form.
 type FromDaemon interface {
 	fromDaemon()
 }
@@ -97,6 +103,15 @@ type Opened struct {
 	Mcp *McpServer `json:"mcp,omitempty"`
 }
 
+// Moved answers a `chdir`: the session's agent now runs as Pid in Cwd. It is a new process (nothing of the old one's
+// conversation is in it), and the session keeps its id, its frames and its MCP bridge.
+type Moved struct {
+	T   string `json:"t"`
+	ID  string `json:"id"`
+	Pid int    `json:"pid"`
+	Cwd string `json:"cwd"`
+}
+
 // Error is a refusal; ID is empty when no session is meant.
 type Error struct {
 	T       string `json:"t"`
@@ -122,6 +137,7 @@ type Mcp struct {
 
 func (Hello) fromDaemon()  {}
 func (Opened) fromDaemon() {}
+func (Moved) fromDaemon()  {}
 func (Error) fromDaemon()  {}
 func (Frame) fromDaemon()  {}
 func (Mcp) fromDaemon()    {}
@@ -138,6 +154,11 @@ func NewHello(version string, statuses []agents.AgentStatus) Hello {
 // NewOpened is the `opened` of session id; mcp is nil when the daemon has no bridge socket.
 func NewOpened(id string, pid int, cwd string, mcp *McpServer) Opened {
 	return Opened{T: "opened", ID: id, Pid: pid, Cwd: cwd, Mcp: mcp}
+}
+
+// NewMoved is the `moved` of session id.
+func NewMoved(id string, pid int, cwd string) Moved {
+	return Moved{T: "moved", ID: id, Pid: pid, Cwd: cwd}
 }
 
 // NewError is an `error` for session id ("" when none is meant).

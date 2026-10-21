@@ -901,18 +901,6 @@ func TestHelloIsAnsweredWithTheProtocolTheHubSpeaks(t *testing.T) {
 	}
 }
 
-func TestTheListCarriesTheLatestVersionTheAppSays(t *testing.T) {
-	latest := ""
-	e := newEnvWith(t, goserver.Options{LatestVersion: func() string { return latest }})
-	if got := e.list(t, alice).LatestVersion; got != "" {
-		t.Fatalf("latest version %q before the app says one", got)
-	}
-	latest = "1.4.0"
-	if got := e.list(t, alice).LatestVersion; got != "1.4.0" {
-		t.Fatalf("latest version %q", got)
-	}
-}
-
 func TestAnAppWithoutToolsRefusesEveryBridgeAndDoesNotPanic(t *testing.T) {
 	e := buildEnv(t, goserver.Options{}, false)
 	token := e.pair(t, alice)
@@ -1029,6 +1017,47 @@ func readLine(t *testing.T, r *bufio.Reader) string {
 	case <-time.After(waitFor):
 		t.Fatal("no line arrived")
 		return ""
+	}
+}
+
+func TestChdirMovesTheSessionAndTheConnKeepsReadingAndWriting(t *testing.T) {
+	e := newEnv(t)
+	d := e.online(t, alice)
+	conn, err := e.server.Open(context.Background(), alice, d.id, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(conn.Close)
+	sid, _, _ := strings.Cut(d.openedSessions()[0], ":")
+
+	if _, err := conn.Write([]byte("half a li")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Chdir(context.Background(), "/work/app"); err != nil {
+		t.Fatal(err)
+	}
+	if conn.Cwd() != "/work/app" || len(d.moved) != 1 || d.moved[0] != sid+":/work/app" {
+		t.Fatalf("cwd = %q, the daemon was asked %v", conn.Cwd(), d.moved)
+	}
+	if _, err := conn.Write([]byte("ne\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.writtenTo(sid); len(got) != 1 || got[0] != "ne" {
+		t.Fatalf("the daemon got %q: the half line of the old agent must not start a line of the new one", got)
+	}
+	d.frame(sid, contract.FrameKindOut, "from the new agent", 0)
+	if got := readLine(t, bufio.NewReader(conn)); got != "from the new agent\n" {
+		t.Fatalf("read %q", got)
+	}
+
+	d.mu.Lock()
+	d.onChdir = func(string, string) (contract.Opened, error) {
+		return contract.Opened{}, errors.New("/etc is outside the folders you allowed this app")
+	}
+	d.mu.Unlock()
+	err = conn.Chdir(context.Background(), "/etc")
+	if err == nil || !strings.Contains(err.Error(), "your daemon: /etc is outside the folders") || conn.Cwd() != "/work/app" {
+		t.Fatalf("err = %v, cwd = %q", err, conn.Cwd())
 	}
 }
 

@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nguyenvanduocit/agentd/daemon/home"
@@ -59,7 +62,15 @@ type Fleet struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	launches map[string]launch
 	draining bool
+}
+
+// launch is how a session's agent was started: what Chdir runs again in another directory.
+type launch struct {
+	file string
+	args []string
+	env  home.Env
 }
 
 // NewFleet makes a fleet with no agent running.
@@ -67,7 +78,7 @@ func NewFleet(o FleetOptions) *Fleet {
 	if o.Log == nil {
 		o.Log = proc.NewLogger(io.Discard, io.Discard)
 	}
-	return &Fleet{o: o, sessions: map[string]*Session{}}
+	return &Fleet{o: o, sessions: map[string]*Session{}, launches: map[string]launch{}}
 }
 
 // Size is the number of agents running.
@@ -148,28 +159,36 @@ func (f *Fleet) start(connection context.Context, id, file string, args []string
 	if err := f.checkLocked(id); err != nil {
 		return Opened{}, err
 	}
-	if connection.Err() != nil {
-		return Opened{}, errors.New("the connection of this session ended before its agent started")
-	}
-	began := time.Now()
-	plan := proc.PlanSpawn(file, args, runtime.GOOS)
 	dir, err := f.dir()
 	if err != nil {
 		return Opened{}, err
 	}
-	cmd := exec.Command(file, args...)
+	return f.spawnLocked(connection, id, launch{file, args, env}, dir)
+}
+
+// spawnLocked starts the agent of session `id` in dir and registers it; f.mu is held.
+func (f *Fleet) spawnLocked(connection context.Context, id string, l launch, dir string) (Opened, error) {
+	if connection.Err() != nil {
+		return Opened{}, errors.New("the connection of this session ended before its agent started")
+	}
+	began := time.Now()
+	plan := proc.PlanSpawn(l.file, l.args, runtime.GOOS)
+	cmd := exec.Command(l.file, l.args...)
 	cmd.Dir = dir
-	cmd.Env = environ(env)
+	cmd.Env = environ(l.env)
 	if plan.Detached {
 		proc.Detach(cmd)
 	}
-	session, err := StartSession(id, cmd, f.o.Sink(), func() { f.ended(id) })
+	var self atomic.Pointer[Session] // set below, under the lock that ended takes first
+	session, err := StartSession(id, cmd, f.o.Sink(), func() { f.ended(id, &self) })
 	if err != nil {
-		return Opened{}, fmt.Errorf("cannot start %s: %w", file, err)
+		return Opened{}, fmt.Errorf("cannot start %s: %w", l.file, err)
 	}
+	self.Store(session)
 	f.sessions[id] = session
+	f.launches[id] = l
 	f.o.State.Add(session.PGID())
-	f.o.Log.Say(fmt.Sprintf("started %s for session %s in %d ms", file, id, time.Since(began).Milliseconds()))
+	f.o.Log.Say(fmt.Sprintf("started %s for session %s in %d ms", l.file, id, time.Since(began).Milliseconds()))
 	return Opened{PID: session.PGID(), Cwd: dir}, nil
 }
 
@@ -193,15 +212,16 @@ func (f *Fleet) dir() (string, error) {
 	return f.o.Cwd, nil
 }
 
-// ended is the agent of session `id` gone: its id may be opened again.
-func (f *Fleet) ended(id string) {
+// ended is the agent `self` of session `id` gone: its id may be opened again.
+func (f *Fleet) ended(id string, self *atomic.Pointer[Session]) {
 	f.mu.Lock()
-	session := f.sessions[id]
-	delete(f.sessions, id)
-	f.mu.Unlock()
-	if session != nil {
-		f.o.State.Remove(session.PGID())
+	gone := self.Load()
+	if f.sessions[id] == gone {
+		delete(f.sessions, id)
+		delete(f.launches, id)
 	}
+	f.mu.Unlock()
+	f.o.State.Remove(gone.PGID())
 	if f.o.Ended != nil {
 		f.o.Ended(id)
 	}
@@ -228,6 +248,69 @@ func (f *Fleet) Write(id, line string) bool {
 		return true
 	}
 	return s.Write(line)
+}
+
+// Chdir moves session `id` to dir: its agent is ended without a word to the client, and the same program starts again
+// in dir under the same id, on the same stream of frames. The new agent is a new process that has not been
+// initialized; nothing of the old one's conversation is in it, so a client speaks ACP to it from the start (and loads
+// the session it wants back). dir must be an absolute path to a directory the user allowed this fleet's app, as the
+// folders of GuardLine decide, and the session stays where it is when it is not. An agent that cannot start in dir is
+// gone and told as any agent that ended is: the error comes back, and so does an exit frame.
+func (f *Fleet) Chdir(connection context.Context, id, dir string) (Opened, error) {
+	if err := f.allowedDir(dir); err != nil {
+		return Opened{}, err
+	}
+	f.mu.Lock()
+	old, l := f.sessions[id], f.launches[id]
+	draining := f.draining
+	f.mu.Unlock()
+	switch {
+	case draining:
+		return Opened{}, errors.New("this daemon is stopping")
+	case old == nil:
+		return Opened{}, fmt.Errorf("session %s is not running", id)
+	case !old.Silence():
+		return Opened{}, fmt.Errorf("session %s is ending or already moving", id)
+	}
+	<-old.Dead()
+
+	f.mu.Lock()
+	delete(f.sessions, id)
+	delete(f.launches, id)
+	f.o.State.Remove(old.PGID())
+	opened, err := Opened{}, error(nil)
+	if f.draining {
+		err = errors.New("this daemon is stopping")
+	} else {
+		opened, err = f.spawnLocked(connection, id, l, dir)
+	}
+	f.mu.Unlock()
+	if err != nil {
+		if f.o.Ended != nil {
+			f.o.Ended(id)
+		}
+		f.o.Sink().Send(id, FrameExit, "", 1)
+		return Opened{}, err
+	}
+	return opened, nil
+}
+
+// allowedDir is nil when dir is an existing directory the user allowed this fleet's app: any, when no folders are set.
+func (f *Fleet) allowedDir(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("%s is not an absolute path", dir)
+	}
+	folders, err := f.folders()
+	if err != nil {
+		return fmt.Errorf("cannot check %s against the folders you allowed this app: %w", dir, err)
+	}
+	if len(folders) > 0 && !Within(folders, dir) {
+		return fmt.Errorf("%s is outside the folders you allowed this app: %s", dir, strings.Join(folders, ", "))
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	return nil
 }
 
 // Close ends the agent of session `id`.

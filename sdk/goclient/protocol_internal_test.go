@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// incompatibility is the rule behind Detected.Incompatible; the exported SupportedProtocols is [1] today, so the
+// incompatibility is the rule behind Detected.Incompatible; the exported SupportedProtocols is [1, 2] today, so the
 // side that is older than every supported protocol is reached here with other lists.
 func TestIncompatibilityTellsWhichSideToUpdate(t *testing.T) {
 	for _, c := range []struct {

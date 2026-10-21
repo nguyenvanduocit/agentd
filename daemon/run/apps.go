@@ -2,7 +2,6 @@ package run
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -19,7 +18,7 @@ import (
 // registryCheckEvery is how often the daemon reads its registry for an origin that another process took away.
 const registryCheckEvery = 2 * time.Second
 
-// The daemon tells its apps, its pages and its tray the same facts in three shapes.
+// The daemon tells its apps, its pages and the app that shows it the same facts in three shapes.
 
 func (d *daemon) statuses() []agents.AgentStatus {
 	find := func(program string) (string, bool) { return home.FindProgram(program, d.agentEnv) }
@@ -50,8 +49,8 @@ func (d *daemon) gatewayDeps() gateway.Deps {
 		Registry: func() (registry.Registry, error) { return registry.Load(d.file) },
 		Ask:      d.ask,
 		Linked:   d.hub.Has,
-		ConnectServer: func(server, code string, folders []string) error {
-			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.CurrentMachine(), server, code, d.file, folders)
+		ConnectServer: func(server, code string, access registry.Access) error {
+			app, err := registry.Pair(context.Background(), http.DefaultClient, registry.CurrentMachine(), server, code, d.file, access)
 			if err != nil {
 				return err
 			}
@@ -59,9 +58,9 @@ func (d *daemon) gatewayDeps() gateway.Deps {
 			d.hub.Detach(server, true)
 			return d.hub.Add(app)
 		},
-		GrantBrowser: func(origin string, folders []string) error {
+		GrantBrowser: func(origin string, access registry.Access) error {
 			_, err := registry.Update(d.file, func(r registry.Registry) registry.Registry {
-				return r.AddBrowser(origin, time.Now(), folders)
+				return r.AddBrowser(origin, time.Now(), access)
 			})
 			return err
 		},
@@ -146,14 +145,18 @@ func (f *registryFollower) check() {
 	gone := reg.Withdrawn(linked, pages, f.now())
 	for _, origin := range gone.Pages {
 		if reg.HasGrant(origin) {
-			f.log.Say(fmt.Sprintf("%s access lapsed after %d days: ending its pages' sessions", origin, int(registry.BrowserGrantTTL.Hours()/24)))
+			f.log.Say(origin + " access ended: ending its pages' sessions")
 		} else {
 			f.log.Say(origin + " was disconnected: ending its pages' sessions")
 		}
 		f.endPage(origin)
 	}
 	for _, server := range gone.Apps {
-		f.log.Say(server + " was disconnected: ending its link and sessions")
+		if reg.HasSavedApp(server) {
+			f.log.Say(server + " access ended: ending its link and sessions")
+		} else {
+			f.log.Say(server + " was disconnected: ending its link and sessions")
+		}
 		f.endApp(server)
 	}
 }

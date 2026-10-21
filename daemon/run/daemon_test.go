@@ -23,7 +23,7 @@ func TestHelloSaysVersionMachineAndAgents(t *testing.T) {
 		t.Fatalf("hello = %+v", hello)
 	}
 	if hello.Managed {
-		t.Fatal("a daemon that no service restarts says managed")
+		t.Fatal("a daemon that nothing starts again says managed")
 	}
 	var names []string
 	for _, a := range hello.Agents {

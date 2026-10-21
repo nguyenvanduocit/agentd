@@ -5,68 +5,58 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
+
+	agentui "github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
-// fakeEngine is the compiled testdata/fakeengine: the app runs it as it runs agentd (`<engine> run`), and the
-// environment tells it where to write its choices and whether to ignore its channel.
-var fakeEngine string
-
-func TestMain(m *testing.M) {
-	os.Exit(buildFakeEngine(m))
+// fakeApp is the app's side of the link: it keeps the states the engine shows.
+type fakeApp struct {
+	states chan agentui.State
 }
 
-func buildFakeEngine(m *testing.M) int {
-	dir, err := os.MkdirTemp("", "fakeengine")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+func (f *fakeApp) open(func(agentui.Action)) agentui.Link { return f }
+func (f *fakeApp) Start()                                 {}
+func (f *fakeApp) Stop()                                  {}
+func (f *fakeApp) Update(s agentui.State) {
+	select {
+	case f.states <- s:
+	default:
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	fakeEngine = filepath.Join(dir, "agentd")
-	if out, err := exec.Command("go", "build", "-o", fakeEngine, "./testdata/fakeengine").CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build the fake engine: %v\n%s", err, out)
-		return 1
-	}
-	return m.Run()
 }
 
-// start runs the fake engine as the app runs agentd.
-func start(t *testing.T, stubborn bool) (*Engine, chan State, string) {
+// start runs the engine in this process as the app runs it, in a home of its own.
+func start(t *testing.T) (*Engine, *fakeApp) {
 	t.Helper()
 	dir := t.TempDir()
-	got := filepath.Join(dir, "got")
-	t.Setenv("FAKE_ENGINE_GOT", got)
-	if stubborn {
-		t.Setenv("FAKE_ENGINE_STUBBORN", "1")
+	for k, v := range map[string]string{
+		"HOME": dir, "XDG_CONFIG_HOME": filepath.Join(dir, "config"), "XDG_STATE_HOME": filepath.Join(dir, "state"),
+		"AGENTD_LOCAL_PORT": "0", "AGENTD_ADAPTERS": "off", "AGENTD_AGENT_CLAUDE": "true", "AGENTD_AGENT_CODEX": "true",
+	} {
+		t.Setenv(k, v)
 	}
-	f := EngineFiles{Engine: fakeEngine, Home: dir, Log: filepath.Join(dir, "logs", "daemon.log")}
-	states := make(chan State, 8)
-	e, err := StartEngine(f, dir, os.Getenv("PATH"), func(line []byte) {
-		if s, ok := ParseState(line); ok {
-			states <- s
-		}
-	})
+	f := EngineFiles{Home: filepath.Join(dir, "agentd"), Log: filepath.Join(dir, "logs", "daemon.log")}
+	app := &fakeApp{states: make(chan agentui.State, 64)}
+	e, err := StartEngine(f, dir, os.Getenv("PATH"), app.open)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { e.Stop(time.Second) })
-	return e, states, got
+	t.Cleanup(func() { e.Stop(5 * time.Second) })
+	return e, app
 }
 
-func waitState(t *testing.T, states chan State) State {
+func waitState(t *testing.T, app *fakeApp) agentui.State {
 	t.Helper()
 	select {
-	case s := <-states:
+	case s := <-app.states:
 		return s
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("no state from the engine")
-		return State{}
+		return agentui.State{}
 	}
 }
 
@@ -79,28 +69,17 @@ func waitDone(t *testing.T, e *Engine, within time.Duration) {
 	}
 }
 
-func TestTheAppReadsTheEnginesStatesAndHandsItTheUsersChoices(t *testing.T) {
-	e, states, got := start(t, false)
-	if s := waitState(t, states); s.Version != "9.9.9" || len(s.Apps) != 1 || s.Sessions != 1 {
-		t.Fatalf("state %+v", s)
-	}
-	e.Send("disconnect:https://a")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		b, _ := os.ReadFile(got)
-		if strings.Contains(string(b), `{"t":"action","id":"disconnect:https://a"}`) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the engine got %q", b)
-		}
-		time.Sleep(20 * time.Millisecond)
+func TestTheAppReadsTheEnginesStates(t *testing.T) {
+	_, app := start(t)
+	s := waitState(t, app)
+	if s.Version == "" {
+		t.Fatalf("state %+v: want the version", s)
 	}
 }
 
-func TestStopClosesTheChannelAndTheEngineEndsByItself(t *testing.T) {
-	e, states, _ := start(t, false)
-	waitState(t, states)
+func TestStopEndsTheEngineByItself(t *testing.T) {
+	e, app := start(t)
+	waitState(t, app)
 	e.Stop(10 * time.Second)
 	waitDone(t, e, time.Second)
 	if e.ExitCode() != 0 {
@@ -108,27 +87,31 @@ func TestStopClosesTheChannelAndTheEngineEndsByItself(t *testing.T) {
 	}
 }
 
-func TestStopEndsAnEngineThatIgnoresItsChannel(t *testing.T) {
-	e, states, _ := start(t, true)
-	waitState(t, states)
-	e.Stop(300 * time.Millisecond)
-	waitDone(t, e, time.Second)
-	if e.ExitCode() != -1 {
-		t.Fatalf("exit %d, want -1: ended by a signal", e.ExitCode())
-	}
-}
-
-func TestAnExitOfTheEngineIsItsCode(t *testing.T) {
-	e, states, _ := start(t, false)
-	waitState(t, states)
-	e.Send("exit75")
+// A Restart of the window is a choice the engine answers by exiting 75, the code that has the app start it again.
+func TestARestartTheUserChoosesExitsWithTheCodeThatStartsItAgain(t *testing.T) {
+	e, app := start(t)
+	waitState(t, app)
+	e.Send("restart")
 	waitDone(t, e, 10*time.Second)
 	if e.ExitCode() != 75 {
 		t.Fatalf("exit %d, want 75", e.ExitCode())
 	}
 }
 
-func TestFindEngineFindsTheEngineAndTheNodeTheAppCarries(t *testing.T) {
+func TestAChoiceThatIsNotTheEnginesDoesNothing(t *testing.T) {
+	e, app := start(t)
+	waitState(t, app)
+	for _, id := range []string{"settings", "quit", "format-disk", ""} {
+		e.Send(id)
+	}
+	select {
+	case <-e.Done():
+		t.Fatalf("the engine ended with %d", e.ExitCode())
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestFindFilesFindsTheNodeTheAppCarries(t *testing.T) {
 	res := t.TempDir()
 	env := func(string) string { return "" }
 	put := func(parts ...string) string {
@@ -142,36 +125,38 @@ func TestFindEngineFindsTheEngineAndTheNodeTheAppCarries(t *testing.T) {
 		return p
 	}
 	platform := goruntime.GOOS + "-" + goruntime.GOARCH
-	if _, err := FindEngine(res, "/Users/ann", env); err == nil {
-		t.Fatal("an app without an engine has one")
+	// no node: the app runs, and its adapters are not ready
+	f := FindFiles(res, "/Users/ann", env)
+	if f.Node != "" || f.NodeBin() != "" || f.Home != "/Users/ann/.agentd" || f.Log != "/Users/ann/.agentd/logs/daemon.log" {
+		t.Fatalf("got %+v", f)
 	}
-	// go run: the engine in the platform's own directory of the resources; no node, and the engine still runs
-	platformEngine := put(platform, "engine", "agentd")
-	f, err := FindEngine(res, "/Users/ann", env)
-	if err != nil || f.Engine != platformEngine || f.Node != "" || f.NodeBin() != "" ||
-		f.Home != "/Users/ann/.agentd" || f.Log != "/Users/ann/.agentd/logs/daemon.log" {
-		t.Fatalf("got %+v, %v", f, err)
-	}
+	// go run: node in the platform's own directory of the resources
 	platformNode := put(platform, "node", "bin", "node")
-	if f, _ := FindEngine(res, "/Users/ann", env); f.Node != platformNode || f.NodeBin() != filepath.Dir(platformNode) {
+	if f := FindFiles(res, "/Users/ann", env); f.Node != platformNode || f.NodeBin() != filepath.Dir(platformNode) {
 		t.Fatalf("node %q, want %q", f.Node, platformNode)
 	}
 	// a built app: the platform's resources are merged in
-	mergedEngine, mergedNode := put("engine", "agentd"), put("node", "bin", "node")
-	if f, _ := FindEngine(res, "/Users/ann", env); f.Engine != mergedEngine || f.Node != mergedNode {
-		t.Fatalf("got %+v, want %q and %q", f, mergedEngine, mergedNode)
+	mergedNode := put("node", "bin", "node")
+	if f := FindFiles(res, "/Users/ann", env); f.Node != mergedNode {
+		t.Fatalf("node %q, want %q", f.Node, mergedNode)
 	}
 }
 
-func TestFindEngineTakesTheEngineAndNodeNamedByTheEnvironment(t *testing.T) {
-	env := map[string]string{"AGENTD_APP_ENGINE": fakeEngine, "AGENTD_APP_NODE": "/n/bin/node", "AGENTD_HOME": "/h"}
-	f, err := FindEngine(t.TempDir(), "/Users/ann", func(k string) string { return env[k] })
-	if err != nil || f.Engine != fakeEngine || f.Node != "/n/bin/node" || f.Home != "/h" || f.Log != "/h/logs/daemon.log" {
-		t.Fatalf("got %+v, %v", f, err)
+func TestFindFilesTakesTheNodeAndHomeNamedByTheEnvironment(t *testing.T) {
+	env := map[string]string{"AGENTD_APP_NODE": "/n/bin/node", "AGENTD_HOME": "/h"}
+	f := FindFiles(t.TempDir(), "/Users/ann", func(k string) string { return env[k] })
+	if f.Node != "/n/bin/node" || f.Home != "/h" || f.Log != "/h/logs/daemon.log" {
+		t.Fatalf("got %+v", f)
 	}
-	env["AGENTD_APP_ENGINE"] = "/no/such/agentd"
-	if _, err := FindEngine(t.TempDir(), "/Users/ann", func(k string) string { return env[k] }); err == nil {
-		t.Fatal("an engine that is not there is found")
+}
+
+func TestTheEngineSeesThePathAndHomeTheAppGivesIt(t *testing.T) {
+	host, err := engineHost("/Users/ann", "/App/node/bin:/usr/bin", "/Users/ann/.agentd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Env["PATH"] != "/App/node/bin:/usr/bin" || host.Env["AGENTD_MANAGED"] != "1" || host.Env["AGENTD_HOME"] != "/Users/ann/.agentd" || host.Home != "/Users/ann" {
+		t.Fatalf("host %+v", host)
 	}
 }
 
@@ -182,18 +167,14 @@ func TestWhyAgentdDidNotStartIsOnePlainSentence(t *testing.T) {
 	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, noEngine := FindEngine(t.TempDir(), "/Users/ann", func(string) string { return "" })
-	_, noLog := StartEngine(EngineFiles{Engine: fakeEngine, Log: filepath.Join(notADir, "logs", "daemon.log")}, t.TempDir(), os.Getenv("PATH"), func([]byte) {})
-	_, noStart := StartEngine(EngineFiles{Engine: filepath.Join(t.TempDir(), "no-such-engine"), Log: filepath.Join(t.TempDir(), "daemon.log")}, t.TempDir(), os.Getenv("PATH"), func([]byte) {})
+	_, noLog := StartEngine(EngineFiles{Log: filepath.Join(notADir, "logs", "daemon.log")}, t.TempDir(), os.Getenv("PATH"), (&fakeApp{}).open)
 
 	cases := []struct {
 		name string
 		err  error
 		want string
 	}{
-		{"the app carries no engine", noEngine, "This copy of agentd is incomplete. Download agentd.app again."},
 		{"the log cannot be written", noLog, "agentd cannot write its log in ~/.agentd. Check that folder, then choose Start."},
-		{"the program does not start", noStart, "agentd could not start. Open the log for details."},
 		{"anything else", fmt.Errorf("something nobody foresaw"), "agentd could not start. Open the log for details."},
 	}
 	for _, c := range cases {

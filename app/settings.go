@@ -1,44 +1,60 @@
 package main
 
-import "github.com/egoist/mygo/ui"
+import (
+	"strings"
+	"time"
 
-// Settings is the window of the daemon's settings and controls. It shows the last state the daemon sent and reports
-// what the user chooses through send, in the ids the menu reports.
+	"github.com/egoist/mygo/ui"
+)
+
+// Settings is the window of the app's settings and controls. It shows the last state the daemon sent and reports what
+// the user chooses through send, in the ids the menu reports.
 type Settings struct {
 	State State
 	Host  Host
 	send  func(id string)
 	// Notice is the sentence under the addresses to copy: what the last copy did.
 	Notice string
+	// More: the part of the window under the More button is open (the address to copy, the log, Restart, Quit).
+	More bool
 }
 
-// View builds the window from the state, for every frame. In agentd.app it also says why an engine that does not run
-// stopped, offers Start, and has the login switch.
+// View builds the window from the state, for every frame: the status first, then who is connected, the agents, the
+// startup settings, and under More what is rarely needed. While the engine does not run it says why, and offers Start.
 func (w *Settings) View(c *ui.Context) {
 	ui.Scroll(c).Fill().Padding(20).Gap(20).Children(func() {
-		if w.Host.App && !w.Host.Running {
+		if !w.Host.Running {
 			w.stopped(c)
 			return
 		}
-		ui.Column(c).Gap(4).Children(func() {
-			ui.Text(c, Title(w.State)).FontSize(20).Bold()
-			ui.Text(c, Summary(w.State)).TextColor(c.Theme().TextMuted)
-			if note := GatewayNote(w.State); note != "" {
-				ui.Text(c, note)
-			}
-			if w.State.Notice != "" {
-				ui.Text(c, w.State.Notice)
-			}
-		})
+		w.header(c)
 		w.connected(c)
 		w.agents(c)
-		w.acp(c)
-		if w.Host.App {
-			w.login(c)
-		} else {
-			w.updates(c)
+		w.login(c)
+		w.more(c)
+	})
+}
+
+// header is the status: agentd and its version, the headline, what is connected, and what needs a look.
+func (w *Settings) header(c *ui.Context) {
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "agentd").FontSize(20).Bold()
+			ui.Spacer(c)
+			if v := w.State.Version; v != "" {
+				ui.Text(c, "v"+v).FontSize(11).TextColor(c.Theme().TextMuted)
+			}
+		})
+		headline(c, w.State, w.Host)
+		if detail := Summary(w.State); detail != "" {
+			ui.Text(c, detail).TextColor(c.Theme().TextMuted)
 		}
-		w.controls(c)
+		if note := GatewayNote(w.State); note != "" {
+			ui.Text(c, note)
+		}
+		if w.State.Notice != "" {
+			ui.Text(c, w.State.Notice)
+		}
 	})
 }
 
@@ -46,6 +62,7 @@ func (w *Settings) View(c *ui.Context) {
 func (w *Settings) stopped(c *ui.Context) {
 	ui.Column(c).Gap(4).Children(func() {
 		ui.Text(c, "agentd").FontSize(20).Bold()
+		headline(c, w.State, w.Host)
 		ui.Text(c, w.Host.Note).TextColor(c.Theme().TextMuted)
 	})
 	ui.Row(c).Gap(8).Children(func() {
@@ -63,13 +80,13 @@ func (w *Settings) stopped(c *ui.Context) {
 	w.login(c)
 }
 
-// login is the app's switch "Open at login": a login item starts agentd with the session, with no window. Updates of
-// the app (engine included) are checked in the background; the button checks now.
+// login is the app's switch "Start when I log in": a login item starts agentd with the session, with no window. Updates
+// of the app (engine included) are checked in the background; the button checks now.
 func (w *Settings) login(c *ui.Context) {
 	ui.Column(c).Gap(8).Children(func() {
-		heading(c, "Start and updates")
+		heading(c, "Startup and updates")
 		on := w.Host.OpenAtLogin
-		ui.Field(c, "Open at login", func() {
+		ui.Field(c, "Start when I log in", func() {
 			if ui.Switch(c, &on).Changed() {
 				w.Host.OpenAtLogin = on
 				if on {
@@ -78,7 +95,7 @@ func (w *Settings) login(c *ui.Context) {
 					w.send(LoginOffID)
 				}
 			}
-		}).Description("agentd starts when you log in, in the menu bar, so your apps find it.")
+		}).Description("agentd opens in the menu bar when you log in, so your apps can always reach it.")
 		if ui.Button(c, "Check for Updates…").Clicked() {
 			w.send(CheckUpdatesID)
 		}
@@ -89,43 +106,68 @@ func heading(c *ui.Context, s string) {
 	ui.Text(c, s).Bold()
 }
 
-// firstRunText is what the window says while nothing is connected: what agentd is, and the one thing to do.
-const firstRunText = "agentd lets apps you approve run AI coding agents on this computer. Go back to the app that sent you here and choose Connect."
+// headline draws the status sentence: green behind a ●, the warning color behind a !, so a problem is seen before it
+// is read.
+func headline(c *ui.Context, s State, h Host) {
+	text := Headline(s, h)
+	line := ui.Text(c, text).Bold()
+	switch {
+	case strings.HasPrefix(text, "!"):
+		line.TextColor(c.Theme().Danger)
+	case strings.HasPrefix(text, "●"):
+		line.TextColor(c.Theme().Success)
+	}
+}
 
-// connected lists each saved app and web page with its own Disconnect, which ends its sessions and forgets it. An app
+// firstRunText is what the window says while nothing is connected: what agentd is, and the one thing to do.
+const firstRunText = "agentd runs AI coding agents, such as Claude Code and Codex, on this computer for the apps you approve. To start, open the app or website you want to use and click Connect there."
+
+// connected lists each saved app and website with its own Disconnect, which ends its sessions and forgets it. An app
 // the daemon dropped stays, with the sentence that says why. With none, it says what agentd is and where to go next,
-// unless web pages cannot reach agentd: the line under the summary says that, and "choose Connect" would send the
-// person to a page that cannot connect.
+// unless websites cannot reach agentd: the line under the status says that, and "click Connect" would send the person
+// to a page that cannot connect.
 func (w *Settings) connected(c *ui.Context) {
 	ui.Column(c).Gap(8).Children(func() {
-		apps := listedApps(w.State)
-		if len(apps)+len(w.State.Pages) == 0 {
-			if GatewayNote(w.State) == "" {
+		apps, pages := listedApps(w.State), listedPages(w.State)
+		if len(apps)+len(pages) == 0 {
+			if w.State.Version != "" && GatewayNote(w.State) == "" {
+				heading(c, "How to start")
 				ui.Text(c, firstRunText)
 			}
 			return
 		}
-		heading(c, "Connected")
+		heading(c, "Apps that can use your agents")
 		for _, app := range apps {
 			kind := app.note
 			if kind == "" {
 				kind = "app"
 			}
-			w.origin(c, app.server, kind)
+			w.origin(c, app.server, app.name, kind, app.ends)
 		}
-		for _, page := range w.State.Pages {
-			w.origin(c, page, "web page")
+		for _, page := range pages {
+			w.origin(c, page.origin, page.name, "website", page.ends)
 		}
 	})
 }
 
-func (w *Settings) origin(c *ui.Context, origin, kind string) {
+// origin is one saved app or website: its name (its address when it gave none), then a muted line with the address, the
+// kind or the reason it is not connected, and when its access ends. Disconnect names it as the person reads it and
+// sends its address.
+func (w *Settings) origin(c *ui.Context, origin, name, kind string, ends time.Time) {
+	title := titleOf(origin, name)
+	line := []string{kind}
+	if name != "" {
+		line = []string{origin, kind}
+	}
+	if end := endsText(ends); end != "" {
+		line = append(line, end)
+	}
 	ui.Row(c.Key(origin)).Gap(12).AlignItems(ui.Center).Children(func() {
 		ui.Column(c).Grow(1).Gap(2).Children(func() {
-			ui.Text(c, origin).SingleLine().Ellipsis("…")
-			ui.Text(c, kind).FontSize(11).TextColor(c.Theme().TextMuted)
+			ui.Text(c, title).SingleLine().Ellipsis("…")
+			ui.Text(c, strings.Join(line, " · ")).FontSize(11).TextColor(c.Theme().TextMuted)
 		})
-		if ui.Button(c, "Disconnect").Label("Disconnect " + origin).Clicked() {
+		if ui.Button(c, "Disconnect").Label("Disconnect " + title).Clicked() {
 			w.send("disconnect:" + origin)
 		}
 	})
@@ -137,7 +179,7 @@ func (w *Settings) agents(c *ui.Context) {
 		return
 	}
 	ui.Column(c).Gap(8).Children(func() {
-		heading(c, "Agents")
+		heading(c, "Your agents")
 		for _, a := range w.State.Agents {
 			ui.Row(c.Key(a.Name)).Gap(12).Children(func() {
 				ui.Text(c, a.Title).Grow(1)
@@ -151,8 +193,29 @@ func (w *Settings) agents(c *ui.Context) {
 	})
 }
 
-// acpIntro is the sentence over the addresses another program can connect to.
-const acpIntro = "Apps that speak ACP, such as editors, can connect to agentd on this computer. Copy an address and paste it where the app asks for an ACP agent URL."
+// more is the button that opens the rarely needed part of the window.
+func (w *Settings) more(c *ui.Context) {
+	ui.Column(c).Gap(20).Children(func() {
+		label := "More"
+		if w.More {
+			label = "Less"
+		}
+		if ui.Button(c, label).Clicked() {
+			w.More = !w.More
+		}
+		if w.More {
+			w.acp(c)
+			w.controls(c)
+		}
+	})
+}
+
+// acpIntro is what the section over the addresses says: who can use an address, where it goes, and that it is a secret.
+var acpIntro = []string{
+	"Code editors and other tools that support ACP (a standard way for tools to talk to coding agents) can use your agents through agentd.",
+	"Click Copy address, then paste it into the tool's setting for the agent's URL.",
+	"The address contains a secret key. Treat it like a password and don't share it.",
+}
 
 // acp offers the address of each ready agent to copy for another program. The address holds a token, so it is copied
 // and never drawn: a window can be seen over a shoulder, in a screen share and in a screenshot.
@@ -162,12 +225,14 @@ func (w *Settings) acp(c *ui.Context) {
 		return
 	}
 	ui.Column(c).Gap(8).Children(func() {
-		heading(c, "Use agentd from other apps")
-		ui.Text(c, acpIntro)
+		heading(c, "Use agentd in an editor or other tool")
+		for _, line := range acpIntro {
+			ui.Text(c, line)
+		}
 		for _, a := range ready {
 			ui.Row(c.Key("acp-" + a.Name)).Gap(12).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.Title).Grow(1)
-				if ui.Button(c, "Copy address").Label("Copy ACP address for " + a.Title).Clicked() {
+				if ui.Button(c, "Copy address").Label("Copy address for " + a.Title).Clicked() {
 					w.send(CopyACPPrefix + a.Name)
 				}
 			})
@@ -178,63 +243,17 @@ func (w *Settings) acp(c *ui.Context) {
 	})
 }
 
-// updates is the one setting: the daemon installs the versions the release server offers by itself, or not at all.
-func (w *Settings) updates(c *ui.Context) {
-	ui.Column(c).Gap(8).Children(func() {
-		heading(c, "Updates")
-		on := w.State.Updates
-		field := ui.Field(c, "Install updates automatically", func() {
-			if ui.Switch(c, &on).Disabled(!w.State.Updatable).Changed() {
-				w.State.Updates = on
-				if on {
-					w.send("updates:on")
-				} else {
-					w.send("updates:off")
-				}
-			}
-		})
-		if !w.State.Updatable {
-			field.Description("This daemon cannot update itself: it is not installed under ~/.agentd, or it has no releases page.")
-		}
-	})
-}
-
-// controls are the menu's: the log (only when it is in a file), Restart (only when a service starts the daemon again)
-// and Stop; in agentd.app the log, Restart and Quit.
+// controls are the menu's: Open log, Restart and Quit.
 func (w *Settings) controls(c *ui.Context) {
-	if w.Host.App {
-		ui.Row(c).Gap(8).Children(func() {
-			if ui.Button(c, "Open log").Clicked() {
-				w.send("logs")
-			}
-			ui.Spacer(c)
-			if ui.Button(c, RestartLabel(w.State)).Clicked() {
-				w.send("restart")
-			}
-			if ui.Button(c, QuitLabel(w.State)).Clicked() {
-				w.send(QuitID)
-			}
-		})
-		return
-	}
 	ui.Column(c).Gap(8).Children(func() {
-		ui.Row(c).Gap(8).Children(func() {
-			if ui.Button(c, "Open log").Disabled(!w.State.Log).Clicked() {
-				w.send("logs")
-			}
-			ui.Spacer(c)
-			if ui.Button(c, RestartLabel(w.State)).Disabled(!w.State.Managed).Clicked() {
-				w.send("restart")
-			}
-			if ui.Button(c, StopLabel(w.State)).Clicked() {
-				w.send("stop")
-			}
-		})
-		if !w.State.Log {
-			ui.Text(c, "This daemon writes its log to the terminal it runs in.").FontSize(11).TextColor(c.Theme().TextMuted)
+		if ui.Button(c, "Open log").Clicked() {
+			w.send("logs")
 		}
-		if !w.State.Managed {
-			ui.Text(c, "No service restarts this daemon, so Restart is off.").FontSize(11).TextColor(c.Theme().TextMuted)
+		if ui.Button(c, RestartLabel(w.State)).Clicked() {
+			w.send("restart")
+		}
+		if ui.Button(c, QuitLabel(w.State)).Clicked() {
+			w.send(QuitID)
 		}
 	})
 }

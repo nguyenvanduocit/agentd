@@ -2,13 +2,9 @@
 // switches on the Command type and runs it.
 package cli
 
-import (
-	"errors"
-	"slices"
-	"strings"
-)
+import "errors"
 
-// Command is what the command line asks for: Run, Pair, MCP, PageMCP, Apps, ACP, Service, Version or Help.
+// Command is what the command line asks for: Run, Pair, MCP, PageMCP, Apps, ACP, Version or Help.
 // An optional string flag is a *string: nil when the flag was not given, so an empty `--dir=` stays distinguishable.
 type Command interface{ command() }
 
@@ -58,32 +54,6 @@ type ACP struct {
 	Rotate bool
 }
 
-// ServiceAction is what `agentd service` does.
-type ServiceAction string
-
-// The actions of Service.
-const (
-	ServiceInstall   ServiceAction = "install"
-	ServiceUninstall ServiceAction = "uninstall"
-	ServiceStart     ServiceAction = "start"
-	ServiceRestart   ServiceAction = "restart"
-	ServiceStatus    ServiceAction = "status"
-	ServiceLogs      ServiceAction = "logs"
-)
-
-var serviceActions = []ServiceAction{ServiceInstall, ServiceUninstall, ServiceStart, ServiceRestart, ServiceStatus, ServiceLogs}
-
-// DefaultLogLines is how many log lines `service logs` shows without -n.
-const DefaultLogLines = 100
-
-// Service manages the login service. Lines and Follow matter to ServiceLogs; Dir to ServiceInstall.
-type Service struct {
-	Action ServiceAction
-	Lines  int
-	Follow bool
-	Dir    *string
-}
-
 // Version prints the version.
 type Version struct{}
 
@@ -96,7 +66,6 @@ func (MCP) command()     {}
 func (PageMCP) command() {}
 func (Apps) command()    {}
 func (ACP) command()     {}
-func (Service) command() {}
 func (Version) command() {}
 func (Help) command()    {}
 
@@ -109,22 +78,15 @@ usage:
   agentd apps [list]                        the apps and web pages this machine is connected to
   agentd apps remove <origin>               disconnect one of them; a running agentd drops it within seconds
   agentd acp [<agent>] [--rotate] [--token] the address that ACP apps (editors, scripts) connect to, with its token
-  agentd service install [--dir <dir>]      start at login and restart when it dies (launchd, systemd)
-  agentd service start|restart              start it again after a Stop from the web UI; restart it
-  agentd service uninstall                  stop it and remove its login service
-  agentd service status                     whether it is running, stopped or restarting
-  agentd service logs [-n <lines>] [-f]     the daemon's log
   agentd help                               this text
   agentd version                            the version
 
 options:
   --app <url>      the app, by its origin (default: every app saved by pair)
-  --dir <dir>      working directory of the agents (default: the current directory; service install: your home)
+  --dir <dir>      working directory of the agents (default: the current directory)
   --config <file>  the config file (default: <config dir>/agentd/daemon.json)
   --rotate         acp: make a new token first; the old one stops working at once
   --token          acp: print the token alone
-  -n, --lines <n>  service logs: how many lines (default 100)
-  -f, --follow     service logs: keep printing
   -h, --help       this text
   -v, --version    the version
 
@@ -132,7 +94,6 @@ examples:
   agentd pair --app https://app.example.com --code 123456
   agentd apps remove https://app.example.com
   agentd acp claude
-  agentd service install
 `
 
 // Parse reads the arguments after the program name. A mistake is an error whose text says what is wrong; the entry
@@ -179,9 +140,6 @@ func acpOnlyFlag(v flagValues) string {
 }
 
 func build(name, rest, extra *string, v flagValues) (Command, error) {
-	if name != nil && *name == "service" {
-		return service(rest, v)
-	}
 	if name != nil && *name == "apps" {
 		return apps(rest, extra, v)
 	}
@@ -211,25 +169,6 @@ func build(name, rest, extra *string, v flagValues) (Command, error) {
 		return mcp(v)
 	}
 	return nil, errors.New(`unknown command "` + *name + `"`)
-}
-
-func service(action *string, v flagValues) (Command, error) {
-	names := make([]string, len(serviceActions))
-	for i, a := range serviceActions {
-		names[i] = string(a)
-	}
-	if action == nil || !slices.Contains(names, *action) {
-		return nil, errors.New("service needs one of: " + strings.Join(names, ", "))
-	}
-	lines := DefaultLogLines
-	if v.lines != nil {
-		n, ok := positiveInt(*v.lines)
-		if !ok {
-			return nil, errors.New(`--lines "` + *v.lines + `" is not a positive number`)
-		}
-		lines = n
-	}
-	return Service{Action: ServiceAction(*action), Lines: lines, Follow: v.follow, Dir: v.dir}, nil
 }
 
 func pair(v flagValues) (Command, error) {

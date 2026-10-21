@@ -19,6 +19,7 @@ type recorder struct {
 	mu       sync.Mutex
 	opens    []string // "<sid>:<agent>"
 	writes   map[string][]string
+	chdirs   []string // "<sid>:<dir>"
 	closes   []string
 	restarts int
 	stops    int
@@ -52,6 +53,13 @@ func (r *recorder) HandleWrite(_ context.Context, sid, line string) (bool, error
 		return fn(sid, line)
 	}
 	return true, nil
+}
+
+func (r *recorder) HandleChdir(_ context.Context, sid, dir string) (contract.Opened, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.chdirs = append(r.chdirs, sid+":"+dir)
+	return contract.Opened{Pid: 43, Cwd: dir}, nil
 }
 
 func (r *recorder) HandleClose(_ context.Context, sid string) error {
@@ -205,6 +213,23 @@ func TestHelloFailures(t *testing.T) {
 			t.Fatalf("err = %v, want DISCONNECTED", err)
 		}
 	})
+}
+
+func TestAChdirCallIsAnsweredWithTheNewProcessAndKeepsTheOrderOfItsSession(t *testing.T) {
+	s := newFakeServer(t)
+	rec := &recorder{}
+	startLink(t, s.srv.URL, rec, Events{})
+	c := s.last(1)
+
+	if got := c.call("chdir", "s1", "/work/app"); len(got) != 1 || string(got[0]) != `{"pid":43,"cwd":"/work/app"}` {
+		t.Fatalf("chdir answered %s", got)
+	}
+	if rec.chdirs[0] != "s1:/work/app" {
+		t.Fatalf("handler saw %q", rec.chdirs)
+	}
+	if got := c.call("chdir", "only-one-argument"); !strings.Contains(string(got[0]), `"code":"INVALID_ARGUMENT"`) {
+		t.Fatalf("a call with a missing argument answered %s", got)
+	}
 }
 
 func TestServerCallsAreAnsweredThroughTheEnvelope(t *testing.T) {

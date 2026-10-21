@@ -42,11 +42,11 @@ type Deps struct {
 	// Linked is whether the daemon is linked to the app at `server` now (an app that Stop or a refused token detached
 	// is saved, not linked).
 	Linked func(server string) bool
-	// ConnectServer pairs with the server at the page's origin using the code, saves it with its folders and links to
-	// it now; it fails when the app refuses.
-	ConnectServer func(server, code string, folders []string) error
-	// GrantBrowser saves the origin's grant with its folders.
-	GrantBrowser func(origin string, folders []string) error
+	// ConnectServer pairs with the server at the page's origin using the code, saves it with its access (name, folders
+	// and end) and links to it now; it fails when the app refuses.
+	ConnectServer func(server, code string, access registry.Access) error
+	// GrantBrowser saves the origin's grant with its access.
+	GrantBrowser func(origin string, access registry.Access) error
 	// Revoke forgets the browser grant and the app of `origin`, and ends their sessions.
 	Revoke func(origin string) error
 	// Upgrade serves the WebSocket upgrade of a browser-granted origin on /v1/session, and returns when the socket
@@ -133,8 +133,8 @@ type statusGranted struct {
 
 // PageProtocol is the version of the page protocol, the requests and messages of this gateway: a page SDK compares it
 // with the ones it speaks. It is bumped only when the page protocol changes incompatibly, and is not the protocol an
-// app's server speaks to the daemon (home.Protocol).
-const PageProtocol = 1
+// app's server speaks to the daemon (home.Protocol). Version 2: POST /v1/connect names the app.
+const PageProtocol = 2
 
 type statusBody struct {
 	Name    string `json:"name"`
@@ -170,7 +170,7 @@ func (r *routes) status(origin string) out {
 	if err != nil {
 		return failure(err)
 	}
-	granted := statusGranted{Server: reg.HasApp(origin) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin, r.now())}
+	granted := statusGranted{Server: reg.HasApp(origin, r.now()) && r.deps.Linked(origin), Browser: reg.HasBrowser(origin, r.now())}
 	body := statusBody{Name: "agentd", Version: r.deps.Version, Protocol: PageProtocol, Granted: granted}
 	if granted.Server || granted.Browser {
 		agents := append([]pagetools.AgentInfo{}, r.deps.Agents()...)
@@ -240,10 +240,7 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 			titles = append(titles, cmp.Or(a.Title, a.Name))
 		}
 	}
-	q := consent.Question{Origin: origin, Mode: want.Mode, Agents: ready, Titles: titles}
-	if want.Mode == consent.ModeBrowser {
-		q.GrantDays = int(registry.BrowserGrantTTL / (24 * time.Hour))
-	}
+	q := consent.Question{Origin: origin, Name: want.Name, Mode: want.Mode, Agents: ready, Titles: titles}
 	decision := r.deps.Ask(q)
 	answer := decision.Answer
 	if answer == consent.AnswerUnavailable {
@@ -268,12 +265,13 @@ func (r *routes) decide(origin string, want ConnectRequest) out {
 	r.mu.Lock()
 	r.lockout.Reset()
 	r.mu.Unlock()
+	access := registry.Access{Name: want.Name, Folders: decision.Folders, ExpiresAt: registry.Expiry(r.now(), decision.LastsOrDefault())}
 	var err error
 	failed := ReasonPairing // the app refused the code, or could not be reached
 	if want.Mode == consent.ModeServer {
-		err = r.deps.ConnectServer(origin, want.Code, decision.Folders)
+		err = r.deps.ConnectServer(origin, want.Code, access)
 	} else {
-		err = r.deps.GrantBrowser(origin, decision.Folders)
+		err = r.deps.GrantBrowser(origin, access)
 		failed = ReasonNotSaved
 	}
 	if err != nil {

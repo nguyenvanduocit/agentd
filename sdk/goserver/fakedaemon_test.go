@@ -93,7 +93,9 @@ type fakeDaemon struct {
 	opened  []string // "<sid>:<agent>"
 	written map[string][]string
 	closed  []string
+	moved   []string // "<sid>:<dir>"
 	onOpen  func(sid, agent string) (contract.Opened, error)
+	onChdir func(sid, dir string) (contract.Opened, error)
 	onWrite func(sid, line string) bool
 	onClose func(sid string)
 
@@ -138,6 +140,22 @@ func (d *fakeDaemon) bind() {
 		opened, err := fn(sid, name)
 		if err != nil {
 			return contract.NewRpcError(contract.CodeInternalError, err.Error(), "open", nil)
+		}
+		return opened
+	})
+	d.handle("chdir", func(args []any) any {
+		sid, _ := args[0].(string)
+		dir, _ := args[1].(string)
+		d.mu.Lock()
+		d.moved = append(d.moved, sid+":"+dir)
+		fn := d.onChdir
+		d.mu.Unlock()
+		if fn == nil {
+			return contract.Opened{Pid: 2, Cwd: dir}
+		}
+		opened, err := fn(sid, dir)
+		if err != nil {
+			return contract.NewRpcError(contract.CodeInternalError, err.Error(), "chdir", nil)
 		}
 		return opened
 	})

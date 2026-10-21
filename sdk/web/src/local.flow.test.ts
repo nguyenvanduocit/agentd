@@ -172,7 +172,7 @@ describe("createLocalDaemon talks to the daemon itself, so a test needs no hand-
 
   test("takes the ports, the fetch and the timeout, and passes them to the calls it makes", async () => {
     const seen: { url: string; method: string }[] = []
-    const local = createLocalDaemon({ mode: "browser", ports: [47699], fetch: gateway(seen), timeoutMs: 500 })
+    const local = createLocalDaemon({ name: "Test app", mode: "browser", ports: [47699], fetch: gateway(seen), timeoutMs: 500 })
     await local.detect()
     expect(local.state).toMatchObject({ phase: "connected", found: { found: true, port: 47699, version: "9.9.9" } })
     await local.disconnect()
@@ -190,11 +190,26 @@ describe("createLocalDaemon talks to the daemon itself, so a test needs no hand-
       if (url.endsWith("/v1/status")) return json(200, { name: "agentd", version: "9.9.9", granted: { server: false, browser: false } })
       return json(200, { granted: true })
     }
-    const local = createLocalDaemon({ mode: "browser", ports: [47698], fetch })
+    const local = createLocalDaemon({ name: "Test app", mode: "browser", ports: [47698], fetch })
     await local.detect()
     expect(local.state.phase).toBe("available")
     await local.connect()
     expect(seen.map((s) => `${s.method} ${s.url}`)).toContain("POST http://127.0.0.1:47698/v1/connect")
+  })
+
+  test("tells the daemon what the app calls itself, and refuses to start without a name", async () => {
+    const bodies: unknown[] = []
+    const fetch: FetchLike = async (url, init) => {
+      if (url.endsWith("/v1/status")) return json(200, { name: "agentd", version: "9.9.9", protocol: 2, granted: { server: false, browser: false } })
+      bodies.push(JSON.parse(String(init?.body)))
+      return json(200, { granted: true })
+    }
+    const local = createLocalDaemon({ name: "AIOcean", mode: "browser", ports: [47695], fetch })
+    await local.detect()
+    await local.connect()
+    expect(bodies).toEqual([{ mode: "browser", name: "AIOcean" }])
+    expect(() => createLocalDaemon({ mode: "browser", ports: [47695], fetch })).toThrow("name is required")
+    expect(() => createLocalDaemon({ name: "  ", mode: "browser", fetch })).toThrow("name is required")
   })
 })
 
@@ -213,6 +228,7 @@ describe("openSession on the local daemon", () => {
 
   test("opens the agent on the port that was found, with the WebSocket it was given", async () => {
     const local = createLocalDaemon({
+      name: "Test app",
       mode: "browser",
       ports: [47697],
       WebSocket: Sock as unknown as typeof WebSocket,
@@ -227,7 +243,7 @@ describe("openSession on the local daemon", () => {
   })
 
   test("says so, with a reason, when no daemon has been found yet", async () => {
-    const local = createLocalDaemon({ mode: "browser", ports: [47696], fetch: async () => json(200, { name: "someone-else" }) })
+    const local = createLocalDaemon({ name: "Test app", mode: "browser", ports: [47696], fetch: async () => json(200, { name: "someone-else" }) })
     await local.detect()
     const error = (await local.openSession("claude").catch((e: unknown) => e)) as SessionError
     expect(error).toBeInstanceOf(SessionError)

@@ -507,14 +507,15 @@ describe("disconnect that fails", () => {
 
 describe("LocalDaemonDeps", () => {
   test("the server-mode shape an app passes today needs no mode and no client (MindChains' wrapper)", () => {
-    // frontend/src/composables/createLocalDaemon.ts in MindChains: deps typed as LocalDaemonDeps, given only the pairing calls.
+    // frontend/src/composables/createLocalDaemon.ts in MindChains: deps typed as LocalDaemonDeps, given the app's name and
+    // the pairing calls.
     const wrap = (deps: LocalDaemonDeps) => createLocalDaemon(deps)
-    const local = wrap({ startPairing: () => Promise.resolve("CODE"), cancelPairing: () => Promise.resolve() })
+    const local = wrap({ name: "Test app", startPairing: () => Promise.resolve("CODE"), cancelPairing: () => Promise.resolve() })
     expect(local.state.canConnect).toBe(false)
     // @ts-expect-error browser mode has no pairing: a server's pairing calls there are a mistake the types catch
-    wrap({ mode: "browser", startPairing: () => Promise.resolve("CODE"), cancelPairing: () => Promise.resolve() })
+    wrap({ name: "Test app", mode: "browser", startPairing: () => Promise.resolve("CODE"), cancelPairing: () => Promise.resolve() })
     // @ts-expect-error server mode cannot connect without a pairing
-    wrap({ mode: "server" })
+    wrap({ name: "Test app", mode: "server" })
   })
 })
 

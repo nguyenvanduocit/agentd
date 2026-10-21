@@ -100,7 +100,7 @@ func setup(t *testing.T, o setupOptions) (*goclient.LocalDaemon, *fakeClient) {
 		o.connect = goclient.ConnectResult{Granted: true}
 	}
 	client := &fakeClient{detected: o.detected, connect: o.connect}
-	deps := goclient.LocalDeps{Origin: "https://app.example.com", Mode: o.mode, Client: client}
+	deps := goclient.LocalDeps{Name: "Test app", Origin: "https://app.example.com", Mode: o.mode, Client: client}
 	if o.mode != goclient.ModeBrowser {
 		code := o.code
 		if code == "" && !o.noCode {
@@ -444,17 +444,19 @@ func TestDisconnectWithoutADaemonOnlyLooks(t *testing.T) {
 func TestDepsThatCannotWorkAreAnError(t *testing.T) {
 	pairing := func(context.Context) (string, error) { return "CODE", nil }
 	for name, deps := range map[string]goclient.LocalDeps{
-		"no origin":                  {StartPairing: pairing, CancelPairing: func() {}},
-		"server mode, no pairing":    {Origin: "https://a.example.com", Mode: goclient.ModeServer},
-		"server mode, no cancel":     {Origin: "https://a.example.com", StartPairing: pairing},
-		"a mode that does not exist": {Origin: "https://a.example.com", Mode: "both"},
-		"browser mode, no origin":    {Mode: goclient.ModeBrowser},
+		"no origin":                  {Name: "Test app", StartPairing: pairing, CancelPairing: func() {}},
+		"no name":                    {Origin: "https://a.example.com", Mode: goclient.ModeBrowser},
+		"a blank name":               {Name: "  ", Origin: "https://a.example.com", Mode: goclient.ModeBrowser},
+		"server mode, no pairing":    {Name: "Test app", Origin: "https://a.example.com", Mode: goclient.ModeServer},
+		"server mode, no cancel":     {Name: "Test app", Origin: "https://a.example.com", StartPairing: pairing},
+		"a mode that does not exist": {Name: "Test app", Origin: "https://a.example.com", Mode: "both"},
+		"browser mode, no origin":    {Name: "Test app", Mode: goclient.ModeBrowser},
 	} {
 		if _, err := goclient.NewLocalDaemon(deps); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
-	if _, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: "https://a.example.com", Mode: goclient.ModeBrowser}); err != nil {
+	if _, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "Test app", Origin: "https://a.example.com", Mode: goclient.ModeBrowser}); err != nil {
 		t.Errorf("browser mode needs no pairing: %v", err)
 	}
 }

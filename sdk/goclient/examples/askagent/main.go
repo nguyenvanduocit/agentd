@@ -29,7 +29,7 @@ func run() int {
 	if *port != 0 {
 		options = append(options, goclient.WithPorts(*port))
 	}
-	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Origin: *origin, Mode: goclient.ModeBrowser, Options: options})
+	local, err := goclient.NewLocalDaemon(goclient.LocalDeps{Name: "askagent", Origin: *origin, Mode: goclient.ModeBrowser, Options: options})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err) // an origin the gateway would refuse says what to write instead
 		return 2
@@ -40,7 +40,7 @@ func run() int {
 	local.Detect(ctx)
 	switch state := local.State(); state.Phase {
 	case goclient.PhaseAbsent:
-		fmt.Fprintln(os.Stderr, "agentd is not here. Start it with:", goclient.AgentdCommands().Start)
+		fmt.Fprintln(os.Stderr, "agentd is not here. Open agentd.app.")
 		return 1
 	case goclient.PhaseRefused:
 		fmt.Fprintln(os.Stderr, state.Error)

@@ -48,7 +48,7 @@ func (r *followRig) save(t *testing.T, reg registry.Registry) {
 
 func TestTheSocketsOfAPageWhoseGrantLapsedAreEndedAndTheLogSaysWhy(t *testing.T) {
 	rig := newFollowRig(t, pageOrigin)
-	rig.save(t, registry.Empty().AddBrowser(pageOrigin, grantMade, nil))
+	rig.save(t, registry.Empty().AddBrowser(pageOrigin, grantMade, registry.Access{}))
 
 	rig.f.check()
 	if len(rig.ended) != 0 {
@@ -60,7 +60,29 @@ func TestTheSocketsOfAPageWhoseGrantLapsedAreEndedAndTheLogSaysWhy(t *testing.T)
 	if len(rig.ended) != 1 || rig.ended[0] != pageOrigin {
 		t.Fatalf("ended %v, want the page of the lapsed grant", rig.ended)
 	}
-	if want := pageOrigin + " access lapsed after 30 days: ending its pages' sessions"; !strings.Contains(rig.log.String(), want) {
+	if want := pageOrigin + " access ended: ending its pages' sessions"; !strings.Contains(rig.log.String(), want) {
+		t.Errorf("log = %q, want it to say %q", rig.log.String(), want)
+	}
+}
+
+func TestTheLinkOfAnAppWhoseAccessEndedIsEndedAndTheLogSaysWhy(t *testing.T) {
+	const server = "https://app.example.com"
+	rig := newFollowRig(t)
+	var endedApps []string
+	rig.f.servers = func() []string { return []string{server} }
+	rig.f.endApp = func(s string) { endedApps = append(endedApps, s) }
+	rig.save(t, registry.Empty().AddApp(registry.App{Server: server, Token: "t", ExpiresAt: registry.Expiry(grantMade, 2*time.Hour)}))
+
+	rig.f.check() // an hour in
+	if len(endedApps) != 0 {
+		t.Fatalf("ended %v while the access runs", endedApps)
+	}
+	rig.now = grantMade.Add(2*time.Hour + time.Minute)
+	rig.f.check()
+	if len(endedApps) != 1 || endedApps[0] != server {
+		t.Fatalf("ended %v, want the app whose time ran out", endedApps)
+	}
+	if want := server + " access ended: ending its link and sessions"; !strings.Contains(rig.log.String(), want) {
 		t.Errorf("log = %q, want it to say %q", rig.log.String(), want)
 	}
 }

@@ -19,9 +19,9 @@
 //     directory (the module cache copy, or the directory a replace points at) with that module's go.mod and go.sum,
 //     without cgo and without a go.work.
 //   - Gives every daemon a HOME, config, state and working directory of its own under t.TempDir() and a port of its
-//     own (AGENTD_LOCAL_PORT=0), turns updates, the tray and the adapter install off, and removes every AGENTD_*
+//     own (AGENTD_LOCAL_PORT=0), turns the adapter install off, and removes every AGENTD_*
 //     variable of your environment from the daemon's. It never reads or writes your ~/.config/agentd or ~/.agentd,
-//     never touches the agentd you may have running, and never installs a service.
+//     and never touches the agentd you may have running.
 //   - Pairs it with your app (it asks Server.For(User).StartPairing() for the code, or uses WithPairingCode) and
 //     returns when the app lists the daemon as online.
 //   - Stops the daemon and its process group when the test ends. Stop and Restart let a test go through the offline

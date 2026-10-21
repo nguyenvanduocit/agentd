@@ -20,6 +20,7 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/consent"
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 	"github.com/nguyenvanduocit/agentd/daemon/pagetools"
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 const acpWait = 10 * time.Second
@@ -76,7 +77,7 @@ func startAcpRig(t *testing.T, o acpRigOptions) *acpRig {
 	env := home.Env{"PATH": os.Getenv("PATH"), agents.SeamVariable("claude"): o.agent}
 	w := newWorld()
 	w.now = o.now
-	w.reg = w.reg.AddBrowser(page, w.clock(), o.folders)
+	w.reg = w.reg.AddBrowser(page, w.clock(), registry.Access{Folders: o.folders})
 	if o.agents != nil {
 		w.agents = o.agents
 	}

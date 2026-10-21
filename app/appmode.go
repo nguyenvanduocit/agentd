@@ -12,12 +12,15 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/plugins/updater/native"
+
+	"github.com/nguyenvanduocit/agentd/daemon/consent"
+	agentui "github.com/nguyenvanduocit/agentd/daemon/ui"
 )
 
 // How long Quit waits for the engine to end its agents before it ends them itself.
 const quitGrace = 5 * time.Second
 
-// desktop is agentd.app: the menu and the window of the tray, and the engine it runs.
+// desktop is agentd.app: the menu and the window of the tray, and the engine it runs in its own process.
 type desktop struct {
 	app
 	files   EngineFiles
@@ -28,7 +31,7 @@ type desktop struct {
 	// quitting: Quit closed the engine's channel and waits for it to exit before the app does.
 	quitting bool
 	// launch runs the engine: StartEngine, or a stand-in in a test.
-	launch func(f EngineFiles, home, path string, onLine func(line []byte)) (*Engine, error)
+	launch func(f EngineFiles, home, path string, open OpenLink) (*Engine, error)
 	// restart is the wait before the start that follows a crash or a quick stop; there is at most one.
 	restart *time.Timer
 	// after runs f on the main thread once delay has passed: afterOnMain, or a stand-in in a test.
@@ -51,13 +54,8 @@ func startApp() bool {
 			d.engine.Send(id)
 		}
 	}
-	d.reply = func(line []byte) {
-		if d.engine != nil {
-			d.engine.Write(line)
-		}
-	}
 	d.own = d.handle
-	d.settings = Settings{State: State{}, Host: Host{App: true, Running: true}, send: d.choose}
+	d.settings = Settings{State: State{}, Host: Host{Running: true}, send: d.choose}
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnSecondInstance(func([]string, string) { d.showSettings() })
 	mygo.App.OnActivate(func(visible bool) {
@@ -86,15 +84,10 @@ func (d *desktop) ready() {
 		d.showSettings()
 	}
 	resources, _ := mygo.App.Path(mygo.PathResources)
-	files, err := FindEngine(resources, d.home, os.Getenv)
-	d.files = files // its log path is known even when the engine is not found
-	if err != nil {
-		d.failed(err)
-		return
-	}
+	d.files = FindFiles(resources, d.home, os.Getenv)
 	// The login shell may take a moment: the main thread does not wait for it.
 	go func() {
-		path := EnginePath(files.NodeBin(), LoginPath())
+		path := EnginePath(d.files.NodeBin(), LoginPath())
 		mygo.RunOnMain(func() {
 			d.path = path
 			d.start()
@@ -127,7 +120,7 @@ func (d *desktop) start() {
 	if d.engine != nil {
 		return
 	}
-	e, err := d.launch(d.files, d.home, d.path, d.line)
+	e, err := d.launch(d.files, d.home, d.path, d.openLink)
 	if err != nil {
 		d.failed(err)
 		return
@@ -205,7 +198,7 @@ func (d *desktop) cancelRestart() {
 	}
 }
 
-// beforeQuit holds the quit until the engine has ended its agents: it closes its channel, and ended quits again.
+// beforeQuit holds the quit until the engine has ended its agents: it stops the engine, and ended quits again.
 func (d *desktop) beforeQuit(q *mygo.QuitEvent) {
 	if d.engine == nil {
 		// Nothing to wait for, so the quit goes on: the wait for the next start ends with it, and no engine starts behind it.
@@ -224,7 +217,7 @@ func (d *desktop) beforeQuit(q *mygo.QuitEvent) {
 func (d *desktop) handle(id string) bool {
 	switch id {
 	case StartID:
-		if d.engine == nil && d.files.Engine != "" {
+		if d.engine == nil {
 			d.crashes, d.quickStops = 0, 0
 			d.start()
 		}
@@ -244,4 +237,24 @@ func (d *desktop) handle(id string) bool {
 		return false
 	}
 	return true
+}
+
+// openLink is the link the engine shows its state through, and asks the user through: the app (run.Deps.UI).
+func (d *desktop) openLink(func(agentui.Action)) agentui.Link { return engineLink{d} }
+
+// engineLink is the app's side of agentui.Link and agentui.Asker. The engine calls it from its own goroutines, and the
+// app's windows are changed on the main thread: each call crosses to it.
+type engineLink struct{ d *desktop }
+
+func (engineLink) Start() {}
+func (engineLink) Stop()  {}
+
+// Update shows the state the engine sends.
+func (l engineLink) Update(s agentui.State) { mygo.RunOnMain(func() { l.d.show(s) }) }
+
+// Ask opens the consent window and waits for the user's decision, or for the time to lapse (a Timeout).
+func (l engineLink) Ask(q consent.Question, timeoutS int) (consent.Decision, bool) {
+	result := make(chan consent.Decision, 1)
+	mygo.RunOnMain(func() { l.d.ask(RequestOf(q, timeoutS), result) })
+	return <-result, true
 }

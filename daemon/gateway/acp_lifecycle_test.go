@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 func TestAcpClosingTheSocketEndsTheAgent(t *testing.T) {
@@ -118,7 +119,7 @@ func TestAcpLimits(t *testing.T) {
 	t.Run("eight connections in all, four for one page", func(t *testing.T) {
 		r, _, _ := newAcpRig(t, acpRigOptions{agent: agentScript(t, "cat")})
 		r.world.mu.Lock()
-		r.world.reg = r.world.reg.AddBrowser(other, time.Now(), nil)
+		r.world.reg = r.world.reg.AddBrowser(other, time.Now(), registry.Access{})
 		r.world.mu.Unlock()
 		var held []*acpConn
 		for range 4 {

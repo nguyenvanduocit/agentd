@@ -74,3 +74,19 @@ func TestEncodeMatchesTheWire(t *testing.T) {
 		}
 	}
 }
+
+func TestParseToDaemonReadsChdirWithItsDirectoryAndRefusesOneWithout(t *testing.T) {
+	got, ok := ParseToDaemon(`{"t":"chdir","id":"s1","dir":"/work/app"}`)
+	if want := (ToDaemon{T: ToChdir, ID: "s1", Dir: "/work/app"}); !ok || got != want {
+		t.Fatalf("got %+v, %v; want %+v", got, ok, want)
+	}
+	if _, ok := ParseToDaemon(`{"t":"chdir","id":"s1"}`); ok {
+		t.Fatal("a chdir without a dir was read")
+	}
+}
+
+func TestMovedEncodesAsTheMessageAPageReads(t *testing.T) {
+	if got, want := Encode(NewMoved("s1", 42, "/work/app")), `{"t":"moved","id":"s1","pid":42,"cwd":"/work/app"}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}

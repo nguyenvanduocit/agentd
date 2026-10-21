@@ -64,6 +64,7 @@ type Session struct {
 	mu        sync.Mutex
 	killTimer *time.Timer
 	finished  bool
+	silenced  bool // the fleet replaces this agent: its last words, its end and onEnd are not reported
 }
 
 // StartSession starts cmd as a session's agent and pumps its output to sink. cmd has its Path, Args, Dir, Env and
@@ -133,7 +134,11 @@ func (s *Session) wait(outR, errR *os.File) {
 	if s.killTimer != nil {
 		s.killTimer.Stop()
 	}
+	quiet := s.silenced
 	s.mu.Unlock()
+	if quiet {
+		return
+	}
 
 	s.onEnd()
 	code := s.cmd.ProcessState.ExitCode()
@@ -141,6 +146,30 @@ func (s *Session) wait(outR, errR *os.File) {
 		code = exitBySignal
 	}
 	s.sink.Send(s.id, FrameExit, "", code)
+}
+
+// send hands a frame to the sink, unless the fleet is replacing this agent: the client then hears only the next one.
+func (s *Session) send(kind FrameKind, data string, code int) {
+	s.mu.Lock()
+	quiet := s.silenced
+	s.mu.Unlock()
+	if !quiet {
+		s.sink.Send(s.id, kind, data, code)
+	}
+}
+
+// Silence ends the agent without a word to anyone: no more frames, no exit frame, no onEnd. It is false when the
+// agent has finished or was silenced already, and the session then ends as any does. Wait for Dead after it.
+func (s *Session) Silence() bool {
+	s.mu.Lock()
+	if s.finished || s.silenced {
+		s.mu.Unlock()
+		return false
+	}
+	s.silenced = true
+	s.mu.Unlock()
+	s.End()
+	return true
 }
 
 func (s *Session) pumpOut(r *os.File, maxLine int) {
@@ -151,7 +180,7 @@ func (s *Session) pumpOut(r *os.File, maxLine int) {
 		n, err := r.Read(buf)
 		if n > 0 {
 			for _, line := range splitter.Push(buf[:n]) {
-				s.sink.Send(s.id, FrameOut, validText(line), 0)
+				s.send(FrameOut, validText(line), 0)
 			}
 			if splitter.TooLong() {
 				s.lineTooLong(r)
@@ -178,7 +207,7 @@ func (s *Session) pumpErr(r *os.File) {
 			whole, rest := splitIncomplete(chunk)
 			carry = append([]byte(nil), rest...)
 			if len(whole) > 0 {
-				s.sink.Send(s.id, FrameErr, validText(string(whole)), 0)
+				s.send(FrameErr, validText(string(whole)), 0)
 			}
 			if !s.waitForRoom() {
 				return
@@ -186,7 +215,7 @@ func (s *Session) pumpErr(r *os.File) {
 		}
 		if err != nil {
 			if len(carry) > 0 {
-				s.sink.Send(s.id, FrameErr, validText(string(carry)), 0)
+				s.send(FrameErr, validText(string(carry)), 0)
 			}
 			return
 		}
@@ -233,7 +262,7 @@ func (s *Session) waitForRoom() bool {
 
 // lineTooLong: the agent wrote a line no reader would take: the session ends, and its stderr says why.
 func (s *Session) lineTooLong(stdout *os.File) {
-	s.sink.Send(s.id, FrameErr, fmt.Sprintf("agentd: the agent wrote a line longer than %d MiB; the session is ended\n", proc.MaxLineBytes/(1024*1024)), 0)
+	s.send(FrameErr, fmt.Sprintf("agentd: the agent wrote a line longer than %d MiB; the session is ended\n", proc.MaxLineBytes/(1024*1024)), 0)
 	_ = stdout.Close()
 	s.End()
 }

@@ -92,7 +92,7 @@ func TestTheLoserLeavesTheHoldersRecordAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = first.Close() }()
-	want := LockRecord{PID: 77, StartedAt: time.Now().UTC().Truncate(time.Second), Kind: KindService}
+	want := LockRecord{PID: 77, StartedAt: time.Now().UTC().Truncate(time.Second), Kind: KindApp}
 	if err := first.Record(want); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestTheLockFileAndItsDirectoryAreMadePrivate(t *testing.T) {
 }
 
 func TestADirectoryThatIsAlreadyThereIsLeftAsItIs(t *testing.T) {
-	// The launcher makes run/ (loop.pid, last-exit) with the permissions of its shell; the lock does not change them.
+	// A run/ made by something else keeps its permissions; the lock does not change them.
 	dir := filepath.Join(t.TempDir(), "run")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -158,17 +158,9 @@ func TestALockInADirectoryThatCannotBeMadeIsAnErrorButNotHeld(t *testing.T) {
 }
 
 func TestWhatKindOfProcessHoldsTheLock(t *testing.T) {
-	for _, c := range []struct {
-		managed, ui bool
-		want        string
-	}{
-		{false, false, KindTerminal},
-		{true, false, KindService},
-		{true, true, KindApp},
-		{false, true, KindApp}, // agentd.app sets both; a channel alone is still the app
-	} {
-		if got := InstanceKind(c.managed, c.ui); got != c.want {
-			t.Errorf("InstanceKind(managed=%v, ui=%v) = %q, want %q", c.managed, c.ui, got, c.want)
+	for ui, want := range map[bool]string{false: KindTerminal, true: KindApp} {
+		if got := InstanceKind(ui); got != want {
+			t.Errorf("InstanceKind(ui=%v) = %q, want %q", ui, got, want)
 		}
 	}
 }
@@ -182,8 +174,8 @@ func TestTheMessageOfAProcessThatCannotStart(t *testing.T) {
 	}{
 		{"app, minutes ago", LockRecord{PID: 4242, StartedAt: now.Add(-3 * time.Minute), Kind: KindApp},
 			"agentd is already running on this computer (pid 4242, started by the app, 3 minutes ago): not starting a second one. Use that one, or quit it first."},
-		{"service, a minute ago", LockRecord{PID: 9, StartedAt: now.Add(-61 * time.Second), Kind: KindService},
-			"agentd is already running on this computer (pid 9, started as a service, 1 minute ago): not starting a second one. Use that one, or quit it first."},
+		{"app, a minute ago", LockRecord{PID: 9, StartedAt: now.Add(-61 * time.Second), Kind: KindApp},
+			"agentd is already running on this computer (pid 9, started by the app, 1 minute ago): not starting a second one. Use that one, or quit it first."},
 		{"terminal, hours ago", LockRecord{PID: 31, StartedAt: now.Add(-5 * time.Hour), Kind: KindTerminal},
 			"agentd is already running on this computer (pid 31, started from a terminal, 5 hours ago): not starting a second one. Use that one, or quit it first."},
 		{"just now", LockRecord{PID: 31, StartedAt: now.Add(-2 * time.Second), Kind: KindTerminal},

@@ -68,7 +68,6 @@ func TestTokenAndRotateOnlyWorkWithAcp(t *testing.T) {
 		{"run", "--rotate"},
 		{"apps", "--token"},
 		{"apps", "remove", "https://app.example.com", "--rotate"},
-		{"service", "status", "--token"},
 		{"pair", "--app", "https://app.example.com", "--code", "1", "--token"},
 		{"mcp", "--session", "s", "--rotate"},
 		{"help", "--token"},
@@ -92,5 +91,5 @@ func TestTokenAndRotateStillWorkWithAcpAndTheOtherOptionsStayWhereTheyWere(t *te
 	mustParse(t, "acp", "--token")
 	mustParse(t, "acp", "claude", "--rotate")
 	mustParse(t, "--version", "--token") // a request for the version is answered whatever else is said
-	mustParse(t, "run", "--dir", "/x", "--follow")
+	mustParse(t, "run", "--dir", "/x", "--page")
 }

@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// Restart and Stop from the server, and a revoked token: the exit codes that tell the service what to do (0 stay
-// stopped, 75 start again now). The daemon runs directly here; AGENTD_MANAGED=1 is what the launcher's loop, the
-// service definitions and agentd.app set.
+// Restart and Stop from the server, and a revoked token: the exit codes that tell the app what to do (0 stay stopped,
+// 75 start again now). The daemon runs directly here; AGENTD_MANAGED=1 is what agentd.app sets.
 
 // tree is an agent with a child, so a lingering process shows.
 var tree = sh("sleep 600 & echo up; wait")

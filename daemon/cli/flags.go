@@ -30,8 +30,6 @@ var flagSpecs = []flagSpec{
 	{name: "code", kind: stringFlag},
 	{name: "session", kind: stringFlag},
 	{name: "page", kind: boolFlag},
-	{name: "lines", short: 'n', kind: stringFlag},
-	{name: "follow", short: 'f', kind: boolFlag},
 	{name: "rotate", kind: boolFlag},
 	{name: "token", kind: boolFlag},
 	{name: "help", short: 'h', kind: boolFlag},
@@ -65,9 +63,9 @@ func isStringFlag(short rune) bool {
 // flagValues holds what the command line set. A string flag that was not given is nil, so `--dir=` (empty) and no
 // `--dir` stay different; the last occurrence of a flag wins.
 type flagValues struct {
-	app, dir, config, code, session, lines *string
-	page, follow, help, version            bool
-	rotate, token                          bool
+	app, dir, config, code, session *string
+	page, help, version             bool
+	rotate, token                   bool
 }
 
 func (v *flagValues) store(name string, value *string) {
@@ -82,12 +80,8 @@ func (v *flagValues) store(name string, value *string) {
 		v.code = value
 	case "session":
 		v.session = value
-	case "lines":
-		v.lines = value
 	case "page":
 		v.page = true
-	case "follow":
-		v.follow = true
 	case "rotate":
 		v.rotate = true
 	case "token":

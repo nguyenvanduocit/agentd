@@ -1,7 +1,6 @@
 // Package home is the daemon's view of its machine: where its files live, how to find a program on PATH, the exit-code
-// protocol with whatever restarts it, the server address rules and the settings file. Everything except the settings
-// store, the launcher refresh and CurrentHost/FindProgram is pure: the environment, the platform and the file probe are
-// passed in.
+// protocol with agentd.app and the server address rules. Everything except CurrentHost/FindProgram is pure: the
+// environment, the platform and the file probe are passed in.
 package home
 
 import "path"

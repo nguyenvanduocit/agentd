@@ -36,7 +36,6 @@ export interface Hello {
 
 // What the app's server answers to hello: the protocol version it speaks. The daemon refuses an app whose protocol is
 // outside the range it speaks, and the server marks a daemon whose range does not hold its protocol as incompatible.
-// Updates are not part of this contract: the daemon takes them from the release server.
 export interface HelloReply {
   protocol: number
 }
@@ -56,6 +55,10 @@ export interface ClientFunctions {
   // server -> daemon: start the named agent (claude, codex, grok) in a working directory the daemon chooses
   open: (sessionId: string, agent: string) => Opened
   write: (sessionId: string, line: string) => boolean
+  // server -> daemon: end the session's agent without a word and start the same program again in dir, under the same
+  // session id and on the same stream of frames. The new agent is a new process that has not been initialized. dir must
+  // be an absolute path to a directory the user allowed the app. A daemon that predates chdir answers that it does not know it.
+  chdir: (sessionId: string, dir: string) => Opened
   // server -> daemon, fire-and-forget
   close: (sessionId: string) => void
   // server -> daemon: end every agent session and exit with code 75, so the service starts it again

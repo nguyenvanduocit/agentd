@@ -1,31 +1,22 @@
-// agentd-tray is agentd's face, in one of two modes. As agentd.app (no arguments) it is the app: it starts the engine,
-// the agentd daemon, shows its state in the menu bar and a window, and ends it on Quit (appmode.go). As `agentd-tray
-// child`, the tray a daemon installed from the terminal starts, it talks JSON lines: it reads states on stdin and
-// prints what the user chose, in the menu or the window, on stdout, and ends when stdin does.
+// agentd is the app and the engine in one process. Started with no arguments it is agentd.app: it runs the engine, the
+// agentd daemon, in a goroutine, shows its state in the menu bar and a window, and ends it on Quit (appmode.go). Started
+// with a command (`mcp`, `acp`, `apps`, `pair`, `run`, `version`) it is agentd's command line (daemon/entry), which the
+// agents' MCP wrappers and the user's terminal call.
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"log"
 	"os"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/nguyenvanduocit/agentd/daemon/consent"
+	"github.com/nguyenvanduocit/agentd/daemon/entry"
+	agentui "github.com/nguyenvanduocit/agentd/daemon/ui"
 )
-
-var out sync.Mutex
-
-func say(id string) { sayLine(ActionLine(id)) }
-
-// sayLine prints one line for the daemon.
-func sayLine(line []byte) {
-	out.Lock()
-	defer out.Unlock()
-	fmt.Fprintf(os.Stdout, "%s\n", line)
-}
 
 // app is the icon, its menu and the settings window. Its fields are read and changed on the main thread only: by the
 // menu, the window and the states RunOnMain hands over.
@@ -33,11 +24,9 @@ type app struct {
 	tray     *mygo.Tray
 	settings Settings
 	win      *mygo.Window
-	// own handles the entries the app keeps for itself (agentd.app); false hands one to report, the daemon's.
+	// own handles the entries the app keeps for itself; false hands one to report, the engine's.
 	own    func(id string) bool
 	report func(id string)
-	// reply hands the daemon a line: the answer to a question.
-	reply func(line []byte)
 	// consent is the window of the question being asked, if any.
 	consent *Consent
 	// copy puts text on the clipboard; nil is the system's (a test replaces it).
@@ -79,7 +68,7 @@ func (a *app) copyAcp(agent string) {
 			title = r.Title
 		}
 	}
-	a.settings.Notice = "Copied the address for " + title + ". Paste it where the app asks for an ACP agent URL."
+	a.settings.Notice = "Copied the address for " + title + ". Paste it into the agent URL setting of your editor or tool. It works like a password: don't share it."
 	a.refresh()
 }
 
@@ -109,7 +98,7 @@ func (a *app) menu() *mygo.Menu {
 // showSettings opens the settings window, or brings it to the front. A closed window is gone: the next one starts anew.
 func (a *app) showSettings() {
 	if a.win == nil {
-		a.win = mygo.NewWindow(mygo.WindowOptions{Title: "agentd", Width: 440, Height: 520, Content: ui.View(a.settings.View)})
+		a.win = mygo.NewWindow(mygo.WindowOptions{Title: "agentd", Width: 440, Height: 600, Content: ui.View(a.settings.View)})
 		a.win.OnClosed(func() { a.win = nil })
 	}
 	a.win.Show()
@@ -117,53 +106,44 @@ func (a *app) showSettings() {
 	mygo.App.Focus()
 }
 
-// line takes one line of the daemon: a state for the menu and the settings window, or a question for the user. It may be
-// called from any goroutine.
-func (a *app) line(b []byte) {
-	line := append([]byte(nil), b...)
-	if s, ok := ParseState(line); ok {
-		mygo.RunOnMain(func() { a.show(s) })
-	} else if q, ok := ParseConsent(line); ok {
-		mygo.RunOnMain(func() { a.ask(q) })
-	} else if id, ok := ParseConsentEnd(line); ok {
-		mygo.RunOnMain(func() { a.withdraw(id) })
-	}
-}
-
-// ask opens the window of a question and says so to the daemon. The daemon asks one question at a time, so another
-// that arrives meanwhile is a Deny.
-func (a *app) ask(q ConsentRequest) {
+// ask opens the window of a question; the decision goes to result. The daemon may ask while another question is open: it
+// is a Deny, the window takes one at a time.
+func (a *app) ask(req ConsentRequest, result chan<- consent.Decision) {
 	if a.consent != nil {
-		a.reply(AnswerLine(q.ID, false, nil))
+		result <- consent.Decision{Answer: consent.AnswerDeny}
 		return
 	}
-	c := &Consent{Request: q}
-	c.win = mygo.NewWindow(mygo.WindowOptions{Title: "agentd", Width: 480, Height: 620, AlwaysOnTop: true, DisableMinimize: true, Content: ui.View(c.View)})
+	c := newConsent(req, result)
+	c.win = mygo.NewWindow(mygo.WindowOptions{Title: "agentd", Width: 480, Height: 700, AlwaysOnTop: true, DisableMinimize: true, Content: ui.View(c.View)})
 	c.answer = func(allow bool) { a.answer(c, allow) }
 	c.win.OnClosed(func() { a.answer(c, false) }) // closing the window is a Deny
 	a.consent = c
+	if req.TimeoutS > 0 {
+		time.AfterFunc(time.Duration(req.TimeoutS)*time.Second, func() { mygo.RunOnMain(func() { a.lapse(c) }) })
+	}
 	c.win.Show()
 	c.win.Focus()
 	mygo.App.Focus()
-	a.reply(ShownLine(q.ID))
 }
 
 // answer sends the user's decision once, and closes the window.
 func (a *app) answer(c *Consent, allow bool) {
+	a.decide(c, agentui.DecisionOf(allow && c.CanAllow(), c.Folders, c.LastsFor()))
+}
+
+// lapse ends a question nobody answered in time: the daemon is told so, and the window closes.
+func (a *app) lapse(c *Consent) {
+	a.decide(c, consent.Decision{Answer: consent.AnswerTimeout})
+}
+
+// decide hands the daemon the decision of a question, once, and closes its window.
+func (a *app) decide(c *Consent, d consent.Decision) {
 	if c.Answered {
 		return
 	}
 	c.Answered = true
-	a.reply(AnswerLine(c.Request.ID, allow && c.CanAllow(), c.Folders))
+	c.result <- d
 	a.closeConsent(c)
-}
-
-// withdraw closes the window of a question the daemon no longer wants answered.
-func (a *app) withdraw(id string) {
-	if c := a.consent; c != nil && c.Request.ID == id && !c.Answered {
-		c.Answered = true
-		a.closeConsent(c)
-	}
 }
 
 func (a *app) closeConsent(c *Consent) {
@@ -173,7 +153,7 @@ func (a *app) closeConsent(c *Consent) {
 	c.win.Close()
 }
 
-// show takes a state from the daemon into the menu and the window.
+// show takes a state from the engine into the menu and the window.
 func (a *app) show(s State) {
 	a.settings.State = s
 	a.refresh()
@@ -205,30 +185,11 @@ func (a *app) makeTray() bool {
 	return true
 }
 
-// runChild is the tray of a daemon installed from the terminal: states on stdin, choices on stdout.
-func runChild() {
-	a := &app{report: say, reply: sayLine}
-	a.settings = Settings{State: State{}, send: a.choose}
-	if !a.makeTray() {
-		mygo.App.Quit()
-		return
-	}
-	go func() {
-		in := bufio.NewScanner(os.Stdin)
-		in.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for in.Scan() {
-			a.line(in.Bytes())
-		}
-		mygo.App.Quit()
-	}()
-}
-
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "child" {
-		mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
-		mygo.App.OnWindowAllClosed(func() {})
-		mygo.App.WhenReady(runChild)
-	} else if !startApp() {
+	if entry.IsCommand(os.Args[1:]) {
+		os.Exit(entry.Main(os.Args[1:])) // the agents' MCP wrappers and the user's terminal call this executable
+	}
+	if !startApp() {
 		return // agentd.app runs already: it shows its window
 	}
 	if err := mygo.App.Run(); err != nil {

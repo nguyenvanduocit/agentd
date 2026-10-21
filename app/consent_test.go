@@ -2,45 +2,24 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"github.com/nguyenvanduocit/agentd/daemon/consent"
 )
 
-func TestParseConsentReadsAQuestionAndNothingElse(t *testing.T) {
-	line := `{"t":"consent","id":"abc","origin":"https://app.example.com","mode":"browser","agents":["claude","grok"],"title":"Let https://app.example.com run agents on this computer?","body":"b","timeoutS":300}`
-	got, ok := ParseConsent([]byte(line))
-	want := ConsentRequest{T: "consent", ID: "abc", Origin: "https://app.example.com", Mode: "browser", Agents: []string{"claude", "grok"}, Title: "Let https://app.example.com run agents on this computer?", Body: "b", TimeoutS: 300}
-	if !ok || !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %+v, %v", got, ok)
+func TestTheWindowShowsTheDaemonsWordsForTheQuestion(t *testing.T) {
+	q := consent.Question{Origin: "https://app.example.com", Mode: consent.ModeBrowser, Agents: []string{"claude"}, Titles: []string{"Claude Code"}}
+	req := RequestOf(q, 300)
+	text := consent.ConsentText(q)
+	if req.Title != text.Title || req.Body != text.Body || req.TimeoutS != 300 {
+		t.Fatalf("got %+v, want the daemon's words %+v and 300 s", req, text)
 	}
-	for _, bad := range []string{`{"t":"state","version":"1"}`, `{"t":"consent"}`, `{"t":"consent","id":""}`, `{"t":"consent-end","id":"abc"}`, `not json`} {
-		if _, ok := ParseConsent([]byte(bad)); ok {
-			t.Errorf("%s parsed as a question", bad)
-		}
-	}
-}
-
-func TestParseConsentEndReadsTheWithdrawalOfAQuestion(t *testing.T) {
-	if id, ok := ParseConsentEnd([]byte(`{"t":"consent-end","id":"abc"}`)); !ok || id != "abc" {
-		t.Fatalf("got %q, %v", id, ok)
-	}
-	for _, bad := range []string{`{"t":"consent","id":"abc"}`, `{"t":"consent-end"}`, `{"t":"consent-end","id":""}`, `[]`} {
-		if _, ok := ParseConsentEnd([]byte(bad)); ok {
-			t.Errorf("%s parsed as a withdrawal", bad)
-		}
-	}
-}
-
-func TestTheLinesTheWindowSaysAreWhatTheDaemonReads(t *testing.T) {
-	if got := string(ShownLine("abc")); got != `{"t":"consent-shown","id":"abc"}` {
-		t.Errorf("shown = %s", got)
-	}
-	if got := string(AnswerLine("abc", true, []string{"/work/a", "/work/b"})); got != `{"t":"consent-answer","id":"abc","answer":"allow","folders":["/work/a","/work/b"]}` {
-		t.Errorf("allow = %s", got)
-	}
-	if got := string(AnswerLine("abc", false, nil)); got != `{"t":"consent-answer","id":"abc","answer":"deny","folders":[]}` {
-		t.Errorf("deny = %s", got)
+	if !strings.Contains(req.Title, "https://app.example.com") {
+		t.Errorf("the title does not name the origin it exactly as it came: %q", req.Title)
 	}
 }
 
@@ -71,8 +50,9 @@ func TestChoosingFolders(t *testing.T) {
 func window(folders ...string) (*ui.Tester, *[]bool) {
 	var answers []bool
 	c := &Consent{
-		Request: ConsentRequest{T: "consent", ID: "abc", Title: "Let https://app.example.com run agents on this computer?", Body: "The app wants to connect."},
+		Request: ConsentRequest{Title: "Let https://app.example.com run agents on this computer?", Body: "The app wants to connect."},
 		Folders: folders,
+		Lasts:   consent.DefaultLastsChoice,
 		answer:  func(allow bool) { answers = append(answers, allow) },
 	}
 	return ui.NewTester(c.View, 480, 620), &answers
@@ -109,5 +89,62 @@ func TestAllowNeedsAFolderAndTheButtonsAnswer(t *testing.T) {
 	tt, answers = window("/work/a")
 	if err := tt.Click("Deny"); err != nil || !reflect.DeepEqual(*answers, []bool{false}) {
 		t.Errorf("Deny: err %v, answers %v; want one Deny", err, *answers)
+	}
+}
+
+func TestTheWindowSaysWhatNoAnswerCountsAs(t *testing.T) {
+	for seconds, want := range map[int]string{300: "No answer within 5 min counts as Deny.", 90: "No answer within 90 s counts as Deny.", 0: ""} {
+		if got := timeoutLine(seconds); got != want {
+			t.Errorf("timeoutLine(%d) = %q, want %q", seconds, got, want)
+		}
+	}
+	c := &Consent{Request: ConsentRequest{Title: "t", Body: "b", TimeoutS: 300}, answer: func(bool) {}}
+	tt := ui.NewTester(c.View, 480, 620)
+	if !tt.HasText("No answer within 5 min counts as Deny.") {
+		t.Errorf("texts %q", tt.Texts())
+	}
+}
+
+func TestTheWindowSaysWhyAllowIsOffAndWhatTheFoldersMean(t *testing.T) {
+	tt, _ := window()
+	for _, want := range []string{"Where agents start", "Agents start in the first folder. They can still reach files outside it.", "Add a folder to turn on Allow."} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in %q", want, tt.Texts())
+		}
+	}
+	tt, _ = window("/work/a")
+	if tt.HasText("Add a folder to turn on Allow.") {
+		t.Errorf("the hint stays once a folder is chosen: %q", tt.Texts())
+	}
+}
+
+func TestTheWindowOffersHowLongTheAccessLastsAndStartsOn30Days(t *testing.T) {
+	var c *Consent
+	c = newConsent(ConsentRequest{Title: "t", Body: "b"}, make(chan consent.Decision, 1))
+	c.answer = func(bool) {}
+	tt := ui.NewTester(c.View, 480, 700)
+	for _, want := range []string{"How long", "1 hour", "1 day", "7 days", "30 days", "Never"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in %q", want, tt.Texts())
+		}
+	}
+	if c.LastsFor() != 30*24*time.Hour {
+		t.Errorf("the window opens on %v, want 30 days", c.LastsFor())
+	}
+	if err := tt.Click("Never"); err != nil || c.LastsFor() != consent.NoEnd {
+		t.Errorf("after Never: err %v, lasts %v", err, c.LastsFor())
+	}
+	if err := tt.Click("1 hour"); err != nil || c.LastsFor() != time.Hour {
+		t.Errorf("after 1 hour: err %v, lasts %v", err, c.LastsFor())
+	}
+}
+
+func TestTheWindowSaysWhenTheAccessEnds(t *testing.T) {
+	now := time.Date(2026, 10, 21, 20, 40, 0, 0, time.Local)
+	if got, want := endLine(24*time.Hour, now), "The access ends Thu 22 Oct, 20:40."; got != want {
+		t.Errorf("a day: %q, want %q", got, want)
+	}
+	if got := endLine(consent.NoEnd, now); !strings.Contains(got, "no end") {
+		t.Errorf("never: %q", got)
 	}
 }

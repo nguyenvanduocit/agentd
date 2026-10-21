@@ -118,9 +118,9 @@ func post(ctx context.Context, client Doer, m Machine, origin, code string) (*ht
 	return res, nil
 }
 
-// Pair trades the single-use code for a token and saves the app to the registry in file, with the folders the user
-// allowed it (none is no limit). It returns the saved app. Nothing is saved unless the server answers with a token.
-func Pair(ctx context.Context, client Doer, m Machine, server, code, file string, folders []string) (App, error) {
+// Pair trades the single-use code for a token and saves the app to the registry in file, with the access the user
+// gave it (its name, folders and end; see Access). It returns the saved app. Nothing is saved unless the server answers with a token.
+func Pair(ctx context.Context, client Doer, m Machine, server, code, file string, a Access) (App, error) {
 	origin, err := home.ServerOrigin(server)
 	if err != nil {
 		return App{}, err
@@ -148,7 +148,7 @@ func Pair(ctx context.Context, client Doer, m Machine, server, code, file string
 	if token == "" {
 		return App{}, pairErrorf("%s answered without a token: is this an app that serves agentd?", origin)
 	}
-	app := App{Server: origin, Token: token, Folders: folders}
+	app := App{Server: origin, Token: token, Name: a.Name, Folders: a.Folders, ExpiresAt: a.ExpiresAt}
 	if _, err := Update(file, func(r Registry) Registry { return r.AddApp(app) }); err != nil {
 		return App{}, err
 	}
@@ -196,7 +196,7 @@ func RunPair(ctx context.Context, cmd cli.Pair, d PairDeps) (int, error) {
 		return 0, err
 	}
 	file := File(cmd.Config, d.Host)
-	app, err := Pair(ctx, d.Client, d.Machine, cmd.App, code, file, nil)
+	app, err := Pair(ctx, d.Client, d.Machine, cmd.App, code, file, Access{})
 	if err != nil {
 		return 0, err
 	}

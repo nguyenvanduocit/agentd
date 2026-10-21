@@ -29,7 +29,7 @@ const info: Required<DaemonInfo> = {
   incompatible: "",
 }
 const pairing: Required<Pairing> = { code: "K7QX-29PD", expiresAt: 1760000600000 }
-const list: Required<DaemonList> = { daemons: [info], pairing, latestVersion: "0.7.0" }
+const list: Required<DaemonList> = { daemons: [info], pairing }
 
 test.each([
   ["List", list],
@@ -41,7 +41,7 @@ test.each([
 })
 
 test("a list as the Go server writes it fits the type (an incompatible daemon carries its sentence, others none)", () => {
-  const wire = `{"daemons":[{"id":"d1","name":"Work Mac","hostname":"work.local","state":"offline","version":"0.7.0","os":"darwin","agents":[],"lastSeen":0,"sessions":0,"managed":false,"incompatible":"The agentd on this computer is too old for this app."}],"pairing":{"code":"","expiresAt":0},"latestVersion":""}`
+  const wire = `{"daemons":[{"id":"d1","name":"Work Mac","hostname":"work.local","state":"offline","version":"0.7.0","os":"darwin","agents":[],"lastSeen":0,"sessions":0,"managed":false,"incompatible":"The agentd on this computer is too old for this app."}],"pairing":{"code":"","expiresAt":0}}`
   const parsed = JSON.parse(wire) as DaemonList
   expect(parsed.daemons[0]?.incompatible).toContain("too old")
   expect(parsed.pairing.code).toBe("")

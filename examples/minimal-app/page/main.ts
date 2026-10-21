@@ -1,10 +1,10 @@
-import { createLocalDaemon, desktopDownloads, installCommand, recommendInstall, type DaemonInfo, type DaemonList, type LocalState } from "@agentd/client"
+import { createLocalDaemon, desktopDownloads, recommendInstall, type DaemonInfo, type DaemonList, type LocalState } from "@agentd/client"
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const post = async (path: string, method = "POST"): Promise<unknown> => (await fetch(path, { method })).json()
 
 const config = (await (await fetch("/api/config")).json()) as { agentdUrl: string; ports?: number[] }
-let list: DaemonList = { daemons: [], pairing: { code: "", expiresAt: 0 }, latestVersion: "" }
+let list: DaemonList = { daemons: [], pairing: { code: "", expiresAt: 0 } }
 const downloads = desktopDownloads({ agentd: config.agentdUrl })
 if (downloads !== undefined) {
   $<HTMLAnchorElement>("download-arm64").href = downloads.appleSilicon
@@ -14,6 +14,7 @@ if (downloads !== undefined) {
 // The app's own calls, handed to the SDK: a one-time code from this app's server. `ports` pins where to look for a
 // daemon (development and tests: a second daemon beside your own); without it the SDK looks on agentd's ten ports.
 const local = createLocalDaemon({
+  name: "Minimal app", // what the user reads in the consent window and the menu, beside this page's address
   startPairing: async () => ((await post("/api/pairing")) as DaemonList).pairing.code,
   cancelPairing: () => post("/api/pairing", "DELETE"),
   ...(config.ports === undefined || config.ports.length === 0 ? {} : { ports: config.ports }),
@@ -51,21 +52,16 @@ function offers(s: LocalState): { connect: boolean; install: boolean } {
 function render(): void {
   const s = local.state
   const online = list.daemons.filter((d) => d.state === "online")
-  const pairing = list.pairing.code !== ""
-  const how = recommendInstall() // "dmg" on a Mac, "script" on Linux, "unsupported" elsewhere
+  const how = recommendInstall() // "dmg" on a Mac, "unsupported" on Linux, Windows and phones
   const offer = offers(s)
-  const install = offer.install && !pairing && online.length === 0
+  const install = offer.install && online.length === 0
   $("local").hidden = !offer.connect
   $("local-error").textContent = s.error
   $("local-incompatible").textContent = s.incompatible ?? ""
   $<HTMLButtonElement>("connect-local").disabled = s.phase === "connecting"
   $("local-note").textContent = s.phase === "connecting" ? "Answer the dialog that opened on this computer." : "agentd asks you to confirm before it connects."
-  $("install").hidden = !pairing
-  $("install-start").hidden = !install || how === "unsupported"
   $("unsupported").hidden = !install || how !== "unsupported"
-  $("download").hidden = $("install-start").hidden || downloads === undefined || how !== "dmg"
-  const command = pairing ? installCommand({ agentd: config.agentdUrl, app: location.origin, code: list.pairing.code }) : undefined
-  $("install-command").textContent = command ?? ""
+  $("download").hidden = !install || how !== "dmg" || downloads === undefined
   // An answer belongs to the computers that were online when it came; when they are gone it is no longer true.
   if (answer !== "" && onlineKey() !== answerFrom) answer = ""
   $("ping-result").textContent = answer
@@ -185,7 +181,6 @@ async function refresh(): Promise<void> {
 
 local.subscribe(render)
 $("connect-local").addEventListener("click", () => void local.connect().then(refresh))
-$("install-start").addEventListener("click", () => void post("/api/pairing").then(refresh))
 $("ping").addEventListener("click", async () => {
   const from = onlineKey()
   const res = (await post("/api/ping")) as { line?: string; error?: string }

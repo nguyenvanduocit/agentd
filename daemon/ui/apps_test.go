@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nguyenvanduocit/agentd/daemon/registry"
 )
 
 // A state shows EVERY saved app with its status, not only the linked ones: an app the daemon dropped (its server sent
@@ -50,7 +52,7 @@ func TestAppRowsListEverySavedAppInTheOrderTheyAreSaved(t *testing.T) {
 		"https://a.example": {Status: AppConnected},
 		"https://c.example": {Status: AppRefused, Reason: "The app no longer accepts this computer: its access was taken back."},
 	}
-	rows := AppRows([]string{"https://a.example", "https://b.example", "https://c.example"}, func(s string) AppState {
+	rows := AppRows(appsAt("https://a.example", "https://b.example", "https://c.example"), func(s string) AppState {
 		if st, ok := status[s]; ok {
 			return st
 		}
@@ -68,7 +70,7 @@ func TestAppRowsListEverySavedAppInTheOrderTheyAreSaved(t *testing.T) {
 		t.Errorf("no saved app: %#v, want an empty list (never null on the wire)", got)
 	}
 	// With nothing to ask, every saved app is on its way to being linked.
-	if got := AppRows([]string{"https://a.example"}, nil); got[0].Status != AppConnecting {
+	if got := AppRows(appsAt("https://a.example"), nil); got[0].Status != AppConnecting {
 		t.Errorf("without a status function: %+v", got)
 	}
 }
@@ -97,7 +99,7 @@ func TestTheStateCarriesEverySavedAppAndStillTheLinkedOnesAlone(t *testing.T) {
 	if !reflect.DeepEqual(s.AppList, want) {
 		t.Fatalf("appList %+v, want %+v", s.AppList, want)
 	}
-	// `apps` keeps its meaning, the linked apps, so a tray program of an older build still draws what it drew.
+	// `apps` stays the linked apps only.
 	if !reflect.DeepEqual(s.Apps, []string{linked}) {
 		t.Fatalf("apps %v, want only the linked one", s.Apps)
 	}
@@ -114,23 +116,14 @@ func TestWithoutAStatusFunctionTheLinkedAppsAreConnectedAndTheRestAreConnecting(
 	}
 }
 
-func TestTheStateLineIsAdditive(t *testing.T) {
-	// A tray program of an older build reads the fields it knows and ignores appList and notice; a newer one reading a
-	// state without them draws from `apps`. So the old fields keep their names, and the new ones are plain additions.
-	line := NewState(Facts{Version: "1", Apps: []string{"https://a.example"}, AppList: []AppRow{{Server: "https://a.example", Status: AppConnected}}}).line()
-	for _, want := range []string{`"apps":["https://a.example"]`, `"appList":[{"server":"https://a.example","status":"connected"}]`} {
-		if !strings.Contains(line, want) {
-			t.Errorf("no %s in %s", want, line)
-		}
+func TestTheStateNeverHoldsANilList(t *testing.T) {
+	empty := NewState(Facts{Version: "1"})
+	if empty.Apps == nil || empty.AppList == nil || empty.Pages == nil || empty.Agents == nil {
+		t.Errorf("a list is nil: %+v", empty)
 	}
-	if strings.Contains(line, `"notice"`) {
-		t.Errorf("an empty notice is on the wire: %s", line)
-	}
-	if empty := NewState(Facts{Version: "1"}).line(); !strings.Contains(empty, `"appList":[]`) {
-		t.Errorf("no saved app must be an empty list, not null: %s", empty)
-	}
-	if with := NewState(Facts{Version: "1", Notice: "Could not disconnect x."}).line(); !strings.Contains(with, `"notice":"Could not disconnect x."`) {
-		t.Errorf("the notice is not on the wire: %s", with)
+	with := NewState(Facts{Version: "1", Notice: "Could not disconnect x."})
+	if with.Notice != "Could not disconnect x." {
+		t.Errorf("notice %q", with.Notice)
 	}
 }
 
@@ -197,17 +190,6 @@ func TestADisconnectThatFailsLeavesANoticeThatLastsAWhileAndASuccessClearsIt(t *
 	waitFor(t, "a success to clear it", time.Second, func() bool { return f.link.last(t).Notice == "" })
 }
 
-func TestAnUpdatesSettingThatCannotBeSavedSaysSo(t *testing.T) {
-	f := newMenu(t)
-	f.deps.SetUpdates = func(bool) error { return errors.New("settings.json is read-only\nsecond line that must not be shown") }
-	f.start(t)
-	f.link.onAction(Action{Kind: ActionUpdates, On: false})
-	waitFor(t, "the notice", time.Second, func() bool { return f.link.last(t).Notice != "" })
-	if got, want := f.link.last(t).Notice, "Could not save the updates setting: settings.json is read-only."; got != want {
-		t.Fatalf("notice %q, want %q (one line of the reason)", got, want)
-	}
-}
-
 func TestACleanedNoticeNeverCarriesAnythingButOneLineOfReason(t *testing.T) {
 	long := strings.Repeat("x", 400)
 	for in, want := range map[string]string{
@@ -222,5 +204,59 @@ func TestACleanedNoticeNeverCarriesAnythingButOneLineOfReason(t *testing.T) {
 		if got := oneLineOf(errors.New(in)); got != want {
 			t.Errorf("oneLineOf(%.20q) = %.30q, want %.30q", in, got, want)
 		}
+	}
+}
+
+// appsAt are saved apps, one for each server.
+func appsAt(servers ...string) []registry.App {
+	apps := make([]registry.App, len(servers))
+	for i, s := range servers {
+		apps[i] = registry.App{Server: s, Token: "t"}
+	}
+	return apps
+}
+
+func TestTheStateCarriesTheNameAndEndOfEachAppAndPage(t *testing.T) {
+	f := newMenu(t)
+	end := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	r := registry.Empty().
+		AddApp(registry.App{Server: "https://a.example", Token: "t", Name: "AIOcean", ExpiresAt: registry.Expiry(time.Now(), 48*time.Hour)}).
+		AddApp(registry.App{Server: "https://b.example", Token: "t", Name: "Notes", ExpiresAt: registry.Never}).
+		AddApp(registry.App{Server: "https://c.example", Token: "t"}).
+		AddBrowser(page, time.Now(), registry.Access{Name: "Docs", ExpiresAt: registry.Expiry(time.Now(), 48*time.Hour)})
+	if err := registry.Save(f.file, r); err != nil {
+		t.Fatal(err)
+	}
+	f.start(t)
+	s := f.link.last(t)
+	names := []string{s.AppList[0].Name, s.AppList[1].Name, s.AppList[2].Name}
+	if !reflect.DeepEqual(names, []string{"AIOcean", "Notes", ""}) {
+		t.Errorf("names %q", names)
+	}
+	if got := s.AppList[0].Ends; got.Sub(end).Abs() > 2*time.Second {
+		t.Errorf("the first app ends %v, want about %v", got, end)
+	}
+	if !s.AppList[1].Ends.IsZero() || !s.AppList[2].Ends.IsZero() {
+		t.Errorf("an app with no end carries one: %v, %v", s.AppList[1].Ends, s.AppList[2].Ends)
+	}
+	if len(s.PageList) != 1 || s.PageList[0].Origin != page || s.PageList[0].Name != "Docs" || s.PageList[0].Ends.Sub(end).Abs() > 2*time.Second {
+		t.Errorf("pages %+v", s.PageList)
+	}
+}
+
+// An app whose access ended is not connected any more: it must not be listed with a Disconnect it does not need.
+func TestTheStateLeavesOutAnAppWhoseAccessEnded(t *testing.T) {
+	f := newMenu(t)
+	r := registry.Empty().
+		AddApp(registry.App{Server: "https://old.example", Token: "t", ExpiresAt: registry.Expiry(time.Now().Add(-2*time.Hour), time.Hour)}).
+		AddApp(registry.App{Server: "https://a.example", Token: "t"})
+	if err := registry.Save(f.file, r); err != nil {
+		t.Fatal(err)
+	}
+	f.linked["https://old.example"] = true
+	f.start(t)
+	s := f.link.last(t)
+	if len(s.AppList) != 1 || s.AppList[0].Server != "https://a.example" || len(s.Apps) != 0 {
+		t.Fatalf("appList %+v, apps %v: only the app whose access runs is listed", s.AppList, s.Apps)
 	}
 }

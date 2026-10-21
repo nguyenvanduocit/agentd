@@ -41,8 +41,8 @@ func TestTheLastAppLeavingStopsTheDaemonUnlessAPageGrantIsLive(t *testing.T) {
 		stop bool
 	}{
 		{"no grant", registry.Empty(), true},
-		{"a live page grant", registry.Empty().AddBrowser(site, now.Add(-time.Hour), nil), false},
-		{"a page grant that lapsed", registry.Empty().AddBrowser(site, now.Add(-registry.BrowserGrantTTL-time.Hour), nil), true},
+		{"a live page grant", registry.Empty().AddBrowser(site, now.Add(-time.Hour), registry.Access{}), false},
+		{"a page grant that lapsed", registry.Empty().AddBrowser(site, now.Add(-registry.BrowserGrantTTL-time.Hour), registry.Access{}), true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "daemon.json")

@@ -64,6 +64,9 @@ func (*appBridge) HandleOpen(context.Context, string, string) (contract.Opened, 
 func (*appBridge) HandleWrite(context.Context, string, string) (bool, error) {
 	return false, errNotDaemon
 }
+func (*appBridge) HandleChdir(context.Context, string, string) (contract.Opened, error) {
+	return contract.Opened{}, errNotDaemon
+}
 func (*appBridge) HandleClose(context.Context, string) error { return errNotDaemon }
 func (*appBridge) HandleRestart(context.Context) error       { return errNotDaemon }
 func (*appBridge) HandleStop(context.Context) error          { return errNotDaemon }
@@ -165,7 +168,7 @@ func RunBridge(cmd cli.MCP, d Deps) int {
 		log.Warn(err.Error())
 		return 1
 	}
-	app, err := reg.SelectApp(cmd.App)
+	app, err := reg.SelectApp(cmd.App, time.Now())
 	if err != nil {
 		log.Warn(err.Error())
 		return 1

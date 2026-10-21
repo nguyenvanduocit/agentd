@@ -16,9 +16,12 @@ import (
 	"github.com/nguyenvanduocit/agentd/daemon/home"
 )
 
-// BrowserGrantTTL is how long a web page's grant lasts, counted from the day it was made: after it the page asks the
-// user again. An app's grant has no end: its server is the user's own choice and runs without the user there.
+// BrowserGrantTTL is how long the grant of a web page that names no end lasts, counted from the day it was made: the
+// grants made before the user chose a time. A grant made now carries its own end (Expiry).
 const BrowserGrantTTL = 30 * 24 * time.Hour
+
+// Never is the expiresAt of access the user gave with no end. An app that names no end has none either.
+const Never = "never"
 
 // grantStampLayout is how grantedAt is written: the form `new Date().toISOString()` gave in the Node daemon's file.
 const grantStampLayout = "2006-01-02T15:04:05.000Z"
@@ -26,36 +29,82 @@ const grantStampLayout = "2006-01-02T15:04:05.000Z"
 // GrantStamp is grantedAt for a grant made at `at`.
 func GrantStamp(at time.Time) string { return at.UTC().Format(grantStampLayout) }
 
-// App is a server app this daemon is paired with: it dials out to Server with Token. Folders are the folders the user
-// allowed it (see agents.GuardLine); none is no limit, as for an app paired from the command line.
+// Expiry is the expiresAt of access given at `at` for `lasts`: Never when lasts is not positive.
+func Expiry(at time.Time, lasts time.Duration) string {
+	if lasts <= 0 {
+		return Never
+	}
+	return at.Add(lasts).UTC().Format(time.RFC3339Nano)
+}
+
+// endOf reads an expiresAt: ends is false for access with no end; ok is false when the stamp is not a time, which
+// access cannot be told young by.
+func endOf(stamp string) (end time.Time, ends, ok bool) {
+	if stamp == "" || stamp == Never {
+		return time.Time{}, false, true
+	}
+	end, err := time.Parse(time.RFC3339Nano, stamp)
+	return end, true, err == nil
+}
+
+func liveAt(end time.Time, ends, ok bool, now time.Time) bool {
+	return ok && (!ends || now.Before(end))
+}
+
+// Access is what the user gave one origin when they allowed it: the name it gave itself, the folders agents may start
+// in (none is no limit) and when it ends (see Expiry; empty is the end of the grants made before the user chose one).
+type Access struct {
+	Name      string
+	Folders   []string
+	ExpiresAt string
+}
+
+// App is a server app this daemon is paired with: it dials out to Server with Token. Name is what the app called
+// itself when it connected. Folders are the folders the user allowed it (see agents.GuardLine); none is no limit, as
+// for an app paired from the command line. ExpiresAt is when the access ends; an app that names none (paired from the
+// command line, or before the user chose a time) has no end.
 type App struct {
-	Server  string   `json:"server"`
-	Token   string   `json:"token"`
-	Folders []string `json:"folders,omitempty"`
+	Server    string   `json:"server"`
+	Token     string   `json:"token"`
+	Name      string   `json:"name,omitempty"`
+	Folders   []string `json:"folders,omitempty"`
+	ExpiresAt string   `json:"expiresAt,omitempty"`
+}
+
+// End is when the app's access ends; see endOf.
+func (a App) End() (end time.Time, ends, ok bool) { return endOf(a.ExpiresAt) }
+
+// Live reports whether the app's access has not ended at now. An app whose end cannot be read has.
+func (a App) Live(now time.Time) bool {
+	end, ends, ok := a.End()
+	return liveAt(end, ends, ok, now)
 }
 
 // BrowserGrant is a web page origin the user allowed to run agents through the local gateway, in Folders (none is no
-// limit, as for a grant that was made before folders existed), until BrowserGrantTTL after GrantedAt.
+// limit, as for a grant that was made before folders existed), until ExpiresAt, or for BrowserGrantTTL after GrantedAt
+// when it names no end.
 type BrowserGrant struct {
 	Origin    string   `json:"origin"`
 	GrantedAt string   `json:"grantedAt"`
+	Name      string   `json:"name,omitempty"`
 	Folders   []string `json:"folders,omitempty"`
+	ExpiresAt string   `json:"expiresAt,omitempty"`
 }
 
-// ExpiresAt is when the grant lapses; false when GrantedAt cannot be read as a time, which a grant cannot be told
-// young by.
-func (g BrowserGrant) ExpiresAt() (time.Time, bool) {
-	at, err := time.Parse(time.RFC3339Nano, g.GrantedAt)
-	if err != nil {
-		return time.Time{}, false
+// End is when the grant lapses; see endOf. A grant that names no end lapses BrowserGrantTTL after GrantedAt, and one
+// whose GrantedAt cannot be read as a time is not ok.
+func (g BrowserGrant) End() (end time.Time, ends, ok bool) {
+	if g.ExpiresAt != "" {
+		return endOf(g.ExpiresAt)
 	}
-	return at.Add(BrowserGrantTTL), true
+	at, err := time.Parse(time.RFC3339Nano, g.GrantedAt)
+	return at.Add(BrowserGrantTTL), true, err == nil
 }
 
 // Live reports whether the grant has not lapsed at now. A grant whose time cannot be read has.
 func (g BrowserGrant) Live(now time.Time) bool {
-	end, ok := g.ExpiresAt()
-	return ok && now.Before(end)
+	end, ends, ok := g.End()
+	return liveAt(end, ends, ok, now)
 }
 
 // Registry is what daemon.json holds. The two lists are never nil in a value this package returns.
@@ -131,7 +180,19 @@ func parseApp(v any) (App, bool) {
 	server, okServer := o["server"].(string)
 	token, okToken := o["token"].(string)
 	folders, okFolders := parseFolders(o["folders"])
-	return App{Server: server, Token: token, Folders: folders}, okServer && okToken && token != "" && okFolders
+	name, okName := parseText(o["name"])
+	expiresAt, okEnd := parseText(o["expiresAt"])
+	return App{Server: server, Token: token, Name: name, Folders: folders, ExpiresAt: expiresAt},
+		okServer && okToken && token != "" && okFolders && okName && okEnd
+}
+
+// parseText reads an optional text field: a missing or null one is empty; anything but text is malformed.
+func parseText(v any) (string, bool) {
+	if v == nil {
+		return "", true
+	}
+	text, ok := v.(string)
+	return text, ok
 }
 
 // parseFolders reads an optional "folders": a missing or null one is none; anything but a list of text is malformed.
@@ -159,7 +220,10 @@ func parseGrant(v any) (BrowserGrant, bool) {
 	origin, okOrigin := o["origin"].(string)
 	grantedAt, okAt := o["grantedAt"].(string)
 	folders, okFolders := parseFolders(o["folders"])
-	return BrowserGrant{Origin: origin, GrantedAt: grantedAt, Folders: folders}, okOrigin && okAt && okFolders
+	name, okName := parseText(o["name"])
+	expiresAt, okEnd := parseText(o["expiresAt"])
+	return BrowserGrant{Origin: origin, GrantedAt: grantedAt, Name: name, Folders: folders, ExpiresAt: expiresAt},
+		okOrigin && okAt && okFolders && okName && okEnd
 }
 
 // Marshal is the bytes of daemon.json: two-space indent, one trailing newline, "<", ">" and "&" as they are. A CLI
@@ -192,13 +256,13 @@ func (r Registry) AddApp(app App) Registry {
 	return Registry{Apps: apps, Browsers: r.Browsers}
 }
 
-// AddBrowser grants the origin its folders, from `at`. An origin whose grant is still live at `at` keeps its first time
-// and folders; one that lapsed gets the new time and the new folders in the place of the old grant.
-func (r Registry) AddBrowser(origin string, at time.Time, folders []string) Registry {
+// AddBrowser grants the origin its access, from `at`. An origin whose grant is still live at `at` keeps its first
+// access; one that lapsed gets the new access in the place of the old grant.
+func (r Registry) AddBrowser(origin string, at time.Time, a Access) Registry {
 	if r.HasBrowser(origin, at) {
 		return r
 	}
-	grant := BrowserGrant{Origin: origin, GrantedAt: GrantStamp(at), Folders: folders}
+	grant := BrowserGrant{Origin: origin, GrantedAt: GrantStamp(at), Name: a.Name, Folders: a.Folders, ExpiresAt: a.ExpiresAt}
 	browsers := slices.Clone(r.Browsers)
 	if i := slices.IndexFunc(browsers, func(g BrowserGrant) bool { return g.Origin == origin }); i >= 0 {
 		browsers[i] = grant
@@ -224,8 +288,15 @@ func (r Registry) RemoveOrigin(origin string) Registry {
 	return out
 }
 
-// HasApp reports whether the registry holds an app with this server origin.
-func (r Registry) HasApp(server string) bool {
+// HasApp reports whether the registry pairs an app with this server origin at now: it has one whose access has not
+// ended.
+func (r Registry) HasApp(server string, now time.Time) bool {
+	return slices.ContainsFunc(r.Apps, func(a App) bool { return a.Server == server && a.Live(now) })
+}
+
+// HasSavedApp reports whether the registry holds an app with this server origin, ended or not: what `agentd apps
+// remove` can forget.
+func (r Registry) HasSavedApp(server string) bool {
 	return slices.ContainsFunc(r.Apps, func(a App) bool { return a.Server == server })
 }
 
@@ -272,12 +343,12 @@ type Ended struct {
 	Pages []string
 }
 
-// Withdrawn is what still runs for an origin that r no longer has at now, as `agentd apps remove` leaves it or a lapsed
-// grant: of the linked app servers and the origins with open pages, those to end.
+// Withdrawn is what still runs for an origin that r no longer has at now, as `agentd apps remove` leaves it or access
+// that ended: of the linked app servers and the origins with open pages, those to end.
 func (r Registry) Withdrawn(linked, pages []string, now time.Time) Ended {
 	out := Ended{Apps: []string{}, Pages: []string{}}
 	for _, s := range linked {
-		if !r.HasApp(s) {
+		if !r.HasApp(s, now) {
 			out.Apps = append(out.Apps, s)
 		}
 	}
@@ -289,17 +360,24 @@ func (r Registry) Withdrawn(linked, pages []string, now time.Time) Ended {
 	return out
 }
 
-// SelectApps is every app, or with a non-nil server only the app at that origin. It fails when that app is not paired.
-func (r Registry) SelectApps(server *string) ([]App, error) {
+// SelectApps is every app whose access has not ended at now, or with a non-nil server only the app at that origin. It
+// fails when that app is not paired.
+func (r Registry) SelectApps(server *string, now time.Time) ([]App, error) {
+	live := make([]App, 0, len(r.Apps))
+	for _, a := range r.Apps {
+		if a.Live(now) {
+			live = append(live, a)
+		}
+	}
 	if server == nil {
-		return r.Apps, nil
+		return live, nil
 	}
 	origin, err := home.ServerOrigin(*server)
 	if err != nil {
 		return nil, err
 	}
 	var found []App
-	for _, a := range r.Apps {
+	for _, a := range live {
 		if a.Server == origin {
 			found = append(found, a)
 		}
@@ -311,15 +389,15 @@ func (r Registry) SelectApps(server *string) ([]App, error) {
 }
 
 // SelectApp is the one app a process (the MCP bridge) talks to: the named one, or the only one.
-func (r Registry) SelectApp(server *string) (App, error) {
-	apps, err := r.SelectApps(server)
+func (r Registry) SelectApp(server *string, now time.Time) (App, error) {
+	apps, err := r.SelectApps(server, now)
 	if err != nil {
 		return App{}, err
 	}
 	if len(apps) == 0 {
 		return App{}, errors.New("not paired. Run: agentd pair --app <url> --code <code>")
 	}
-	if server == nil && len(r.Apps) > 1 {
+	if server == nil && len(apps) > 1 {
 		return App{}, errors.New("several apps are paired: pass --app <url> to say which one")
 	}
 	return apps[0], nil

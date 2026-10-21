@@ -110,7 +110,7 @@ type Detected struct {
 func (d Detected) Daemon() Daemon { return Daemon{Port: d.Port} }
 
 // SupportedProtocols is the protocols of the daemon's gateway that this client speaks.
-func SupportedProtocols() []int { return []int{1} }
+func SupportedProtocols() []int { return []int{1, 2} }
 
 // Incompatible is a sentence for a person when the daemon states a protocol this client does not speak, and which side
 // to update; "" when it states none, or one this client speaks.
@@ -402,21 +402,25 @@ func stringify(v any) string {
 }
 
 // ConnectServer asks the user (in a dialog on their machine) to let the daemon connect to the app's own server with
-// this pairing code. The server is at origin: the daemon refuses to connect to any other. It waits for the user's
-// answer; ctx ends the wait.
-func ConnectServer(ctx context.Context, d Daemon, origin, code string, opts ...Option) ConnectResult {
+// this pairing code. The server is at origin: the daemon refuses to connect to any other. name is what the app calls
+// itself: the dialog and the daemon's menu show it beside origin, and the daemon refuses a request without one. It
+// waits for the user's answer; ctx ends the wait.
+func ConnectServer(ctx context.Context, d Daemon, origin, name, code string, opts ...Option) ConnectResult {
 	body := stringify(struct {
 		Mode string `json:"mode"`
+		Name string `json:"name"`
 		Code string `json:"code"`
-	}{"server", code})
+	}{"server", name, code})
 	return connectRequest(ctx, d, origin, body, newOptions(opts))
 }
 
-// ConnectBrowser asks the user to let this origin run agents on their machine directly (OpenSession).
-func ConnectBrowser(ctx context.Context, d Daemon, origin string, opts ...Option) ConnectResult {
+// ConnectBrowser asks the user to let this origin run agents on their machine directly (OpenSession). name is what the
+// app calls itself, as for ConnectServer.
+func ConnectBrowser(ctx context.Context, d Daemon, origin, name string, opts ...Option) ConnectResult {
 	body := stringify(struct {
 		Mode string `json:"mode"`
-	}{"browser"})
+		Name string `json:"name"`
+	}{"browser", name})
 	return connectRequest(ctx, d, origin, body, newOptions(opts))
 }
 
